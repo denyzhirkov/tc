@@ -1,0 +1,18 @@
+[package]
+name = "termicall-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+termicall-shared = { path = "../shared" }
+tokio.workspace = true
+serde.workspace = true
+bincode.workspace = true
+cpal.workspace = true
+audiopus.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+bytes.workspace = true
