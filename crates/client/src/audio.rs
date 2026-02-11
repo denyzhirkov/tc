@@ -8,6 +8,41 @@ use cpal::Stream;
 
 use tc_shared::config;
 
+/// Build a StreamConfig compatible with the device.
+/// On Windows (WASAPI), devices often reject mono or fixed buffer sizes,
+/// so we query the device defaults and adapt.
+/// Returns `(config, device_channels)`.
+fn build_stream_config(device: &cpal::Device, is_input: bool) -> Result<(cpal::StreamConfig, u16)> {
+    #[cfg(target_os = "windows")]
+    {
+        let default_cfg = if is_input {
+            device.default_input_config()
+        } else {
+            device.default_output_config()
+        }
+        .context("failed to get default stream config")?;
+
+        let device_channels = default_cfg.channels();
+        let stream_config = cpal::StreamConfig {
+            channels: device_channels,
+            sample_rate: cpal::SampleRate(config::SAMPLE_RATE),
+            buffer_size: cpal::BufferSize::Default,
+        };
+        Ok((stream_config, device_channels))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (device, is_input);
+        let stream_config = cpal::StreamConfig {
+            channels: config::AUDIO_CHANNELS,
+            sample_rate: cpal::SampleRate(config::SAMPLE_RATE),
+            buffer_size: cpal::BufferSize::Fixed(config::FRAME_SIZE as u32),
+        };
+        Ok((stream_config, config::AUDIO_CHANNELS))
+    }
+}
+
 pub struct DeviceInfo {
     pub index: usize,
     pub name: String,
@@ -73,11 +108,8 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
 
     tracing::info!("input device: {}", device.name().unwrap_or_default());
 
-    let stream_config = cpal::StreamConfig {
-        channels: config::AUDIO_CHANNELS,
-        sample_rate: cpal::SampleRate(config::SAMPLE_RATE),
-        buffer_size: cpal::BufferSize::Fixed(config::FRAME_SIZE as u32),
-    };
+    let (stream_config, device_channels) = build_stream_config(&device, true)?;
+    tracing::info!("input config: {:?}, device channels: {}", stream_config, device_channels);
 
     let (tx, rx) = std_mpsc::channel::<Vec<f32>>();
 
@@ -87,7 +119,16 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
     let stream = device.build_input_stream(
         &stream_config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            accumulator.extend_from_slice(data);
+            if device_channels > 1 {
+                // Downmix interleaved multi-channel to mono
+                let ch = device_channels as usize;
+                for chunk in data.chunks_exact(ch) {
+                    let mono: f32 = chunk.iter().sum::<f32>() / ch as f32;
+                    accumulator.push(mono);
+                }
+            } else {
+                accumulator.extend_from_slice(data);
+            }
             while accumulator.len() >= config::FRAME_SIZE {
                 let frame: Vec<f32> = accumulator.drain(..config::FRAME_SIZE).collect();
                 let _ = tx.send(frame);
@@ -120,11 +161,8 @@ pub fn start_playback(device_name: Option<&str>, playback_cap: Arc<AtomicU32>) -
 
     tracing::info!("output device: {}", device.name().unwrap_or_default());
 
-    let stream_config = cpal::StreamConfig {
-        channels: config::AUDIO_CHANNELS,
-        sample_rate: cpal::SampleRate(config::SAMPLE_RATE),
-        buffer_size: cpal::BufferSize::Fixed(config::FRAME_SIZE as u32),
-    };
+    let (stream_config, device_channels) = build_stream_config(&device, false)?;
+    tracing::info!("output config: {:?}, device channels: {}", stream_config, device_channels);
 
     let (tx, rx) = std_mpsc::channel::<Vec<f32>>();
 
@@ -146,14 +184,28 @@ pub fn start_playback(device_name: Option<&str>, playback_cap: Arc<AtomicU32>) -
                 playback_buf.drain(..excess);
             }
 
-            // Fill output buffer from playback buffer
-            let available = playback_buf.len().min(data.len());
-            data[..available].copy_from_slice(&playback_buf[..available]);
-            playback_buf.drain(..available);
-
-            // Fill remaining with silence
-            for sample in &mut data[available..] {
-                *sample = 0.0;
+            if device_channels > 1 {
+                // Upmix mono to interleaved multi-channel
+                let ch = device_channels as usize;
+                let mono_needed = data.len() / ch;
+                let available = playback_buf.len().min(mono_needed);
+                for i in 0..available {
+                    let sample = playback_buf[i];
+                    for c in 0..ch {
+                        data[i * ch + c] = sample;
+                    }
+                }
+                playback_buf.drain(..available);
+                for sample in &mut data[available * ch..] {
+                    *sample = 0.0;
+                }
+            } else {
+                let available = playback_buf.len().min(data.len());
+                data[..available].copy_from_slice(&playback_buf[..available]);
+                playback_buf.drain(..available);
+                for sample in &mut data[available..] {
+                    *sample = 0.0;
+                }
             }
         },
         |err| {
