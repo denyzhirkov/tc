@@ -46,6 +46,8 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binaries
