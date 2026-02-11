@@ -46,8 +46,13 @@ pub const AUDIO_CHANNELS: u16 = 1;
 pub const MAX_OPUS_PACKET: usize = 4000;
 /// Max playback buffer in samples (~100ms). Excess is dropped to cap latency.
 pub const MAX_PLAYBACK_BUF: usize = FRAME_SIZE * 5;
-/// Jitter buffer capacity (packets). Higher = more resilience, more latency.
-pub const JITTER_BUF_SIZE: usize = 10;
+/// Jitter buffer min/max capacity (packets) for adaptive sizing.
+pub const JITTER_BUF_MIN: usize = 2;
+pub const JITTER_BUF_MAX: usize = 15;
+/// Initial jitter buffer size before adaptation kicks in.
+pub const JITTER_BUF_INITIAL: usize = 4;
+/// How often to recalculate adaptive jitter buffer size (packets).
+pub const JITTER_ADAPT_INTERVAL: u32 = 50;
 
 // ── VAD ──────────────────────────────────────────────────────────────────
 

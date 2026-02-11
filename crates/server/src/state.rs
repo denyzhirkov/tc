@@ -5,6 +5,11 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tc_shared::ChannelId;
 
+/// Lock-free-read cache of channel → UDP peer addresses.
+/// Rebuilt on join/leave/register_udp. UDP relay reads this without
+/// touching the main tokio::RwLock, eliminating contention on the hot path.
+type PeerCache = Arc<std::sync::RwLock<HashMap<String, Vec<SocketAddr>>>>;
+
 /// Resource limits configured via CLI args.
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -15,9 +20,10 @@ pub struct Limits {
 }
 
 /// Global server state shared across tasks.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerState {
     inner: Arc<RwLock<Inner>>,
+    peer_cache: PeerCache,
 }
 
 #[derive(Debug)]
@@ -30,8 +36,8 @@ struct Inner {
     channel_keys: HashMap<ChannelId, Vec<u8>>,
     /// Channel creation timestamps (grace period for cleanup).
     channel_created_at: HashMap<ChannelId, Instant>,
-    /// Pending UDP tokens: token → (tcp_addr, channel_id).
-    udp_tokens: HashMap<u64, (SocketAddr, ChannelId)>,
+    /// Pending UDP tokens: token → (tcp_addr, channel_id, created_at).
+    udp_tokens: HashMap<u64, (SocketAddr, ChannelId, Instant)>,
     /// Counter for generating simple peer names.
     name_counter: u64,
     /// Resource limits.
@@ -57,6 +63,7 @@ impl ServerState {
                 name_counter: 0,
                 limits,
             })),
+            peer_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -84,7 +91,7 @@ impl ServerState {
         let mut inner = self.inner.write().await;
         let info = inner.clients.remove(tcp_addr)?;
         // Remove any pending UDP tokens for this client
-        inner.udp_tokens.retain(|_, (addr, _)| addr != tcp_addr);
+        inner.udp_tokens.retain(|_, (addr, _, _)| addr != tcp_addr);
         if let Some(ref ch) = info.channel {
             if let Some(participants) = inner.channels.get_mut(ch) {
                 if let Some(udp) = info.udp_addr {
@@ -96,6 +103,7 @@ impl ServerState {
                     inner.channel_created_at.remove(ch);
                 }
             }
+            Self::rebuild_peer_cache(&inner, &self.peer_cache);
         }
         Some((info.name, info.channel))
     }
@@ -144,7 +152,7 @@ impl ServerState {
                 break t;
             }
         };
-        inner.udp_tokens.insert(token, (*tcp_addr, channel_id.clone()));
+        inner.udp_tokens.insert(token, (*tcp_addr, channel_id.clone(), Instant::now()));
 
         // Gather existing participant names
         let names: Vec<String> = inner
@@ -171,7 +179,7 @@ impl ServerState {
             client.udp_addr = None;
         }
         // Remove pending tokens for this client
-        inner.udp_tokens.retain(|_, (addr, _)| addr != tcp_addr);
+        inner.udp_tokens.retain(|_, (addr, _, _)| addr != tcp_addr);
         if let Some(participants) = inner.channels.get_mut(&channel_id) {
             if let Some(udp) = udp_addr {
                 participants.remove(&udp);
@@ -182,6 +190,7 @@ impl ServerState {
                 inner.channel_created_at.remove(&channel_id);
             }
         }
+        Self::rebuild_peer_cache(&inner, &self.peer_cache);
         Some((name, channel_id))
     }
 
@@ -189,7 +198,7 @@ impl ServerState {
     /// Returns true if the token was valid and registration succeeded.
     pub async fn register_udp_by_token(&self, token: u64, udp_addr: SocketAddr) -> bool {
         let mut inner = self.inner.write().await;
-        let (tcp_addr, channel_id) = match inner.udp_tokens.remove(&token) {
+        let (tcp_addr, channel_id, _) = match inner.udp_tokens.remove(&token) {
             Some(v) => v,
             None => return false,
         };
@@ -199,17 +208,30 @@ impl ServerState {
         if let Some(participants) = inner.channels.get_mut(&channel_id) {
             participants.insert(udp_addr);
         }
+        Self::rebuild_peer_cache(&inner, &self.peer_cache);
         true
     }
 
     /// Get all UDP addresses in a channel except the sender.
-    pub async fn get_channel_peers(&self, channel_id: &str, exclude: &SocketAddr) -> Vec<SocketAddr> {
-        let inner = self.inner.read().await;
-        inner
-            .channels
+    /// Reads from the lock-free peer cache — no tokio RwLock on the hot path.
+    pub fn get_channel_peers_cached(&self, channel_id: &str, exclude: &SocketAddr) -> Vec<SocketAddr> {
+        let cache = self.peer_cache.read().unwrap();
+        cache
             .get(channel_id)
             .map(|peers| peers.iter().filter(|a| *a != exclude).copied().collect())
             .unwrap_or_default()
+    }
+
+    /// Rebuild the peer cache from current channel state.
+    /// Called after join/leave/register_udp — these are rare events.
+    fn rebuild_peer_cache(inner: &Inner, cache: &PeerCache) {
+        let mut new_cache = HashMap::with_capacity(inner.channels.len());
+        for (id, participants) in &inner.channels {
+            if !participants.is_empty() {
+                new_cache.insert(id.clone(), participants.iter().copied().collect());
+            }
+        }
+        *cache.write().unwrap() = new_cache;
     }
 
     /// Get all TCP addresses in a channel (for broadcasting control messages).
@@ -269,8 +291,11 @@ impl ServerState {
             inner.channel_keys.remove(&id);
             inner.channel_created_at.remove(&id);
             // Also remove any stale tokens for this channel
-            inner.udp_tokens.retain(|_, (_, ch)| ch != &id);
+            inner.udp_tokens.retain(|_, (_, ch, _)| ch != &id);
         }
+        // Expire UDP tokens older than 30 seconds
+        let token_ttl = std::time::Duration::from_secs(30);
+        inner.udp_tokens.retain(|_, (_, _, created)| created.elapsed() < token_ttl);
         count
     }
 }

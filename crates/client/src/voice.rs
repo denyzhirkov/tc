@@ -112,22 +112,34 @@ fn seq_before(a: u32, b: u32) -> bool {
     diff > 0 && diff < 0x8000_0000
 }
 
-/// Jitter buffer: holds a few packets and releases them in order.
-/// Uses wrapping-aware sequence arithmetic to handle u32 overflow.
+/// Adaptive jitter buffer: dynamically sizes based on observed inter-arrival jitter.
+/// Uses RFC 3550-style jitter estimation to pick optimal buffer depth.
 struct JitterBuffer {
     buffer: HashMap<u32, Vec<u8>>,
     next_seq: u32,
     started: bool,
     max_size: usize,
+    /// Smoothed jitter estimate (exponential moving average, in ms).
+    jitter_ms: f64,
+    /// Last packet arrival time.
+    last_arrival: Option<Instant>,
+    /// Expected inter-packet interval (ms).
+    expected_interval_ms: f64,
+    /// Counter for periodic adaptation.
+    packets_since_adapt: u32,
 }
 
 impl JitterBuffer {
-    fn new(max_size: usize) -> Self {
+    fn new() -> Self {
         Self {
             buffer: HashMap::new(),
             next_seq: 0,
             started: false,
-            max_size,
+            max_size: config::JITTER_BUF_INITIAL,
+            jitter_ms: 0.0,
+            last_arrival: None,
+            expected_interval_ms: (config::FRAME_SIZE as f64 / config::SAMPLE_RATE as f64) * 1000.0, // 20ms
+            packets_since_adapt: 0,
         }
     }
 
@@ -142,11 +154,43 @@ impl JitterBuffer {
             return;
         }
 
+        // Track inter-arrival jitter (RFC 3550 style)
+        let now = Instant::now();
+        if let Some(prev) = self.last_arrival {
+            let actual_interval_ms = now.duration_since(prev).as_secs_f64() * 1000.0;
+            let deviation = (actual_interval_ms - self.expected_interval_ms).abs();
+            // Exponential moving average: alpha = 1/16 (same as RFC 3550)
+            self.jitter_ms += (deviation - self.jitter_ms) / 16.0;
+        }
+        self.last_arrival = Some(now);
+
         self.buffer.insert(seq, opus_data);
+
+        // Periodically adapt buffer size
+        self.packets_since_adapt += 1;
+        if self.packets_since_adapt >= config::JITTER_ADAPT_INTERVAL {
+            self.packets_since_adapt = 0;
+            self.adapt_size();
+        }
 
         // If buffer is too large, skip ahead
         if self.buffer.len() > self.max_size {
             self.skip_to_oldest_available();
+        }
+    }
+
+    /// Adapt max_size based on observed jitter.
+    /// target = jitter_ms * 2 / frame_duration_ms, clamped to [MIN, MAX].
+    fn adapt_size(&mut self) {
+        let target_ms = self.jitter_ms * 2.0;
+        let target_packets = (target_ms / self.expected_interval_ms).ceil() as usize;
+        let new_size = target_packets.clamp(config::JITTER_BUF_MIN, config::JITTER_BUF_MAX);
+        if new_size != self.max_size {
+            tracing::debug!(
+                "jitter buffer adapted: {} → {} packets (jitter={:.1}ms)",
+                self.max_size, new_size, self.jitter_ms,
+            );
+            self.max_size = new_size;
         }
     }
 
@@ -187,6 +231,11 @@ impl JitterBuffer {
             self.buffer.retain(|&s, _| !seq_before(s, min_seq));
             self.next_seq = min_seq;
         }
+    }
+
+    /// Current jitter estimate in milliseconds.
+    fn jitter_ms(&self) -> f64 {
+        self.jitter_ms
     }
 }
 
@@ -236,9 +285,12 @@ pub async fn start_voice(
         .map_err(|_| anyhow::anyhow!("invalid voice key"))?;
     let send_cipher = cipher.clone();
 
+    // Adaptive playback buffer cap (samples), shared with audio output callback
+    let playback_cap = Arc::new(AtomicU32::new(config::MAX_PLAYBACK_BUF as u32));
+
     // Start audio I/O
     let (_capture_stream, capture_rx) = audio::start_capture(input_device.as_deref())?;
-    let (_playback_stream, playback_tx) = audio::start_playback(output_device.as_deref())?;
+    let (_playback_stream, playback_tx) = audio::start_playback(output_device.as_deref(), playback_cap.clone())?;
 
     // Sender task (capture → encode → UDP)
     let send_socket = socket.clone();
@@ -364,6 +416,7 @@ pub async fn start_voice(
     let recv_socket = socket.clone();
     let recv_stats = stats.clone();
     let recv_bytes_rx = bytes_rx.clone();
+    let recv_playback_cap = playback_cap.clone();
     let recv_handle = tokio::spawn(async move {
         let mut decoder = match OpusDecoder::new() {
             Ok(d) => d,
@@ -373,7 +426,7 @@ pub async fn start_voice(
             }
         };
 
-        let mut jitter = JitterBuffer::new(config::JITTER_BUF_SIZE);
+        let mut jitter = JitterBuffer::new();
         let mut buf = vec![0u8; config::MAX_UDP_PACKET + 64];
 
         loop {
@@ -394,6 +447,12 @@ pub async fn start_voice(
                             }
                         };
                         jitter.push(packet.sequence, opus_data);
+
+                        // Sync playback buffer cap with jitter estimate
+                        let jitter_cap = ((jitter.jitter_ms() * 2.0 / jitter.expected_interval_ms).ceil() as usize)
+                            .clamp(config::JITTER_BUF_MIN, config::JITTER_BUF_MAX);
+                        let cap_samples = (jitter_cap * config::FRAME_SIZE) as u32;
+                        recv_playback_cap.store(cap_samples.max(config::MAX_PLAYBACK_BUF as u32), Ordering::Relaxed);
 
                         // Drain available packets
                         loop {

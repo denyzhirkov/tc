@@ -41,7 +41,7 @@ pub async fn run_udp_relay(state: ServerState, addr: String) -> Result<()> {
         };
 
         // Relay raw bytes to all other participants in the channel
-        let peers = state.get_channel_peers(channel_id, &src_addr).await;
+        let peers = state.get_channel_peers_cached(channel_id, &src_addr);
         for peer_addr in peers {
             if let Err(e) = socket.send_to(data, peer_addr).await {
                 tracing::trace!("UDP send to {} failed: {}", peer_addr, e);

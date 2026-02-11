@@ -13,8 +13,11 @@ use tc_shared::{extract_frames, write_tcp_frame, ClientMessage, ServerMessage};
 
 use crate::state::ServerState;
 
+/// Capacity for per-client outgoing message queue.
+const CLIENT_QUEUE_CAPACITY: usize = 128;
+
 /// Per-client sender for outgoing TCP messages.
-pub type ClientSender = mpsc::UnboundedSender<ServerMessage>;
+pub type ClientSender = mpsc::Sender<ServerMessage>;
 
 /// Shared map of all connected clients' senders, keyed by TCP address.
 pub type ClientSenders = Arc<RwLock<HashMap<SocketAddr, ClientSender>>>;
@@ -71,8 +74,8 @@ async fn handle_client(
     };
     tracing::info!(%peer_addr, %name, "client registered");
 
-    // Create outgoing message channel
-    let (tx, rx) = mpsc::unbounded_channel::<ServerMessage>();
+    // Create outgoing message channel (bounded to prevent memory growth)
+    let (tx, rx) = mpsc::channel::<ServerMessage>(CLIENT_QUEUE_CAPACITY);
     senders.write().await.insert(peer_addr, tx);
 
     // Writer task: sends queued ServerMessages to this client
@@ -103,7 +106,7 @@ async fn handle_client(
 
 async fn writer_task<W: AsyncWrite + Unpin>(
     mut writer: W,
-    mut rx: mpsc::UnboundedReceiver<ServerMessage>,
+    mut rx: mpsc::Receiver<ServerMessage>,
 ) {
     while let Some(msg) = rx.recv().await {
         if let Err(e) = write_tcp_frame(&mut writer, &msg).await {
@@ -301,11 +304,13 @@ async fn handle_message(
     Ok(())
 }
 
-/// Send a message to a specific client.
+/// Send a message to a specific client (non-blocking, drops on full queue).
 async fn send_to(senders: &ClientSenders, addr: &SocketAddr, msg: ServerMessage) {
     let senders = senders.read().await;
     if let Some(tx) = senders.get(addr) {
-        let _ = tx.send(msg);
+        if tx.try_send(msg).is_err() {
+            tracing::debug!(%addr, "client queue full, dropping message");
+        }
     }
 }
 
@@ -324,7 +329,9 @@ async fn broadcast_to_channel(
             continue;
         }
         if let Some(tx) = senders.get(addr) {
-            let _ = tx.send(msg.clone());
+            if tx.try_send(msg.clone()).is_err() {
+                tracing::debug!(%addr, "client queue full, dropping broadcast");
+            }
         }
     }
 }

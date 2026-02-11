@@ -1,4 +1,6 @@
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -104,7 +106,7 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
 /// Start playing audio on an output device.
 /// If `device_name` is provided, uses that device; otherwise uses the system default.
 /// Returns a stream handle (must be kept alive) and a sender to feed PCM frames.
-pub fn start_playback(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Sender<Vec<f32>>)> {
+pub fn start_playback(device_name: Option<&str>, playback_cap: Arc<AtomicU32>) -> Result<(Stream, std_mpsc::Sender<Vec<f32>>)> {
     let host = cpal::default_host();
     let device = if let Some(name) = device_name {
         host.output_devices()
@@ -138,8 +140,9 @@ pub fn start_playback(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Se
             }
 
             // If we've accumulated too much, drop oldest to cap latency
-            if playback_buf.len() > config::MAX_PLAYBACK_BUF {
-                let excess = playback_buf.len() - config::MAX_PLAYBACK_BUF;
+            let cap = playback_cap.load(Ordering::Relaxed) as usize;
+            if playback_buf.len() > cap {
+                let excess = playback_buf.len() - cap;
                 playback_buf.drain(..excess);
             }
 
