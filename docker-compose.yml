@@ -1,0 +1,10 @@
+services:
+  server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "7100:7100"      # TCP control
+      - "7101:7101/udp"  # UDP voice
+    command:
+      - --log-level
+      - info

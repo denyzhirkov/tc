@@ -1,0 +1,6 @@
+target/
+.git/
+*.md
+.gitignore
+.dockerignore
+tc.toml

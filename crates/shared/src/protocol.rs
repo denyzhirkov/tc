@@ -1,13 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Default server TCP port.
-pub const DEFAULT_TCP_PORT: u16 = 7100;
-/// Default server UDP port.
-pub const DEFAULT_UDP_PORT: u16 = 7101;
-/// Length of generated channel IDs.
-pub const CHANNEL_ID_LEN: usize = 5;
-/// Max audio packet payload size (bytes).
-pub const MAX_AUDIO_PAYLOAD: usize = 1500;
+use crate::config;
 
 // ---------------------------------------------------------------------------
 // Channel ID
@@ -21,7 +14,7 @@ pub fn generate_channel_id() -> ChannelId {
     use rand::Rng;
     const CHARSET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
     let mut rng = rand::thread_rng();
-    (0..CHANNEL_ID_LEN)
+    (0..config::CHANNEL_ID_LEN)
         .map(|_| {
             let idx = rng.gen_range(0..CHARSET.len());
             CHARSET[idx] as char
@@ -43,6 +36,8 @@ pub enum ClientMessage {
     LeaveChannel,
     /// Send a text chat message.
     ChatMessage { text: String },
+    /// Set display name.
+    SetName { name: String },
     /// Ping (keep-alive).
     Ping,
 }
@@ -59,6 +54,10 @@ pub enum ServerMessage {
     JoinedChannel {
         channel_id: ChannelId,
         participants: Vec<String>,
+        /// Token to send in UDP hello to bind UDP address to this TCP session.
+        udp_token: u64,
+        /// 32-byte XChaCha20-Poly1305 channel encryption key.
+        voice_key: Vec<u8>,
     },
     /// Another participant joined your channel.
     PeerJoined { peer_name: String },
@@ -68,6 +67,8 @@ pub enum ServerMessage {
     LeftChannel,
     /// Incoming text chat from a peer.
     ChatMessage { from: String, text: String },
+    /// Name was changed.
+    NameChanged { old_name: String, new_name: String },
     /// Error from server.
     Error { message: String },
     /// Pong (keep-alive response).
@@ -75,14 +76,38 @@ pub enum ServerMessage {
 }
 
 // ---------------------------------------------------------------------------
-// UDP Voice Packet (binary, not serde — keep it lean)
+// UDP Packets (binary, not serde — keep it lean)
 // ---------------------------------------------------------------------------
 
-/// Header for a UDP voice packet.
+/// UDP hello packet size: `[seq=0: u32][token: u64]` = 12 bytes.
+const UDP_HELLO_SIZE: usize = 12;
+
+/// Encode a UDP hello packet with the given token.
+pub fn encode_udp_hello(token: u64) -> Vec<u8> {
+    let mut buf = vec![0u8; UDP_HELLO_SIZE];
+    buf[4..12].copy_from_slice(&token.to_be_bytes());
+    buf
+}
+
+/// Try to decode a UDP hello packet. Returns the token if valid.
+pub fn decode_udp_hello(data: &[u8]) -> Option<u64> {
+    if data.len() != UDP_HELLO_SIZE {
+        return None;
+    }
+    let seq = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+    if seq != 0 {
+        return None;
+    }
+    Some(u64::from_be_bytes([
+        data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+    ]))
+}
+
+/// Voice packet.
 ///
 /// Wire format (big-endian):
 /// ```text
-/// [0..4]   sequence: u32
+/// [0..4]   sequence: u32 (always > 0 for voice)
 /// [4..5]   channel_id_len: u8
 /// [5..5+N] channel_id: UTF-8 bytes
 /// [rest]   opus_data
@@ -112,6 +137,9 @@ impl VoicePacket {
             return None;
         }
         let sequence = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        if sequence == 0 {
+            return None;
+        }
         let id_len = data[4] as usize;
         if data.len() < 5 + id_len + 1 {
             return None;
@@ -123,6 +151,18 @@ impl VoicePacket {
             channel_id,
             opus_data,
         })
+    }
+
+    /// Parse only the channel_id from raw bytes without copying opus_data.
+    pub fn parse_channel_id(data: &[u8]) -> Option<&str> {
+        if data.len() < 6 {
+            return None;
+        }
+        let id_len = data[4] as usize;
+        if data.len() < 5 + id_len {
+            return None;
+        }
+        std::str::from_utf8(&data[5..5 + id_len]).ok()
     }
 }
 
@@ -141,16 +181,55 @@ pub fn encode_tcp_frame<T: Serialize>(msg: &T) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Try to extract one complete frame from a buffer.
-/// Returns `Some((message_bytes, consumed))` if a complete frame is available.
-pub fn try_decode_frame(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
+/// Returns `Ok(Some((message_bytes, consumed)))` if a complete frame is available.
+/// Returns `Err` if the frame exceeds the configured max frame size.
+pub fn try_decode_frame(buf: &[u8]) -> Result<Option<(Vec<u8>, usize)>, FrameError> {
     if buf.len() < 4 {
-        return None;
+        return Ok(None);
     }
     let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    if len > config::MAX_FRAME_SIZE {
+        return Err(FrameError::TooLarge(len));
+    }
     let total = 4 + len;
     if buf.len() < total {
-        return None;
+        return Ok(None);
     }
-    Some((buf[4..total].to_vec(), total))
+    Ok(Some((buf[4..total].to_vec(), total)))
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum FrameError {
+    #[error("frame too large: {0} bytes (max {MAX_FRAME_SIZE})", MAX_FRAME_SIZE = config::MAX_FRAME_SIZE)]
+    TooLarge(usize),
+}
+
+/// Extract all complete frames from a pending buffer, draining consumed bytes.
+/// Returns decoded frame payloads.
+pub fn extract_frames(pending: &mut Vec<u8>) -> Result<Vec<Vec<u8>>, FrameError> {
+    let mut frames = Vec::new();
+    loop {
+        match try_decode_frame(pending) {
+            Ok(Some((data, consumed))) => {
+                frames.push(data);
+                pending.drain(..consumed);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(frames)
+}
+
+/// Encode a message and write it as a length-prefixed frame, then flush.
+pub async fn write_tcp_frame<W, T>(writer: &mut W, msg: &T) -> anyhow::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+    T: Serialize,
+{
+    use tokio::io::AsyncWriteExt;
+    let frame = encode_tcp_frame(msg)?;
+    writer.write_all(&frame).await?;
+    writer.flush().await?;
+    Ok(())
+}

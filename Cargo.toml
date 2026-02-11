@@ -25,7 +25,18 @@ crossterm = "0.28"
 
 # Utilities
 anyhow = "1"
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
+chacha20poly1305 = "0.10"
 bytes = "1"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+
+# TLS
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pki-types = "1"
+rcgen = "0.13"
+rustls-pemfile = "2"
