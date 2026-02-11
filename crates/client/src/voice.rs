@@ -492,8 +492,12 @@ pub async fn start_voice(
                     }
                 }
                 Err(e) => {
+                    // On Windows, connected UDP sockets surface ICMP errors
+                    // (WSAECONNRESET / 10054) on the next recv(). This is
+                    // transient — just retry instead of killing the receiver.
                     tracing::warn!("UDP recv error: {}", e);
-                    break;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    continue;
                 }
             }
         }
