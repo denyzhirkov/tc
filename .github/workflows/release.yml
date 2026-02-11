@@ -19,12 +19,16 @@ jobs:
         include:
           - os: macos-latest
             suffix: macos-arm64
-          - os: macos-13
+            target: aarch64-apple-darwin
+          - os: macos-latest
             suffix: macos-amd64
+            target: x86_64-apple-darwin
           - os: ubuntu-latest
             suffix: linux-amd64
+            target: x86_64-unknown-linux-gnu
           - os: windows-latest
             suffix: windows-amd64
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -34,21 +38,25 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binaries
         run: |
           mkdir -p artifacts
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/release/tc-client.exe "artifacts/tc-client-${{ matrix.suffix }}.exe"
-            cp target/release/tc-server.exe "artifacts/tc-server-${{ matrix.suffix }}.exe"
+            cp target/${{ matrix.target }}/release/tc-client.exe "artifacts/tc-client-${{ matrix.suffix }}.exe"
+            cp target/${{ matrix.target }}/release/tc-server.exe "artifacts/tc-server-${{ matrix.suffix }}.exe"
           else
-            cp target/release/tc-client "artifacts/tc-client-${{ matrix.suffix }}"
-            cp target/release/tc-server "artifacts/tc-server-${{ matrix.suffix }}"
+            cp target/${{ matrix.target }}/release/tc-client "artifacts/tc-client-${{ matrix.suffix }}"
+            cp target/${{ matrix.target }}/release/tc-server "artifacts/tc-server-${{ matrix.suffix }}"
           fi
 
       - name: Upload artifacts
