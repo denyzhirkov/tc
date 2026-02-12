@@ -292,12 +292,14 @@ pub async fn start_voice(
     let (_capture_stream, capture_rx) = audio::start_capture(input_device.as_deref())?;
     let (_playback_stream, playback_tx) = audio::start_playback(output_device.as_deref(), playback_cap.clone())?;
 
-    // Sender task (capture → encode → UDP)
-    let send_socket = socket.clone();
+    // Sender pipeline: std::thread (capture → encode) → channel → tokio task (UDP send)
+    // Using a channel avoids calling tokio try_send() from a non-runtime thread,
+    // which fails on Windows IOCP because readiness isn't tracked outside async context.
+    let (encoded_tx, mut encoded_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+
     let send_channel = channel_id.clone();
     let send_muted = muted.clone();
     let send_stats = stats.clone();
-    let send_bytes_tx = bytes_tx.clone();
     let send_vad_threshold = vad_threshold.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let send_stop = stop.clone();
@@ -403,12 +405,27 @@ pub async fn start_voice(
             };
 
             let bytes = packet.encode();
-            // Use blocking send on the tokio socket via a handle
-            let bytes_len = bytes.len();
-            if send_socket.try_send(&bytes).is_ok() {
-                send_bytes_tx.fetch_add(bytes_len as u64, Ordering::Relaxed);
+            if encoded_tx.blocking_send(bytes).is_err() {
+                break; // receiver dropped, pipeline shutting down
             }
             sequence = sequence.wrapping_add(1);
+        }
+    });
+
+    // Tokio task that drains encoded packets and sends via UDP (IOCP-safe on Windows)
+    let send_socket = socket.clone();
+    let send_bytes_tx = bytes_tx.clone();
+    let _send_task = tokio::spawn(async move {
+        while let Some(bytes) = encoded_rx.recv().await {
+            let bytes_len = bytes.len();
+            match send_socket.send(&bytes).await {
+                Ok(_) => {
+                    send_bytes_tx.fetch_add(bytes_len as u64, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    tracing::trace!("UDP send error: {}", e);
+                }
+            }
         }
     });
 
