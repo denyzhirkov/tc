@@ -37,9 +37,10 @@ impl OpusEncoder {
     }
 
     /// Encode a frame of f32 PCM samples into Opus bytes.
-    pub fn encode(&mut self, pcm: &[f32]) -> Result<Vec<u8>> {
+    /// Returns a slice into the internal buffer (zero-copy).
+    pub fn encode(&mut self, pcm: &[f32]) -> Result<&[u8]> {
         let len = self.encoder.encode_float(pcm, &mut self.encode_buf)?;
-        Ok(self.encode_buf[..len].to_vec())
+        Ok(&self.encode_buf[..len])
     }
 }
 

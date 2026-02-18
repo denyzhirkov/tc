@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,9 @@ pub struct UserSettings {
     pub vad_level: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// TOFU: trusted server certificate fingerprints (server_addr → "sha256:hex").
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub trusted_servers: HashMap<String, String>,
 }
 
 fn settings_path() -> PathBuf {

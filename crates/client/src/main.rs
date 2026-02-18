@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -15,6 +15,12 @@ mod voice;
 
 use tc_shared::config;
 use tc_shared::{ClientMessage, ServerMessage};
+use tls::TofuState;
+use tui::ConnectionState;
+
+/// Auto-reconnect backoff parameters.
+const RECONNECT_BASE_MS: u64 = 1000;
+const RECONNECT_MAX_MS: u64 = 30_000;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -45,24 +51,30 @@ async fn main() -> Result<()> {
     }
     let mut terminal = tui::init_terminal()?;
 
+    // TOFU state for TLS certificate verification
+    let tofu = TofuState::new(user_settings.trusted_servers);
+
     // Try initial connection
     let mut conn: Option<network::ServerConnection> = None;
-    let mut server_rx: Option<mpsc::UnboundedReceiver<Option<ServerMessage>>> = None;
+    let mut server_rx: Option<mpsc::Receiver<Option<ServerMessage>>> = None;
 
     app.add_message(format!("connecting to {}...", server_addr));
     terminal.draw(|f| tui::draw(f, &app))?;
 
-    match network::connect(&server_addr).await {
+    match network::connect(&server_addr, &tofu).await {
         Ok((c, rx)) => {
+            handle_tofu_result(&tofu, &mut app);
             app.add_message("connected!".into());
+            app.conn_state = ConnectionState::Connected;
             if let Some(name) = app.name.clone() {
                 let _ = c.send(ClientMessage::SetName { name });
             }
             conn = Some(c);
             server_rx = Some(rx);
+            save_tofu(&tofu, &app);
         }
         Err(_) => {
-            app.disconnected = true;
+            app.conn_state = ConnectionState::Disconnected;
             app.add_message("server not configured, connection failed".into());
             app.add_message("use /server <ip> to set address, then /reconnect".into());
         }
@@ -71,26 +83,49 @@ async fn main() -> Result<()> {
     // Voice handle — set when we join a channel
     let mut voice_handle: Option<voice::VoiceHandle> = None;
 
+    // Auto-reconnect state
+    let mut reconnect_attempt: u32 = 0;
+    let mut next_reconnect: Option<Instant> = None;
+
+    let mut last_stats_tick = Instant::now();
+
     loop {
-        // Update voice quality info
-        app.voice_quality = voice_handle.as_ref().map(|vh| {
-            let (loss, tier) = vh.quality_info();
-            (loss, tier.to_string())
-        });
-        app.voice_traffic = voice_handle.as_ref().map(|vh| vh.traffic_info());
+        // Periodic voice stats update (~100ms)
+        if app.voice_active && last_stats_tick.elapsed() >= Duration::from_millis(100) {
+            app.voice_quality = voice_handle.as_ref().map(|vh| {
+                let (loss, tier) = vh.quality_info();
+                (loss, tier.to_string())
+            });
+            app.voice_traffic = voice_handle.as_ref().map(|vh| vh.traffic_info());
+            app.active_speakers = voice_handle
+                .as_ref()
+                .map(|vh| vh.active_speakers())
+                .unwrap_or_default();
+            app.dirty = true;
+            last_stats_tick = Instant::now();
+        }
 
         // Tick matrix rain if active
         if app.matrix_mode {
             let size = terminal.size()?;
             let rate = app.voice_traffic.map(|(tx, rx, _)| tx + rx).unwrap_or(0.0);
             app.matrix_state.tick(size.width, size.height, rate);
+            app.dirty = true;
         }
 
-        // Draw
-        terminal.draw(|f| tui::draw(f, &app))?;
+        // Draw only when state changed
+        if app.dirty {
+            terminal.draw(|f| tui::draw(f, &app))?;
+            app.dirty = false;
+        }
 
-        // Poll keyboard events (non-blocking, 50ms timeout)
-        let action = tui::poll_event(&mut app, Duration::from_millis(50));
+        // Adaptive poll timeout: fast when animating, slow when idle
+        let poll_timeout = if app.voice_active || app.matrix_mode {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(200)
+        };
+        let action = tui::poll_event(&mut app, poll_timeout);
 
         match action {
             tui::Action::Command(input) => {
@@ -101,6 +136,9 @@ async fn main() -> Result<()> {
                     &mut app,
                     &muted,
                     &mut voice_handle,
+                    &mut reconnect_attempt,
+                    &mut next_reconnect,
+                    &tofu,
                 )
                 .await;
             }
@@ -111,19 +149,75 @@ async fn main() -> Result<()> {
         // Drain server messages
         if let Some(ref mut rx) = server_rx {
             while let Ok(msg) = rx.try_recv() {
+                app.dirty = true;
                 match msg {
                     Some(msg) => {
                         handle_server_message(msg, &mut conn, &mut app, &muted, &mut voice_handle).await;
                     }
                     None => {
-                        app.disconnected = true;
+                        // Save current channel for auto-rejoin
+                        if let Some(ch) = app.channel.take() {
+                            app.rejoin_channel = Some(ch);
+                        }
                         conn = None;
                         voice_handle.take();
                         app.voice_active = false;
-                        app.channel = None;
                         app.participants.clear();
                         app.voice_join_params = None;
                         app.add_message("disconnected from server".into());
+                        // Start auto-reconnect
+                        reconnect_attempt = 0;
+                        next_reconnect = Some(Instant::now() + Duration::from_millis(RECONNECT_BASE_MS));
+                        app.conn_state = ConnectionState::Reconnecting { attempt: 1 };
+                    }
+                }
+            }
+        }
+
+        // Auto-reconnect logic
+        if let Some(deadline) = next_reconnect {
+            if Instant::now() >= deadline {
+                reconnect_attempt += 1;
+                app.conn_state = ConnectionState::Reconnecting { attempt: reconnect_attempt };
+
+                match network::connect(&app.server_addr, &tofu).await {
+                    Ok((c, rx)) => {
+                        handle_tofu_result(&tofu, &mut app);
+                        app.add_message("reconnected!".into());
+                        app.conn_state = ConnectionState::Connected;
+                        if let Some(name) = app.name.clone() {
+                            let _ = c.send(ClientMessage::SetName { name });
+                        }
+                        // Auto-rejoin previous channel
+                        if let Some(ref channel_id) = app.rejoin_channel.take() {
+                            app.add_message(format!("rejoining #{}...", channel_id));
+                            let _ = c.send(ClientMessage::JoinChannel {
+                                channel_id: channel_id.clone(),
+                            });
+                        }
+                        conn = Some(c);
+                        server_rx = Some(rx);
+                        next_reconnect = None;
+                        reconnect_attempt = 0;
+                        save_tofu(&tofu, &app);
+                    }
+                    Err(_) => {
+                        // Stop auto-reconnect on TOFU mismatch — user must /trust
+                        if matches!(tofu.last_result(), Some(tls::TofuResult::Mismatch { .. })) {
+                            if let Some(tls::TofuResult::Mismatch { expected, actual }) = tofu.last_result() {
+                                app.add_message("WARNING: server certificate has changed!".into());
+                                app.add_message(format!("  expected: {}", expected));
+                                app.add_message(format!("  actual:   {}", actual));
+                                app.add_message("use /trust to accept the new certificate".into());
+                            }
+                            app.conn_state = ConnectionState::Disconnected;
+                            next_reconnect = None;
+                        } else {
+                            let delay_ms = (RECONNECT_BASE_MS * 2u64.saturating_pow(reconnect_attempt.min(5)))
+                                .min(RECONNECT_MAX_MS);
+                            tracing::debug!("reconnect attempt {} failed, next in {}ms", reconnect_attempt, delay_ms);
+                            next_reconnect = Some(Instant::now() + Duration::from_millis(delay_ms));
+                        }
                     }
                 }
             }
@@ -148,19 +242,23 @@ fn send_or_disconnect(
     if let Some(ref c) = conn {
         if c.send(msg).is_err() {
             *conn = None;
-            app.disconnected = true;
+            app.conn_state = ConnectionState::Disconnected;
             app.add_message("disconnected from server".into());
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_command(
     input: &str,
     conn: &mut Option<network::ServerConnection>,
-    server_rx: &mut Option<mpsc::UnboundedReceiver<Option<ServerMessage>>>,
+    server_rx: &mut Option<mpsc::Receiver<Option<ServerMessage>>>,
     app: &mut tui::App,
     muted: &Arc<AtomicBool>,
     voice_handle: &mut Option<voice::VoiceHandle>,
+    reconnect_attempt: &mut u32,
+    next_reconnect: &mut Option<Instant>,
+    tofu: &TofuState,
 ) {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
 
@@ -171,6 +269,13 @@ async fn handle_command(
             if app.matrix_mode {
                 app.matrix_state = tui::MatrixState::new();
             }
+            return;
+        }
+        "/trust" => {
+            tofu.remove_server(&app.server_addr);
+            app.add_message(format!("cleared fingerprint for {}, reconnecting...", app.server_addr));
+            save_tofu(tofu, app);
+            do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
             return;
         }
         "/server" => {
@@ -184,8 +289,8 @@ async fn handle_command(
                     save_settings(app);
                     app.add_message(format!("server address set to {}", app.server_addr));
                     // Auto-reconnect if not connected
-                    if app.disconnected {
-                        do_reconnect(conn, server_rx, app).await;
+                    if app.conn_state.is_disconnected() {
+                        do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
                     }
                 } else {
                     app.add_message(format!("current server: {}", app.server_addr));
@@ -196,7 +301,7 @@ async fn handle_command(
             return;
         }
         "/reconnect" => {
-            do_reconnect(conn, server_rx, app).await;
+            do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
             return;
         }
         "/config" => {
@@ -257,7 +362,7 @@ async fn handle_command(
     }
 
     // Commands that require a connection
-    if app.disconnected {
+    if app.conn_state.is_disconnected() {
         app.add_message("not connected — use /server <ip> and /reconnect".into());
         return;
     }
@@ -289,6 +394,7 @@ async fn handle_command(
             app.channel = None;
             app.participants.clear();
             app.voice_join_params = None;
+            app.rejoin_channel = None;
         }
         _ => {
             if !input.starts_with('/') {
@@ -306,31 +412,55 @@ async fn handle_command(
 
 async fn do_reconnect(
     conn: &mut Option<network::ServerConnection>,
-    server_rx: &mut Option<mpsc::UnboundedReceiver<Option<ServerMessage>>>,
+    server_rx: &mut Option<mpsc::Receiver<Option<ServerMessage>>>,
     app: &mut tui::App,
+    reconnect_attempt: &mut u32,
+    next_reconnect: &mut Option<Instant>,
+    tofu: &TofuState,
 ) {
+    // Stop auto-reconnect if running
+    *next_reconnect = None;
+    *reconnect_attempt = 0;
+
     // Drop old connection
     conn.take();
     server_rx.take();
-    app.disconnected = true;
     app.voice_active = false;
     app.channel = None;
     app.participants.clear();
     app.voice_join_params = None;
 
+    app.conn_state = ConnectionState::Reconnecting { attempt: 1 };
     app.add_message(format!("connecting to {}...", app.server_addr));
 
-    match network::connect(&app.server_addr).await {
+    match network::connect(&app.server_addr, tofu).await {
         Ok((c, rx)) => {
+            handle_tofu_result(tofu, app);
             app.add_message("connected!".into());
-            app.disconnected = false;
+            app.conn_state = ConnectionState::Connected;
             if let Some(name) = app.name.clone() {
                 let _ = c.send(ClientMessage::SetName { name });
             }
+            // Auto-rejoin if we had a channel
+            if let Some(ref channel_id) = app.rejoin_channel.take() {
+                app.add_message(format!("rejoining #{}...", channel_id));
+                let _ = c.send(ClientMessage::JoinChannel {
+                    channel_id: channel_id.clone(),
+                });
+            }
             *conn = Some(c);
             *server_rx = Some(rx);
+            save_tofu(tofu, app);
         }
         Err(e) => {
+            // Check if it was a TOFU mismatch
+            if let Some(tls::TofuResult::Mismatch { expected, actual }) = tofu.last_result() {
+                app.add_message("WARNING: server certificate has changed!".into());
+                app.add_message(format!("  expected: {}", expected));
+                app.add_message(format!("  actual:   {}", actual));
+                app.add_message("use /trust to accept the new certificate".into());
+            }
+            app.conn_state = ConnectionState::Disconnected;
             app.add_message(format!("connection failed: {}", e));
         }
     }
@@ -372,6 +502,7 @@ async fn handle_server_message(
             });
 
             // Start voice
+            let my_name = app.name.clone().unwrap_or_else(|| "user".into());
             match voice::start_voice(
                 &app.server_addr,
                 channel_id,
@@ -381,6 +512,7 @@ async fn handle_server_message(
                 app.input_device.clone(),
                 app.output_device.clone(),
                 app.vad_threshold.clone(),
+                my_name,
             )
             .await
             {
@@ -408,6 +540,7 @@ async fn handle_server_message(
             app.channel = None;
             app.participants.clear();
             app.voice_join_params = None;
+            app.rejoin_channel = None;
             app.add_message("left channel".into());
         }
         ServerMessage::NameChanged { old_name, new_name } => {
@@ -587,6 +720,51 @@ fn handle_config_vad(value: &str, app: &mut tui::App) -> bool {
     }
 }
 
+fn handle_tofu_result(tofu: &TofuState, app: &mut tui::App) {
+    if let Some(result) = tofu.last_result() {
+        match result {
+            tls::TofuResult::TrustedNew(fp) => {
+                app.add_message(format!("new server fingerprint: {}", fp));
+            }
+            tls::TofuResult::TrustedKnown => {}
+            tls::TofuResult::Mismatch { expected, actual } => {
+                app.add_message("WARNING: server certificate has changed!".into());
+                app.add_message(format!("  expected: {}", expected));
+                app.add_message(format!("  actual:   {}", actual));
+            }
+        }
+    }
+}
+
+fn save_tofu(tofu: &TofuState, app: &tui::App) {
+    let trusted = tofu.trusted_map();
+    if !trusted.is_empty() {
+        // Re-save settings with updated trusted_servers
+        let default_server = format!("127.0.0.1:{}", config::TCP_PORT);
+        let threshold = f32::from_bits(app.vad_threshold.load(Ordering::Relaxed));
+        let level = vad_level_from_threshold(threshold);
+        let default_level = vad_level_from_threshold(config::VAD_RMS_THRESHOLD);
+
+        let s = settings::UserSettings {
+            server: if app.server_addr != default_server {
+                Some(app.server_addr.clone())
+            } else {
+                None
+            },
+            input_device: app.input_device.clone(),
+            output_device: app.output_device.clone(),
+            vad_level: if level != default_level {
+                Some(level)
+            } else {
+                None
+            },
+            name: app.name.clone(),
+            trusted_servers: trusted,
+        };
+        s.save();
+    }
+}
+
 fn save_settings(app: &tui::App) {
     let default_server = format!("127.0.0.1:{}", config::TCP_PORT);
     let threshold = f32::from_bits(app.vad_threshold.load(Ordering::Relaxed));
@@ -607,6 +785,7 @@ fn save_settings(app: &tui::App) {
             None
         },
         name: app.name.clone(),
+        trusted_servers: Default::default(),
     };
     s.save();
 }
@@ -624,6 +803,7 @@ async fn restart_voice(
     voice_handle.take();
     app.voice_active = false;
 
+    let my_name = app.name.clone().unwrap_or_else(|| "user".into());
     match voice::start_voice(
         &app.server_addr,
         params.channel_id,
@@ -633,6 +813,7 @@ async fn restart_voice(
         app.input_device.clone(),
         app.output_device.clone(),
         app.vad_threshold.clone(),
+        my_name,
     )
     .await
     {

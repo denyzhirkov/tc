@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use tokio::net::UdpSocket;
 
-use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use tc_shared::{config, encode_udp_hello, ChannelId, VoicePacket};
+use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePacket};
 
 use crate::audio;
 use crate::codec::{OpusDecoder, OpusEncoder};
@@ -112,10 +112,14 @@ fn seq_before(a: u32, b: u32) -> bool {
     diff > 0 && diff < 0x8000_0000
 }
 
-/// Adaptive jitter buffer: dynamically sizes based on observed inter-arrival jitter.
+/// Adaptive jitter buffer backed by a fixed-size ring.
 /// Uses RFC 3550-style jitter estimation to pick optimal buffer depth.
+/// Ring buffer avoids HashMap allocation overhead and improves cache locality.
 struct JitterBuffer {
-    buffer: HashMap<u32, Vec<u8>>,
+    /// Fixed-size ring of slots: (sequence, opus_data).
+    /// Indexed by `seq % capacity`. Storing seq validates freshness.
+    slots: Vec<Option<(u32, Vec<u8>)>>,
+    capacity: usize,
     next_seq: u32,
     started: bool,
     max_size: usize,
@@ -131,8 +135,12 @@ struct JitterBuffer {
 
 impl JitterBuffer {
     fn new() -> Self {
+        let capacity = config::JITTER_BUF_MAX;
+        let mut slots = Vec::with_capacity(capacity);
+        slots.resize_with(capacity, || None);
         Self {
-            buffer: HashMap::new(),
+            slots,
+            capacity,
             next_seq: 0,
             started: false,
             max_size: config::JITTER_BUF_INITIAL,
@@ -150,7 +158,13 @@ impl JitterBuffer {
         }
 
         // Drop packets that are too old (already played)
-        if self.started && seq_before(seq, self.next_seq) {
+        if seq_before(seq, self.next_seq) {
+            return;
+        }
+
+        // Drop packets too far ahead (would alias in the ring)
+        let ahead = seq.wrapping_sub(self.next_seq) as usize;
+        if ahead >= self.capacity {
             return;
         }
 
@@ -164,7 +178,8 @@ impl JitterBuffer {
         }
         self.last_arrival = Some(now);
 
-        self.buffer.insert(seq, opus_data);
+        let idx = seq as usize % self.capacity;
+        self.slots[idx] = Some((seq, opus_data));
 
         // Periodically adapt buffer size
         self.packets_since_adapt += 1;
@@ -173,8 +188,8 @@ impl JitterBuffer {
             self.adapt_size();
         }
 
-        // If buffer is too large, skip ahead
-        if self.buffer.len() > self.max_size {
+        // If too many packets buffered, skip ahead to drain faster
+        if self.count_buffered() > self.max_size {
             self.skip_to_oldest_available();
         }
     }
@@ -196,40 +211,55 @@ impl JitterBuffer {
 
     /// Returns the next packet if available, or None to signal a gap.
     fn pop(&mut self) -> PopResult {
-        if !self.started || self.buffer.is_empty() {
+        if !self.started {
             return PopResult::Empty;
         }
 
-        if let Some(data) = self.buffer.remove(&self.next_seq) {
-            self.next_seq = self.next_seq.wrapping_add(1);
-            PopResult::Packet(data)
-        } else {
-            // Check if we're too far behind — all buffered packets are ahead
-            let any_ahead = self.buffer.keys().any(|&s| seq_before(self.next_seq, s));
-            if any_ahead && self.buffer.keys().all(|&s| seq_before(self.next_seq, s)) {
-                // The expected packet is missing, signal a gap
+        let idx = self.next_seq as usize % self.capacity;
+        if let Some((seq, _)) = &self.slots[idx] {
+            if *seq == self.next_seq {
+                let (_, data) = self.slots[idx].take().unwrap();
                 self.next_seq = self.next_seq.wrapping_add(1);
-                PopResult::Missing
-            } else {
-                PopResult::Empty
+                return PopResult::Packet(data);
             }
+        }
+
+        // Slot empty or stale — check if any future packets exist
+        let has_future = (1..self.capacity).any(|offset| {
+            let future_seq = self.next_seq.wrapping_add(offset as u32);
+            let future_idx = future_seq as usize % self.capacity;
+            matches!(&self.slots[future_idx], Some((s, _)) if *s == future_seq)
+        });
+        if has_future {
+            // Clear stale data at current slot
+            self.slots[idx] = None;
+            self.next_seq = self.next_seq.wrapping_add(1);
+            PopResult::Missing
+        } else {
+            PopResult::Empty
         }
     }
 
+    /// Count valid buffered packets in the current window.
+    fn count_buffered(&self) -> usize {
+        (0..self.capacity)
+            .filter(|&offset| {
+                let seq = self.next_seq.wrapping_add(offset as u32);
+                let idx = seq as usize % self.capacity;
+                matches!(&self.slots[idx], Some((s, _)) if *s == seq)
+            })
+            .count()
+    }
+
+    /// Skip next_seq forward to the oldest available packet in the ring.
     fn skip_to_oldest_available(&mut self) {
-        // Find the smallest sequence (wrapping-aware) in the buffer
-        if let Some(&min_seq) = self.buffer.keys().min_by(|&&a, &&b| {
-            if seq_before(a, b) {
-                std::cmp::Ordering::Less
-            } else if a == b {
-                std::cmp::Ordering::Equal
-            } else {
-                std::cmp::Ordering::Greater
+        for offset in 0..self.capacity {
+            let seq = self.next_seq.wrapping_add(offset as u32);
+            let idx = seq as usize % self.capacity;
+            if matches!(&self.slots[idx], Some((s, _)) if *s == seq) {
+                self.next_seq = seq;
+                return;
             }
-        }) {
-            // Drop everything before min_seq
-            self.buffer.retain(|&s, _| !seq_before(s, min_seq));
-            self.next_seq = min_seq;
         }
     }
 
@@ -257,6 +287,7 @@ pub async fn start_voice(
     input_device: Option<String>,
     output_device: Option<String>,
     vad_threshold: Arc<AtomicU32>,
+    sender_name: String,
 ) -> Result<VoiceHandle> {
     let udp_addr = if server_addr.contains(':') {
         // Replace TCP port with UDP port
@@ -270,10 +301,33 @@ pub async fn start_voice(
     socket.connect(&udp_addr).await?;
     tracing::info!("UDP voice connected to {}", udp_addr);
 
-    // Send hello packets with token to register our UDP address (retry for reliability)
-    for _ in 0..config::UDP_HELLO_RETRIES {
-        socket.send(&encode_udp_hello(udp_token)).await?;
-        tokio::time::sleep(Duration::from_millis(config::UDP_HELLO_INTERVAL_MS)).await;
+    // Send hello packets with token, wait for ACK from server
+    let hello_pkt = encode_udp_hello(udp_token);
+    let mut ack_buf = vec![0u8; 16];
+    let mut registered = false;
+    for attempt in 0..config::UDP_HELLO_RETRIES {
+        socket.send(&hello_pkt).await?;
+        match tokio::time::timeout(
+            Duration::from_millis(config::UDP_HELLO_INTERVAL_MS),
+            socket.recv(&mut ack_buf),
+        )
+        .await
+        {
+            Ok(Ok(len)) => {
+                // Verify ACK: server echoes back the same hello packet
+                if decode_udp_hello(&ack_buf[..len]) == Some(udp_token) {
+                    tracing::debug!("UDP hello ACK received on attempt {}", attempt + 1);
+                    registered = true;
+                    break;
+                }
+            }
+            _ => {
+                tracing::trace!("UDP hello attempt {} — no ACK, retrying", attempt + 1);
+            }
+        }
+    }
+    if !registered {
+        tracing::warn!("UDP hello: no ACK after {} attempts, proceeding anyway", config::UDP_HELLO_RETRIES);
     }
 
     let socket = Arc::new(socket);
@@ -298,6 +352,8 @@ pub async fn start_voice(
     let (encoded_tx, mut encoded_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
     let send_channel = channel_id.clone();
+    // Truncate sender name to fit in a u8 length prefix
+    let send_name_bytes: Vec<u8> = sender_name.as_bytes().iter().take(255).copied().collect();
     let send_muted = muted.clone();
     let send_stats = stats.clone();
     let send_vad_threshold = vad_threshold.clone();
@@ -316,6 +372,8 @@ pub async fn start_voice(
         let mut current_tier = QualityTier::High;
         let mut frames_since_check: u32 = 0;
         let mut hangover_remaining: u32 = 0;
+        // Reusable buffer for building UDP packets: [header | nonce | ciphertext | tag]
+        let mut packet_buf = Vec::with_capacity(config::MAX_UDP_PACKET);
 
         loop {
             if send_stop.load(Ordering::Relaxed) {
@@ -384,28 +442,38 @@ pub async fn start_voice(
                 }
             };
 
-            // Encrypt opus data: [nonce][ciphertext+tag]
+            // Build UDP packet directly in reusable buffer:
+            // [seq:4][id_len:1][channel_id:N][nonce:24][ciphertext][tag:16]
+            packet_buf.clear();
+            packet_buf.extend_from_slice(&sequence.to_be_bytes());
+            let id_bytes = send_channel.as_bytes();
+            packet_buf.push(id_bytes.len() as u8);
+            packet_buf.extend_from_slice(id_bytes);
+
             let nonce_bytes: [u8; config::XCHACHA20_NONCE_SIZE] = rand::random();
             let nonce = XNonce::from(nonce_bytes);
-            let encrypted = match send_cipher.encrypt(&nonce, opus_data.as_ref()) {
-                Ok(ct) => ct,
+            packet_buf.extend_from_slice(&nonce_bytes);
+            let plaintext_start = packet_buf.len();
+            // Plaintext: [name_len:1][name:M][opus_data]
+            packet_buf.push(send_name_bytes.len() as u8);
+            packet_buf.extend_from_slice(&send_name_bytes);
+            packet_buf.extend_from_slice(opus_data);
+
+            // Encrypt in-place (avoids intermediate Vec allocations)
+            let tag = match send_cipher.encrypt_in_place_detached(
+                &nonce,
+                b"",
+                &mut packet_buf[plaintext_start..],
+            ) {
+                Ok(t) => t,
                 Err(_) => {
                     tracing::warn!("encrypt error");
                     continue;
                 }
             };
-            let mut sealed = Vec::with_capacity(config::XCHACHA20_NONCE_SIZE + encrypted.len());
-            sealed.extend_from_slice(&nonce_bytes);
-            sealed.extend_from_slice(&encrypted);
+            packet_buf.extend_from_slice(tag.as_slice());
 
-            let packet = VoicePacket {
-                sequence,
-                channel_id: send_channel.clone(),
-                opus_data: sealed,
-            };
-
-            let bytes = packet.encode();
-            if encoded_tx.blocking_send(bytes).is_err() {
+            if encoded_tx.blocking_send(packet_buf.clone()).is_err() {
                 break; // receiver dropped, pipeline shutting down
             }
             sequence = sequence.wrapping_add(1);
@@ -429,11 +497,15 @@ pub async fn start_voice(
         }
     });
 
+    // Active speakers: name → last heard timestamp
+    let speaking: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
+
     // Receiver task (UDP → decode → playback)
     let recv_socket = socket.clone();
     let recv_stats = stats.clone();
     let recv_bytes_rx = bytes_rx.clone();
     let recv_playback_cap = playback_cap.clone();
+    let recv_speaking = speaking.clone();
     let recv_handle = tokio::spawn(async move {
         let mut decoder = match OpusDecoder::new() {
             Ok(d) => d,
@@ -456,13 +528,26 @@ pub async fn start_voice(
                             continue;
                         }
                         let nonce = XNonce::from_slice(&packet.opus_data[..config::XCHACHA20_NONCE_SIZE]);
-                        let opus_data = match cipher.decrypt(nonce, &packet.opus_data[config::XCHACHA20_NONCE_SIZE..]) {
+                        let plaintext = match cipher.decrypt(nonce, &packet.opus_data[config::XCHACHA20_NONCE_SIZE..]) {
                             Ok(pt) => pt,
                             Err(_) => {
                                 tracing::trace!("decrypt failed, dropping packet");
                                 continue;
                             }
                         };
+
+                        // Parse sender name: [name_len:1][name:M][opus_data]
+                        if plaintext.is_empty() { continue; }
+                        let name_len = plaintext[0] as usize;
+                        if plaintext.len() < 1 + name_len { continue; }
+                        if name_len > 0 {
+                            if let Ok(name) = std::str::from_utf8(&plaintext[1..1 + name_len]) {
+                                if let Ok(mut sp) = recv_speaking.lock() {
+                                    sp.insert(name.to_string(), Instant::now());
+                                }
+                            }
+                        }
+                        let opus_data = plaintext[1 + name_len..].to_vec();
                         jitter.push(packet.sequence, opus_data);
 
                         // Sync playback buffer cap with jitter estimate
@@ -528,6 +613,7 @@ pub async fn start_voice(
         stop,
         bytes_tx,
         bytes_rx,
+        speaking,
         traffic: Mutex::new(TrafficSnapshot {
             instant: Instant::now(),
             bytes_tx: 0,
@@ -555,6 +641,7 @@ pub struct VoiceHandle {
     stop: Arc<AtomicBool>,
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
+    speaking: Arc<Mutex<HashMap<String, Instant>>>,
     traffic: Mutex<TrafficSnapshot>,
 }
 
@@ -565,6 +652,17 @@ impl VoiceHandle {
             (s.loss_percent, s.current_tier.as_str())
         } else {
             (0, "high")
+        }
+    }
+
+    /// Returns names of speakers active within the last 300ms.
+    pub fn active_speakers(&self) -> Vec<String> {
+        let cutoff = Duration::from_millis(300);
+        if let Ok(mut sp) = self.speaking.lock() {
+            sp.retain(|_, t| t.elapsed() < cutoff);
+            sp.keys().cloned().collect()
+        } else {
+            Vec::new()
         }
     }
 

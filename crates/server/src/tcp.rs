@@ -8,9 +8,11 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock};
 use tokio_rustls::TlsAcceptor;
 
+use bytes::BytesMut;
 use tc_shared::config;
 use tc_shared::{extract_frames, write_tcp_frame, ClientMessage, ServerMessage};
 
+use crate::rate_limit::RateLimiter;
 use crate::state::ServerState;
 
 /// Capacity for per-client outgoing message queue.
@@ -124,7 +126,9 @@ async fn reader_loop<R: AsyncRead + Unpin>(
     senders: &ClientSenders,
 ) -> Result<()> {
     let mut buf = vec![0u8; config::TCP_READ_BUF];
-    let mut pending = Vec::new();
+    let mut pending = BytesMut::new();
+    let mut cmd_limiter = RateLimiter::new(config::RATE_LIMIT_CMD_PER_SEC, config::RATE_LIMIT_CMD_BURST);
+    let mut create_limiter = RateLimiter::new(config::RATE_LIMIT_CREATE_PER_SEC, config::RATE_LIMIT_CREATE_BURST);
 
     loop {
         let n = reader.read(&mut buf).await?;
@@ -133,6 +137,11 @@ async fn reader_loop<R: AsyncRead + Unpin>(
         }
 
         pending.extend_from_slice(&buf[..n]);
+
+        if pending.len() > config::MAX_PENDING_BUF {
+            tracing::warn!(%peer_addr, "pending buffer overflow ({} bytes), disconnecting", pending.len());
+            anyhow::bail!("pending buffer overflow");
+        }
 
         let frames = match extract_frames(&mut pending) {
             Ok(f) => f,
@@ -143,6 +152,30 @@ async fn reader_loop<R: AsyncRead + Unpin>(
         };
         for frame_data in frames {
             let msg: ClientMessage = bincode::deserialize(&frame_data)?;
+
+            // Rate limit: Ping is always allowed, CreateChannel has a stricter limit
+            match &msg {
+                ClientMessage::Ping => {}
+                ClientMessage::CreateChannel => {
+                    if !cmd_limiter.check() || !create_limiter.check() {
+                        tracing::debug!(%peer_addr, "rate limited (create)");
+                        send_to(senders, &peer_addr, ServerMessage::Error {
+                            message: "rate limited, slow down".into(),
+                        }).await;
+                        continue;
+                    }
+                }
+                _ => {
+                    if !cmd_limiter.check() {
+                        tracing::debug!(%peer_addr, "rate limited");
+                        send_to(senders, &peer_addr, ServerMessage::Error {
+                            message: "rate limited, slow down".into(),
+                        }).await;
+                        continue;
+                    }
+                }
+            }
+
             handle_message(peer_addr, &mut name, msg, state, senders).await?;
         }
     }

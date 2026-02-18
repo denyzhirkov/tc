@@ -1,24 +1,121 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error, SignatureScheme};
+use sha2::{Digest, Sha256};
 use tokio_rustls::TlsConnector;
 
-/// Certificate verifier that accepts any server certificate (skip verification).
-#[derive(Debug)]
-struct SkipVerification;
+/// Compute SHA-256 fingerprint of a DER-encoded certificate.
+pub fn cert_fingerprint(cert: &CertificateDer<'_>) -> String {
+    let hash = Sha256::digest(cert.as_ref());
+    let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("sha256:{}", hex)
+}
 
-impl ServerCertVerifier for SkipVerification {
+/// Result of TOFU verification shared back to the caller.
+#[derive(Debug, Clone)]
+pub enum TofuResult {
+    /// First time seeing this server — fingerprint was trusted automatically.
+    TrustedNew(String),
+    /// Known fingerprint matched.
+    TrustedKnown,
+    /// Fingerprint changed — connection was rejected.
+    Mismatch { expected: String, actual: String },
+}
+
+/// Shared state for the TOFU verifier.
+#[derive(Clone)]
+pub struct TofuState {
+    inner: Arc<Mutex<TofuInner>>,
+}
+
+#[derive(Debug)]
+struct TofuInner {
+    /// Known trusted fingerprints: server_addr → "sha256:hex".
+    trusted: HashMap<String, String>,
+    /// Server address being connected to (set before each connect).
+    current_server: String,
+    /// Result of the last verification.
+    last_result: Option<TofuResult>,
+}
+
+impl TofuState {
+    pub fn new(trusted: HashMap<String, String>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(TofuInner {
+                trusted,
+                current_server: String::new(),
+                last_result: None,
+            })),
+        }
+    }
+
+    /// Set the server address before initiating a TLS connection.
+    pub fn set_current_server(&self, addr: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.current_server = addr.to_string();
+        inner.last_result = None;
+    }
+
+    /// Get the result of the last TLS verification.
+    pub fn last_result(&self) -> Option<TofuResult> {
+        self.inner.lock().unwrap().last_result.clone()
+    }
+
+    /// Get all trusted fingerprints (for saving to settings).
+    pub fn trusted_map(&self) -> HashMap<String, String> {
+        self.inner.lock().unwrap().trusted.clone()
+    }
+
+    /// Trust a specific server with a new fingerprint (for /trust command).
+    pub fn trust_server(&self, addr: &str, fingerprint: &str) {
+        self.inner.lock().unwrap().trusted.insert(addr.to_string(), fingerprint.to_string());
+    }
+
+    /// Remove a trusted server (for /trust reset).
+    pub fn remove_server(&self, addr: &str) {
+        self.inner.lock().unwrap().trusted.remove(addr);
+    }
+}
+
+/// TOFU certificate verifier: Trust On First Use.
+#[derive(Debug)]
+struct TofuVerifier {
+    state: Arc<Mutex<TofuInner>>,
+}
+
+impl ServerCertVerifier for TofuVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
-        Ok(ServerCertVerified::assertion())
+        let fingerprint = cert_fingerprint(end_entity);
+        let mut inner = self.state.lock().unwrap();
+        let server = inner.current_server.clone();
+
+        if let Some(known) = inner.trusted.get(&server) {
+            if *known == fingerprint {
+                inner.last_result = Some(TofuResult::TrustedKnown);
+                Ok(ServerCertVerified::assertion())
+            } else {
+                inner.last_result = Some(TofuResult::Mismatch {
+                    expected: known.clone(),
+                    actual: fingerprint,
+                });
+                Err(Error::General("server certificate fingerprint changed".into()))
+            }
+        } else {
+            // First time — trust it
+            inner.trusted.insert(server, fingerprint.clone());
+            inner.last_result = Some(TofuResult::TrustedNew(fingerprint));
+            Ok(ServerCertVerified::assertion())
+        }
     }
 
     fn verify_tls12_signature(
@@ -56,11 +153,14 @@ impl ServerCertVerifier for SkipVerification {
     }
 }
 
-/// Build a TLS connector that accepts any server certificate.
-pub fn tls_connector() -> TlsConnector {
+/// Build a TLS connector with TOFU verification.
+pub fn tls_connector(tofu: &TofuState) -> TlsConnector {
+    let verifier = TofuVerifier {
+        state: Arc::clone(&tofu.inner),
+    };
     let config = ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipVerification))
+        .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
 
     TlsConnector::from(Arc::new(config))

@@ -145,6 +145,24 @@ pub struct VoiceJoinParams {
     pub voice_key: Vec<u8>,
 }
 
+/// Connection state for auto-reconnect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionState {
+    Connected,
+    Disconnected,
+    Reconnecting { attempt: u32 },
+}
+
+impl ConnectionState {
+    pub fn is_connected(&self) -> bool {
+        matches!(self, Self::Connected)
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        !self.is_connected()
+    }
+}
+
 /// Application state for the TUI.
 pub struct App {
     /// Text input buffer.
@@ -171,8 +189,8 @@ pub struct App {
     pub voice_quality: Option<(u8, String)>,
     /// Voice traffic: (tx_kbps, rx_kbps, total_bytes).
     pub voice_traffic: Option<(f64, f64, u64)>,
-    /// Whether the server connection is lost.
-    pub disconnected: bool,
+    /// Connection state (connected, disconnected, reconnecting).
+    pub conn_state: ConnectionState,
     /// Whether to quit.
     pub should_quit: bool,
     /// Indices into COMMANDS that match current input.
@@ -189,9 +207,17 @@ pub struct App {
     pub vad_threshold: Arc<AtomicU32>,
     /// Display name.
     pub name: Option<String>,
+    /// Channel ID to auto-rejoin after reconnect.
+    pub rejoin_channel: Option<ChannelId>,
+    /// Scroll offset from bottom (0 = latest messages visible).
+    pub scroll_offset: usize,
+    /// Names of currently speaking users.
+    pub active_speakers: Vec<String>,
     /// Matrix rain easter egg.
     pub matrix_mode: bool,
     pub matrix_state: MatrixState,
+    /// Dirty flag — true when UI needs redraw.
+    pub dirty: bool,
 }
 
 /// Actions produced by the TUI event loop.
@@ -231,7 +257,7 @@ impl App {
             server_addr,
             voice_quality: None,
             voice_traffic: None,
-            disconnected: false,
+            conn_state: ConnectionState::Disconnected,
             should_quit: false,
             autocomplete: Vec::new(),
             autocomplete_sel: 0,
@@ -240,8 +266,12 @@ impl App {
             voice_join_params: None,
             vad_threshold: Arc::new(AtomicU32::new(config::VAD_RMS_THRESHOLD.to_bits())),
             name: None,
+            rejoin_channel: None,
+            scroll_offset: 0,
+            active_speakers: Vec::new(),
             matrix_mode: false,
             matrix_state: MatrixState::new(),
+            dirty: true, // draw on first frame
         }
     }
 
@@ -264,6 +294,8 @@ impl App {
 
     pub fn add_message(&mut self, msg: String) {
         self.messages.push(msg);
+        self.dirty = true;
+        self.scroll_offset = 0; // snap to bottom on new message
         // Keep last N messages
         if self.messages.len() > config::MAX_MESSAGE_HISTORY {
             self.messages.drain(..self.messages.len() - config::MAX_MESSAGE_HISTORY);
@@ -297,6 +329,9 @@ pub fn poll_event(app: &mut App, timeout: Duration) -> Action {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 return Action::Quit;
             }
+
+            // Any key press marks dirty
+            app.dirty = true;
 
             // Matrix mode: Esc exits, everything else is swallowed
             if app.matrix_mode {
@@ -382,6 +417,21 @@ pub fn poll_event(app: &mut App, timeout: Duration) -> Action {
                         app.autocomplete_sel = 0;
                     }
                 }
+                KeyCode::PageUp => {
+                    let page = 10;
+                    let max_offset = app.messages.len().saturating_sub(1);
+                    app.scroll_offset = (app.scroll_offset + page).min(max_offset);
+                }
+                KeyCode::PageDown => {
+                    let page = 10;
+                    app.scroll_offset = app.scroll_offset.saturating_sub(page);
+                }
+                KeyCode::Home => {
+                    app.scroll_offset = app.messages.len().saturating_sub(1);
+                }
+                KeyCode::End => {
+                    app.scroll_offset = 0;
+                }
                 KeyCode::Esc => {
                     if !app.autocomplete.is_empty() {
                         app.autocomplete.clear();
@@ -460,13 +510,16 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let status_parts = vec![
         Span::styled(" tc ", Style::default().fg(Color::Black).bg(Color::Cyan).bold()),
         Span::raw("  "),
-        if app.disconnected {
-            Span::styled(
+        match &app.conn_state {
+            ConnectionState::Disconnected => Span::styled(
                 " DISCONNECTED ",
                 Style::default().fg(Color::White).bg(Color::Red).bold(),
-            )
-        } else {
-            match &app.channel {
+            ),
+            ConnectionState::Reconnecting { attempt } => Span::styled(
+                format!(" RECONNECTING ({}) ", attempt),
+                Style::default().fg(Color::Black).bg(Color::Yellow).bold(),
+            ),
+            ConnectionState::Connected => match &app.channel {
                 Some(ch) => Span::styled(
                     format!(" #{} ", ch),
                     Style::default().fg(Color::Black).bg(Color::Green),
@@ -475,7 +528,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                     " online ",
                     Style::default().fg(Color::Black).bg(Color::DarkGray),
                 ),
-            }
+            },
         },
         Span::raw("  "),
         if app.voice_active {
@@ -511,6 +564,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("")
         },
         Span::raw("  "),
+        if !app.active_speakers.is_empty() {
+            Span::styled(
+                format!(" {} ", app.active_speakers.join(", ")),
+                Style::default().fg(Color::Black).bg(Color::Magenta),
+            )
+        } else {
+            Span::raw("")
+        },
+        Span::raw("  "),
         if !app.participants.is_empty() {
             Span::styled(
                 format!(" {} users ", app.participants.len()),
@@ -528,22 +590,25 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_messages(frame: &mut Frame, app: &App, area: Rect) {
-    // Show latest messages at the bottom
     let visible = area.height as usize;
     let total = app.messages.len();
-    let items: Vec<ListItem> = if total > visible {
-        app.messages[total - visible..]
-            .iter()
-            .map(|m| ListItem::new(Span::raw(m.as_str())))
-            .collect()
-    } else {
-        app.messages
-            .iter()
-            .map(|m| ListItem::new(Span::raw(m.as_str())))
-            .collect()
-    };
+    // End index (exclusive) accounting for scroll offset from bottom
+    let end = total.saturating_sub(app.scroll_offset);
+    let start = end.saturating_sub(visible);
+    let items: Vec<ListItem> = app.messages[start..end]
+        .iter()
+        .map(|m| ListItem::new(Span::raw(m.as_str())))
+        .collect();
 
-    let list = List::new(items).block(Block::default().borders(Borders::NONE));
+    let mut block = Block::default().borders(Borders::NONE);
+    if app.scroll_offset > 0 {
+        block = block.title(Span::styled(
+            format!(" ↑ {} more ", app.scroll_offset),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    let list = List::new(items).block(block);
     frame.render_widget(list, area);
 }
 

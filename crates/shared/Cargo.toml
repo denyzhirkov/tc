@@ -10,3 +10,4 @@ rand.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+bytes.workspace = true

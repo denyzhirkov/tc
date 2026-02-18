@@ -17,6 +17,8 @@ pub const MAX_UDP_PACKET: usize = 1500;
 pub const UDP_HELLO_RETRIES: u32 = 3;
 /// Interval between UDP hello retries (milliseconds).
 pub const UDP_HELLO_INTERVAL_MS: u64 = 200;
+/// Max accumulated unparsed TCP data per client (bytes). Disconnect on overflow.
+pub const MAX_PENDING_BUF: usize = 2 * MAX_FRAME_SIZE;
 /// Interval between TCP heartbeat pings (seconds).
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
@@ -98,3 +100,14 @@ pub const POLY1305_TAG_SIZE: usize = 16;
 
 /// Interval between maintenance sweeps (empty channel cleanup, etc).
 pub const MAINTENANCE_INTERVAL_SECS: u64 = 30;
+
+// ── Rate Limiting ───────────────────────────────────────────────────────
+
+/// General command rate limit (commands per second per client).
+pub const RATE_LIMIT_CMD_PER_SEC: f64 = 10.0;
+/// Maximum burst for general commands.
+pub const RATE_LIMIT_CMD_BURST: f64 = 20.0;
+/// Channel creation rate limit (per second per client).
+pub const RATE_LIMIT_CREATE_PER_SEC: f64 = 0.1;
+/// Maximum burst for channel creation.
+pub const RATE_LIMIT_CREATE_BURST: f64 = 3.0;

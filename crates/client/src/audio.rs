@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
 
+use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 use tc_shared::config;
 
 /// Device stream parameters resolved at runtime.
@@ -60,9 +61,21 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate || input.is_empty() {
         return input.to_vec();
     }
+    let mut out = Vec::new();
+    resample_into(input, from_rate, to_rate, &mut out);
+    out
+}
+
+/// Linear-interpolation resampler writing into a provided buffer (zero allocation).
+fn resample_into(input: &[f32], from_rate: u32, to_rate: u32, output: &mut Vec<f32>) {
+    output.clear();
+    if from_rate == to_rate || input.is_empty() {
+        output.extend_from_slice(input);
+        return;
+    }
     let ratio = from_rate as f64 / to_rate as f64;
     let out_len = (input.len() as f64 / ratio).ceil() as usize;
-    let mut output = Vec::with_capacity(out_len);
+    output.reserve(out_len.saturating_sub(output.capacity()));
     for i in 0..out_len {
         let src = i as f64 * ratio;
         let idx = src as usize;
@@ -76,7 +89,44 @@ fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         };
         output.push(s as f32);
     }
-    output
+}
+
+/// High-quality sinc resampler (wraps rubato for zero-alloc hot path).
+struct SincResampler {
+    inner: SincFixedIn<f32>,
+    input_buf: Vec<Vec<f32>>,
+    output_buf: Vec<Vec<f32>>,
+}
+
+impl SincResampler {
+    fn new(from_rate: u32, to_rate: u32, chunk_size: usize) -> Result<Self> {
+        let ratio = to_rate as f64 / from_rate as f64;
+        let params = SincInterpolationParameters {
+            sinc_len: 64,
+            f_cutoff: 0.95,
+            oversampling_factor: 128,
+            interpolation: SincInterpolationType::Cubic,
+            window: WindowFunction::Hann2,
+        };
+        let inner = SincFixedIn::new(ratio, 2.0, params, chunk_size, 1)
+            .map_err(|e| anyhow::anyhow!("resampler init: {}", e))?;
+        let input_buf = inner.input_buffer_allocate(true);
+        let output_buf = inner.output_buffer_allocate(true);
+        Ok(Self { inner, input_buf, output_buf })
+    }
+
+    /// Resample a chunk. Returns a slice into the internal output buffer.
+    fn process(&mut self, input: &[f32]) -> &[f32] {
+        let n = input.len().min(self.input_buf[0].len());
+        self.input_buf[0][..n].copy_from_slice(&input[..n]);
+        match self.inner.process_into_buffer(&self.input_buf, &mut self.output_buf, None) {
+            Ok((_, out_len)) => &self.output_buf[0][..out_len],
+            Err(_) => {
+                // Fallback: return empty on error (caller pads with zeros)
+                &[]
+            }
+        }
+    }
 }
 
 pub struct DeviceInfo {
@@ -164,6 +214,29 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
 
     // Accumulate mono samples at device sample rate
     let mut accumulator = Vec::with_capacity(device_frame_size * 2);
+    // Reusable buffer for a device-rate chunk (avoids per-frame allocation)
+    let mut chunk_buf = vec![0.0f32; device_frame_size];
+    // Sinc resampler for high-quality capture resampling (if needed)
+    let mut sinc_resampler = if need_resample {
+        match SincResampler::new(device_rate, config::SAMPLE_RATE, device_frame_size) {
+            Ok(r) => {
+                tracing::info!("using sinc resampler for capture ({}→{}Hz)", device_rate, config::SAMPLE_RATE);
+                Some(r)
+            }
+            Err(e) => {
+                tracing::warn!("sinc resampler init failed ({}), falling back to linear", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Fallback linear resample buffer (used when sinc unavailable)
+    let mut resample_buf = if need_resample {
+        Vec::with_capacity(config::FRAME_SIZE + 16)
+    } else {
+        Vec::new()
+    };
 
     let stream = device.build_input_stream(
         &params.stream_config,
@@ -181,16 +254,32 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
 
             // 2. Drain in device-frame-sized chunks, resample to 48 kHz, send
             while accumulator.len() >= device_frame_size {
-                let chunk: Vec<f32> = accumulator.drain(..device_frame_size).collect();
-                let frame = if need_resample {
-                    resample(&chunk, device_rate, config::SAMPLE_RATE)
-                } else {
-                    chunk
-                };
-                // Opus needs exactly FRAME_SIZE samples
+                chunk_buf[..device_frame_size]
+                    .copy_from_slice(&accumulator[..device_frame_size]);
+                accumulator.drain(..device_frame_size);
+
                 let mut opus_frame = vec![0.0f32; config::FRAME_SIZE];
-                let n = frame.len().min(config::FRAME_SIZE);
-                opus_frame[..n].copy_from_slice(&frame[..n]);
+
+                if let Some(ref mut sinc) = sinc_resampler {
+                    // High-quality sinc resampling
+                    let resampled = sinc.process(&chunk_buf[..device_frame_size]);
+                    let n = resampled.len().min(config::FRAME_SIZE);
+                    opus_frame[..n].copy_from_slice(&resampled[..n]);
+                } else if need_resample {
+                    // Fallback: linear interpolation
+                    resample_into(
+                        &chunk_buf[..device_frame_size],
+                        device_rate,
+                        config::SAMPLE_RATE,
+                        &mut resample_buf,
+                    );
+                    let n = resample_buf.len().min(config::FRAME_SIZE);
+                    opus_frame[..n].copy_from_slice(&resample_buf[..n]);
+                } else {
+                    let n = device_frame_size.min(config::FRAME_SIZE);
+                    opus_frame[..n].copy_from_slice(&chunk_buf[..n]);
+                }
+
                 let _ = tx.send(opus_frame);
             }
         },

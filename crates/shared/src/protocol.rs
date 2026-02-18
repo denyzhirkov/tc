@@ -1,3 +1,4 @@
+use bytes::{Buf, BytesMut};
 use serde::{Deserialize, Serialize};
 
 use crate::config;
@@ -204,15 +205,15 @@ pub enum FrameError {
     TooLarge(usize),
 }
 
-/// Extract all complete frames from a pending buffer, draining consumed bytes.
-/// Returns decoded frame payloads.
-pub fn extract_frames(pending: &mut Vec<u8>) -> Result<Vec<Vec<u8>>, FrameError> {
+/// Extract all complete frames from a pending buffer, advancing consumed bytes.
+/// Uses BytesMut for O(1) advance instead of O(n) Vec::drain.
+pub fn extract_frames(pending: &mut BytesMut) -> Result<Vec<Vec<u8>>, FrameError> {
     let mut frames = Vec::new();
     loop {
         match try_decode_frame(pending) {
             Ok(Some((data, consumed))) => {
                 frames.push(data);
-                pending.drain(..consumed);
+                pending.advance(consumed);
             }
             Ok(None) => break,
             Err(e) => return Err(e),

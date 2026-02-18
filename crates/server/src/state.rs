@@ -212,14 +212,14 @@ impl ServerState {
         true
     }
 
-    /// Get all UDP addresses in a channel except the sender.
-    /// Reads from the lock-free peer cache — no tokio RwLock on the hot path.
-    pub fn get_channel_peers_cached(&self, channel_id: &str, exclude: &SocketAddr) -> Vec<SocketAddr> {
+    /// Fill a reusable buffer with channel peers (excluding sender).
+    /// Zero-allocation on the hot path when the Vec has enough capacity.
+    pub fn fill_channel_peers(&self, channel_id: &str, exclude: &SocketAddr, out: &mut Vec<SocketAddr>) {
+        out.clear();
         let cache = self.peer_cache.read().unwrap();
-        cache
-            .get(channel_id)
-            .map(|peers| peers.iter().filter(|a| *a != exclude).copied().collect())
-            .unwrap_or_default()
+        if let Some(peers) = cache.get(channel_id) {
+            out.extend(peers.iter().filter(|a| *a != exclude).copied());
+        }
     }
 
     /// Rebuild the peer cache from current channel state.
