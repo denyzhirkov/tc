@@ -29,6 +29,11 @@ pub fn generate_channel_id() -> ChannelId {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
+    /// First message after connect — announces client version.
+    Hello {
+        version: String,
+        protocol: u16,
+    },
     /// Create a new channel.
     CreateChannel,
     /// Join an existing channel.
@@ -49,6 +54,11 @@ pub enum ClientMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
+    /// First message after connect — announces server version.
+    Welcome {
+        version: String,
+        protocol: u16,
+    },
     /// Channel created successfully.
     ChannelCreated { channel_id: ChannelId },
     /// Joined channel successfully.

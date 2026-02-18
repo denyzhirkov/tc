@@ -72,6 +72,12 @@ pub async fn connect(
     // Reader task
     tokio::spawn(reader_task(reader, msg_tx));
 
+    // Send Hello as first message
+    let _ = cmd_tx.try_send(ClientMessage::Hello {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        protocol: config::PROTOCOL_VERSION,
+    });
+
     // Heartbeat task — sends Ping every HEARTBEAT_INTERVAL_SECS
     let heartbeat_tx = cmd_tx.clone();
     tokio::spawn(async move {

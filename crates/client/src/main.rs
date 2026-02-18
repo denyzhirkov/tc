@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::sync::mpsc;
+use clap::Parser;
+use tokio::sync::{broadcast, mpsc};
 
 mod audio;
 mod codec;
@@ -12,11 +13,25 @@ mod settings;
 mod tls;
 mod tui;
 mod voice;
+mod web;
 
 use tc_shared::config;
 use tc_shared::{ClientMessage, ServerMessage};
 use tls::TofuState;
 use tui::ConnectionState;
+use web::WebState;
+
+#[derive(Parser)]
+#[command(name = "tc-client", about = "termicall voice chat client")]
+struct Args {
+    /// Web UI port (default: 17300)
+    #[arg(long = "web-port", default_value_t = config::WEB_PORT)]
+    web_port: u16,
+
+    /// Disable the web UI
+    #[arg(long = "no-web")]
+    no_web: bool,
+}
 
 /// Auto-reconnect backoff parameters.
 const RECONNECT_BASE_MS: u64 = 1000;
@@ -32,6 +47,8 @@ async fn main() -> Result<()> {
             .with_env_filter("tc=debug")
             .init();
     }
+
+    let args = Args::parse();
 
     let user_settings = settings::UserSettings::load();
     let server_addr = user_settings
@@ -53,6 +70,18 @@ async fn main() -> Result<()> {
 
     // TOFU state for TLS certificate verification
     let tofu = TofuState::new(user_settings.trusted_servers);
+
+    // Web UI channels
+    let (web_cmd_tx, mut web_cmd_rx) = mpsc::channel::<web::WebCommand>(64);
+    let (web_state_tx, _) = broadcast::channel::<WebState>(16);
+
+    if !args.no_web {
+        let port = args.web_port;
+        let tx = web_cmd_tx.clone();
+        let state_tx = web_state_tx.clone();
+        tokio::spawn(web::start_web_server(port, tx, state_tx));
+        app.add_message(format!("web UI at http://127.0.0.1:{}", port));
+    }
 
     // Try initial connection
     let mut conn: Option<network::ServerConnection> = None;
@@ -113,9 +142,10 @@ async fn main() -> Result<()> {
             app.dirty = true;
         }
 
-        // Draw only when state changed
+        // Draw only when state changed + broadcast to web UI
         if app.dirty {
             terminal.draw(|f| tui::draw(f, &app))?;
+            let _ = web_state_tx.send(WebState::from_app(&app));
             app.dirty = false;
         }
 
@@ -139,11 +169,38 @@ async fn main() -> Result<()> {
                     &mut reconnect_attempt,
                     &mut next_reconnect,
                     &tofu,
+                    &web_cmd_tx,
+                    &web_state_tx,
                 )
                 .await;
             }
             tui::Action::Quit => break,
             tui::Action::None => {}
+        }
+
+        // Drain web UI commands
+        while let Ok(cmd) = web_cmd_rx.try_recv() {
+            match cmd {
+                web::WebCommand::Command { text } => {
+                    let trimmed = text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        handle_command(
+                            &trimmed,
+                            &mut conn,
+                            &mut server_rx,
+                            &mut app,
+                            &muted,
+                            &mut voice_handle,
+                            &mut reconnect_attempt,
+                            &mut next_reconnect,
+                            &tofu,
+                            &web_cmd_tx,
+                            &web_state_tx,
+                        )
+                        .await;
+                    }
+                }
+            }
         }
 
         // Drain server messages
@@ -259,6 +316,8 @@ async fn handle_command(
     reconnect_attempt: &mut u32,
     next_reconnect: &mut Option<Instant>,
     tofu: &TofuState,
+    web_cmd_tx: &mpsc::Sender<web::WebCommand>,
+    web_state_tx: &broadcast::Sender<WebState>,
 ) {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
 
@@ -334,6 +393,21 @@ async fn handle_command(
             }
             return;
         }
+        "/web" => {
+            if let Some(port_str) = parts.get(1).map(|s| s.trim()) {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    let tx = web_cmd_tx.clone();
+                    let state_tx = web_state_tx.clone();
+                    tokio::spawn(web::start_web_server(port, tx, state_tx));
+                    app.add_message(format!("web UI at http://127.0.0.1:{}", port));
+                } else {
+                    app.add_message("usage: /web <port>".into());
+                }
+            } else {
+                app.add_message("usage: /web <port>".into());
+            }
+            return;
+        }
         "/quit" | "/exit" => {
             app.should_quit = true;
             return;
@@ -351,6 +425,7 @@ async fn handle_command(
             app.add_message("  /name <name>       set your display name".into());
             app.add_message("  /server <ip>       set server address".into());
             app.add_message("  /reconnect         reconnect to server".into());
+            app.add_message("  /web <port>        start web UI on port".into());
             app.add_message("  /quit              exit".into());
             app.add_message("  <text>             send chat message".into());
             app.add_message("── keys ──".into());
@@ -474,6 +549,22 @@ async fn handle_server_message(
     voice_handle: &mut Option<voice::VoiceHandle>,
 ) {
     match msg {
+        ServerMessage::Welcome { version, protocol } => {
+            let my_version = env!("CARGO_PKG_VERSION");
+            let my_protocol = config::PROTOCOL_VERSION;
+            if protocol != my_protocol {
+                app.add_message(format!(
+                    "WARNING: protocol mismatch! server={} (v{}) client={} (v{})",
+                    protocol, version, my_protocol, my_version
+                ));
+                app.add_message("please update your client to match the server".into());
+            } else if version != my_version {
+                app.add_message(format!(
+                    "server version {} (you have {}), consider updating",
+                    version, my_version
+                ));
+            }
+        }
         ServerMessage::ChannelCreated { channel_id } => {
             app.add_message(format!("channel created: {}, joining...", channel_id));
             send_or_disconnect(conn, app, ClientMessage::JoinChannel {

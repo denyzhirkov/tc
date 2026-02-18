@@ -78,7 +78,13 @@ async fn handle_client(
 
     // Create outgoing message channel (bounded to prevent memory growth)
     let (tx, rx) = mpsc::channel::<ServerMessage>(CLIENT_QUEUE_CAPACITY);
-    senders.write().await.insert(peer_addr, tx);
+    senders.write().await.insert(peer_addr, tx.clone());
+
+    // Send Welcome with server version as first message
+    let _ = tx.try_send(ServerMessage::Welcome {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        protocol: config::PROTOCOL_VERSION,
+    });
 
     // Writer task: sends queued ServerMessages to this client
     let writer_handle = tokio::spawn(writer_task(writer, rx));
@@ -153,9 +159,9 @@ async fn reader_loop<R: AsyncRead + Unpin>(
         for frame_data in frames {
             let msg: ClientMessage = bincode::deserialize(&frame_data)?;
 
-            // Rate limit: Ping is always allowed, CreateChannel has a stricter limit
+            // Rate limit: Ping/Hello always allowed, CreateChannel has a stricter limit
             match &msg {
-                ClientMessage::Ping => {}
+                ClientMessage::Ping | ClientMessage::Hello { .. } => {}
                 ClientMessage::CreateChannel => {
                     if !cmd_limiter.check() || !create_limiter.check() {
                         tracing::debug!(%peer_addr, "rate limited (create)");
@@ -327,6 +333,10 @@ async fn handle_message(
                     .await;
                 }
             }
+        }
+
+        ClientMessage::Hello { version, protocol } => {
+            tracing::info!(%peer_addr, %name, %version, %protocol, "client hello");
         }
 
         ClientMessage::Ping => {

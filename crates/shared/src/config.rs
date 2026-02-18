@@ -1,6 +1,11 @@
 // All tunable parameters in one place.
 // Grouped by subsystem for clarity.
 
+// ── Version ─────────────────────────────────────────────────────────────
+
+/// Protocol version — bump on every breaking protocol change.
+pub const PROTOCOL_VERSION: u16 = 1;
+
 // ── Network ──────────────────────────────────────────────────────────────
 
 /// Default TCP port for control channel.
@@ -21,6 +26,8 @@ pub const UDP_HELLO_INTERVAL_MS: u64 = 200;
 pub const MAX_PENDING_BUF: usize = 2 * MAX_FRAME_SIZE;
 /// Interval between TCP heartbeat pings (seconds).
 pub const HEARTBEAT_INTERVAL_SECS: u64 = 10;
+/// Default port for the embedded web UI.
+pub const WEB_PORT: u16 = 17300;
 
 // ── Chat ─────────────────────────────────────────────────────────────────
 

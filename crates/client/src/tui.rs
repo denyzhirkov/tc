@@ -133,6 +133,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/name", "set your display name"),
     ("/reconnect", "reconnect to server"),
     ("/server", "set server address"),
+    ("/web", "start web UI on port"),
     ("/help", "show help"),
     ("/quit", "exit"),
 ];
