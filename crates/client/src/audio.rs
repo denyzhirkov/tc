@@ -402,3 +402,31 @@ pub fn start_playback(
     stream.play()?;
     Ok((stream, prod))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resample_identity() {
+        let input: Vec<f32> = (0..100).map(|i| i as f32 * 0.01).collect();
+        let mut output = Vec::new();
+        resample_into(&input, 48000, 48000, &mut output);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn resample_ratio() {
+        let input: Vec<f32> = vec![0.0; 960];
+        let mut output = Vec::new();
+
+        // 48000->24000 should halve length
+        resample_into(&input, 48000, 24000, &mut output);
+        assert_eq!(output.len(), 480);
+
+        // 24000->48000 should double length
+        let input24: Vec<f32> = vec![0.0; 480];
+        resample_into(&input24, 24000, 48000, &mut output);
+        assert_eq!(output.len(), 960);
+    }
+}

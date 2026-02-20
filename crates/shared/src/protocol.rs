@@ -272,3 +272,136 @@ where
     writer.flush().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+
+    #[test]
+    fn udp_hello_roundtrip() {
+        let token: u64 = 0xDEAD_BEEF_CAFE_BABE;
+        let encoded = encode_udp_hello(token);
+        assert_eq!(encoded.len(), 12);
+        assert_eq!(decode_udp_hello(&encoded), Some(token));
+    }
+
+    #[test]
+    fn udp_hello_rejects_wrong_size() {
+        assert_eq!(decode_udp_hello(&[0u8; 5]), None);
+        assert_eq!(decode_udp_hello(&[0u8; 13]), None);
+        assert_eq!(decode_udp_hello(&[]), None);
+    }
+
+    #[test]
+    fn udp_hello_rejects_nonzero_seq() {
+        let mut data = encode_udp_hello(42);
+        data[0] = 1;
+        assert_eq!(decode_udp_hello(&data), None);
+    }
+
+    #[test]
+    fn voice_packet_roundtrip() {
+        let pkt = VoicePacket {
+            sequence: 42,
+            channel_id: "abc12".into(),
+            opus_data: vec![1, 2, 3, 4, 5],
+        };
+        let encoded = pkt.encode();
+        let decoded = VoicePacket::decode(&encoded).unwrap();
+        assert_eq!(decoded.sequence, 42);
+        assert_eq!(decoded.channel_id, "abc12");
+        assert_eq!(decoded.opus_data, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn voice_packet_parse_voice_data() {
+        let pkt = VoicePacket {
+            sequence: 7,
+            channel_id: "ch".into(),
+            opus_data: vec![10, 20, 30],
+        };
+        let encoded = pkt.encode();
+        let (seq, payload) = VoicePacket::parse_voice_data(&encoded).unwrap();
+        assert_eq!(seq, 7);
+        assert_eq!(payload, &[10, 20, 30]);
+    }
+
+    #[test]
+    fn voice_packet_parse_channel_id() {
+        let pkt = VoicePacket {
+            sequence: 1,
+            channel_id: "room1".into(),
+            opus_data: vec![0xFF],
+        };
+        let encoded = pkt.encode();
+        assert_eq!(VoicePacket::parse_channel_id(&encoded), Some("room1"));
+    }
+
+    #[test]
+    fn voice_packet_rejects_short_data() {
+        assert!(VoicePacket::decode(&[0u8; 3]).is_none());
+        assert!(VoicePacket::decode(&[0u8; 5]).is_none());
+    }
+
+    #[test]
+    fn voice_packet_rejects_seq_zero() {
+        let mut data = VoicePacket {
+            sequence: 1,
+            channel_id: "ch".into(),
+            opus_data: vec![1],
+        }
+        .encode();
+        data[0] = 0;
+        data[1] = 0;
+        data[2] = 0;
+        data[3] = 0;
+        assert!(VoicePacket::decode(&data).is_none());
+    }
+
+    #[test]
+    fn tcp_frame_roundtrip() {
+        let msg = ClientMessage::Ping;
+        let frame = encode_tcp_frame(&msg).unwrap();
+        let (payload, consumed) = try_decode_frame(&frame).unwrap().unwrap();
+        assert_eq!(consumed, frame.len());
+        let decoded: ClientMessage = bincode::deserialize(&payload).unwrap();
+        assert!(matches!(decoded, ClientMessage::Ping));
+    }
+
+    #[test]
+    fn tcp_frame_rejects_oversized() {
+        let len = (config::MAX_FRAME_SIZE + 1) as u32;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(&[0u8; 4]);
+        assert!(matches!(try_decode_frame(&buf), Err(FrameError::TooLarge(_))));
+    }
+
+    #[test]
+    fn extract_frames_partial() {
+        let msg = ClientMessage::Ping;
+        let frame = encode_tcp_frame(&msg).unwrap();
+
+        let half = frame.len() / 2;
+        let mut pending = BytesMut::from(&frame[..half]);
+        let frames = extract_frames(&mut pending).unwrap();
+        assert!(frames.is_empty());
+        assert_eq!(pending.len(), half);
+
+        pending.extend_from_slice(&frame[half..]);
+        let frames = extract_frames(&mut pending).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn generate_channel_id_valid() {
+        let id = generate_channel_id();
+        assert_eq!(id.len(), config::CHANNEL_ID_LEN);
+        const CHARSET: &str = "abcdefghjkmnpqrstuvwxyz23456789";
+        for c in id.chars() {
+            assert!(CHARSET.contains(c), "invalid char: {}", c);
+        }
+    }
+}

@@ -114,9 +114,9 @@ async fn main() -> Result<()> {
             server_rx = Some(rx);
             save_tofu(&tofu, &app);
         }
-        Err(_) => {
+        Err(e) => {
             app.conn_state = ConnectionState::Disconnected;
-            app.add_message("server not configured, connection failed".into());
+            app.add_message(format!("connection failed: {}", e));
             app.add_message("use /server <ip> to set address, then /reconnect".into());
         }
     }
@@ -1015,5 +1015,43 @@ async fn restart_voice(
         Err(e) => {
             app.add_message(format!("voice restart error: {}", e));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vad_level_roundtrip() {
+        for level in [0, 1, 10, 50, 100] {
+            let threshold = vad_threshold_from_level(level);
+            let back = vad_level_from_threshold(threshold);
+            assert_eq!(back, level);
+        }
+    }
+
+    #[test]
+    fn vol_roundtrip() {
+        for pct in [0, 50, 100, 150, 200] {
+            let vol = vol_from_percent(pct);
+            let back = percent_from_vol(vol);
+            assert_eq!(back, pct);
+        }
+    }
+
+    #[test]
+    fn sanitize_name_strips_control_chars() {
+        assert_eq!(sanitize_name("hello\nworld"), "helloworld");
+        assert_eq!(sanitize_name("  alice\t "), "alice");
+        assert_eq!(sanitize_name("bob"), "bob");
+    }
+
+    #[test]
+    fn sanitize_channel_name_valid() {
+        assert_eq!(sanitize_channel_name("My Channel!"), "mychannel");
+        assert_eq!(sanitize_channel_name("test-room"), "test-room");
+        assert_eq!(sanitize_channel_name("--edge--"), "edge");
+        assert_eq!(sanitize_channel_name("UPPER123"), "upper123");
     }
 }

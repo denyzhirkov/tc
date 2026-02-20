@@ -47,9 +47,11 @@ pub async fn connect(
 
     tofu.set_current_server(&addr);
     let connector = tls::tls_connector(tofu);
-    let server_name: ServerName<'static> = "localhost"
-        .try_into()
-        .expect("valid server name");
+    let host = addr.split(':').next().unwrap_or("localhost");
+    let server_name: ServerName<'static> = match ServerName::try_from(host) {
+        Ok(name) => name.to_owned(),
+        Err(_) => "localhost".try_into().unwrap(),
+    };
     let tls_stream = connector
         .connect(server_name, stream)
         .await
