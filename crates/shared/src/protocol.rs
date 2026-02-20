@@ -404,4 +404,196 @@ mod tests {
             assert!(CHARSET.contains(c), "invalid char: {}", c);
         }
     }
+
+    // ── serde round-trips for all message variants ───────────────────
+
+    fn roundtrip_client(msg: &ClientMessage) {
+        let bytes = bincode::serialize(msg).unwrap();
+        let back: ClientMessage = bincode::deserialize(&bytes).unwrap();
+        // Use debug repr for comparison
+        assert_eq!(format!("{:?}", msg), format!("{:?}", back));
+    }
+
+    fn roundtrip_server(msg: &ServerMessage) {
+        let bytes = bincode::serialize(msg).unwrap();
+        let back: ServerMessage = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(format!("{:?}", msg), format!("{:?}", back));
+    }
+
+    #[test]
+    fn client_message_serde_hello() {
+        roundtrip_client(&ClientMessage::Hello {
+            version: "1.0".into(),
+            protocol: 2,
+        });
+    }
+
+    #[test]
+    fn client_message_serde_create_channel() {
+        roundtrip_client(&ClientMessage::CreateChannel { name: None });
+        roundtrip_client(&ClientMessage::CreateChannel { name: Some("lobby".into()) });
+    }
+
+    #[test]
+    fn client_message_serde_join_channel() {
+        roundtrip_client(&ClientMessage::JoinChannel { channel_id: "abc12".into() });
+    }
+
+    #[test]
+    fn client_message_serde_leave_channel() {
+        roundtrip_client(&ClientMessage::LeaveChannel);
+    }
+
+    #[test]
+    fn client_message_serde_list_channels() {
+        roundtrip_client(&ClientMessage::ListChannels);
+    }
+
+    #[test]
+    fn client_message_serde_chat() {
+        roundtrip_client(&ClientMessage::ChatMessage { text: "hello".into() });
+    }
+
+    #[test]
+    fn client_message_serde_set_name() {
+        roundtrip_client(&ClientMessage::SetName { name: "alice".into() });
+    }
+
+    #[test]
+    fn client_message_serde_ping() {
+        roundtrip_client(&ClientMessage::Ping);
+    }
+
+    #[test]
+    fn server_message_serde_welcome() {
+        roundtrip_server(&ServerMessage::Welcome {
+            version: "1.0".into(),
+            protocol: 2,
+        });
+    }
+
+    #[test]
+    fn server_message_serde_channel_created() {
+        roundtrip_server(&ServerMessage::ChannelCreated { channel_id: "abc".into() });
+    }
+
+    #[test]
+    fn server_message_serde_joined_channel() {
+        roundtrip_server(&ServerMessage::JoinedChannel {
+            channel_id: "abc".into(),
+            participants: vec!["user-1".into(), "user-2".into()],
+            udp_token: 42,
+            voice_key: vec![0u8; 32],
+        });
+    }
+
+    #[test]
+    fn server_message_serde_peer_joined() {
+        roundtrip_server(&ServerMessage::PeerJoined { peer_name: "alice".into() });
+    }
+
+    #[test]
+    fn server_message_serde_peer_left() {
+        roundtrip_server(&ServerMessage::PeerLeft { peer_name: "bob".into() });
+    }
+
+    #[test]
+    fn server_message_serde_left_channel() {
+        roundtrip_server(&ServerMessage::LeftChannel);
+    }
+
+    #[test]
+    fn server_message_serde_chat() {
+        roundtrip_server(&ServerMessage::ChatMessage {
+            from: "alice".into(),
+            text: "hi".into(),
+        });
+    }
+
+    #[test]
+    fn server_message_serde_name_changed() {
+        roundtrip_server(&ServerMessage::NameChanged {
+            old_name: "user-1".into(),
+            new_name: "alice".into(),
+        });
+    }
+
+    #[test]
+    fn server_message_serde_channel_list() {
+        roundtrip_server(&ServerMessage::ChannelList {
+            channels: vec![
+                ChannelInfo { channel_id: "pub-a".into(), participant_count: 3 },
+                ChannelInfo { channel_id: "pub-b".into(), participant_count: 0 },
+            ],
+        });
+    }
+
+    #[test]
+    fn server_message_serde_error() {
+        roundtrip_server(&ServerMessage::Error { message: "oops".into() });
+    }
+
+    #[test]
+    fn server_message_serde_pong() {
+        roundtrip_server(&ServerMessage::Pong);
+    }
+
+    #[test]
+    fn channel_info_serde() {
+        let info = ChannelInfo { channel_id: "test".into(), participant_count: 5 };
+        let bytes = bincode::serialize(&info).unwrap();
+        let back: ChannelInfo = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.channel_id, "test");
+        assert_eq!(back.participant_count, 5);
+    }
+
+    #[test]
+    fn frame_error_display() {
+        let e = FrameError::TooLarge(99999);
+        let s = format!("{}", e);
+        assert!(s.contains("99999"));
+        assert!(s.contains("too large"));
+    }
+
+    // ── TCP frame: multiple frames in one buffer ─────────────────────
+
+    #[test]
+    fn extract_multiple_frames() {
+        let msg1 = ClientMessage::Ping;
+        let msg2 = ClientMessage::LeaveChannel;
+        let f1 = encode_tcp_frame(&msg1).unwrap();
+        let f2 = encode_tcp_frame(&msg2).unwrap();
+
+        let mut pending = BytesMut::new();
+        pending.extend_from_slice(&f1);
+        pending.extend_from_slice(&f2);
+
+        let frames = extract_frames(&mut pending).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn try_decode_frame_incomplete() {
+        // Less than 4 bytes header
+        assert!(try_decode_frame(&[0u8; 2]).unwrap().is_none());
+        // Header says 100 bytes but only 10 provided
+        let mut buf = vec![0, 0, 0, 100];
+        buf.extend_from_slice(&[0u8; 6]);
+        assert!(try_decode_frame(&buf).unwrap().is_none());
+    }
+
+    // ── write_tcp_frame async ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_tcp_frame_produces_valid_frame() {
+        let msg = ServerMessage::Pong;
+        let mut buf = Vec::new();
+        write_tcp_frame(&mut buf, &msg).await.unwrap();
+
+        let (payload, consumed) = try_decode_frame(&buf).unwrap().unwrap();
+        assert_eq!(consumed, buf.len());
+        let decoded: ServerMessage = bincode::deserialize(&payload).unwrap();
+        assert!(matches!(decoded, ServerMessage::Pong));
+    }
 }

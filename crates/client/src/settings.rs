@@ -59,3 +59,67 @@ impl UserSettings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_all_none() {
+        let s = UserSettings::default();
+        assert!(s.server.is_none());
+        assert!(s.input_device.is_none());
+        assert!(s.output_device.is_none());
+        assert!(s.vad_level.is_none());
+        assert!(s.input_gain.is_none());
+        assert!(s.output_vol.is_none());
+        assert!(s.name.is_none());
+        assert!(s.trusted_servers.is_empty());
+    }
+
+    #[test]
+    fn settings_toml_roundtrip() {
+        let mut s = UserSettings::default();
+        s.server = Some("example.com:7100".into());
+        s.name = Some("alice".into());
+        s.vad_level = Some(15);
+        s.input_gain = Some(120);
+        s.output_vol = Some(80);
+        s.trusted_servers.insert("srv".into(), "sha256:abc".into());
+
+        let toml_str = toml::to_string_pretty(&s).unwrap();
+        let back: UserSettings = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(back.server.as_deref(), Some("example.com:7100"));
+        assert_eq!(back.name.as_deref(), Some("alice"));
+        assert_eq!(back.vad_level, Some(15));
+        assert_eq!(back.input_gain, Some(120));
+        assert_eq!(back.output_vol, Some(80));
+        assert_eq!(back.trusted_servers["srv"], "sha256:abc");
+    }
+
+    #[test]
+    fn settings_deserialize_empty_toml() {
+        let back: UserSettings = toml::from_str("").unwrap();
+        assert!(back.server.is_none());
+        assert!(back.trusted_servers.is_empty());
+    }
+
+    #[test]
+    fn settings_skip_none_fields_on_serialize() {
+        let s = UserSettings::default();
+        let toml_str = toml::to_string_pretty(&s).unwrap();
+        assert!(!toml_str.contains("server"));
+        assert!(!toml_str.contains("trusted_servers"));
+    }
+
+    #[test]
+    fn settings_deserialize_ignores_unknown_fields() {
+        let toml_str = r#"
+            server = "test:7100"
+            unknown_field = "ignored"
+        "#;
+        let s: UserSettings = toml::from_str(toml_str).unwrap();
+        assert_eq!(s.server.as_deref(), Some("test:7100"));
+    }
+}

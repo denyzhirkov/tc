@@ -85,42 +85,74 @@ async fn main() -> Result<()> {
     let shutdown_senders = senders.clone();
 
     // Spawn server tasks
-    let tcp_handle = tokio::spawn(tcp::run_tcp_server(
+    let mut tcp_handle = tokio::spawn(tcp::run_tcp_server(
         state.clone(),
         senders,
         tcp_addr,
         acceptor,
     ));
-    let udp_handle = tokio::spawn(udp::run_udp_relay(state.clone(), udp_addr));
-    let maint_handle = tokio::spawn(run_maintenance(state, args.maintenance_interval));
+    let mut udp_handle = tokio::spawn(udp::run_udp_relay(state.clone(), udp_addr));
+    let mut maint_handle = tokio::spawn(run_maintenance(state, args.maintenance_interval));
 
-    // Wait for shutdown signal (SIGINT or SIGTERM)
-    shutdown_signal().await;
+    // Monitor tasks: if any exits unexpectedly, log and exit so
+    // systemd/docker can restart the process.
+    let exit_code;
+    tokio::select! {
+        _ = shutdown_signal() => {
+            tracing::info!("shutdown signal received, notifying clients...");
 
-    tracing::info!("shutdown signal received, notifying clients...");
-
-    // Broadcast shutdown message to all connected clients
-    {
-        let senders = shutdown_senders.read().await;
-        let msg = ServerMessage::Error {
-            message: "server shutting down".into(),
-        };
-        for (addr, tx) in senders.iter() {
-            if tx.try_send(msg.clone()).is_err() {
-                tracing::trace!(%addr, "could not send shutdown notice");
+            // Broadcast shutdown message to all connected clients
+            {
+                let senders = shutdown_senders.read().await;
+                let msg = ServerMessage::Error {
+                    message: "server shutting down".into(),
+                };
+                for (addr, tx) in senders.iter() {
+                    if tx.try_send(msg.clone()).is_err() {
+                        tracing::trace!(%addr, "could not send shutdown notice");
+                    }
+                }
             }
+
+            // Give clients a moment to receive the message
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            tcp_handle.abort();
+            udp_handle.abort();
+            maint_handle.abort();
+
+            tracing::info!("server stopped");
+            exit_code = 0;
+        }
+        result = &mut tcp_handle => {
+            match result {
+                Ok(Err(e)) => tracing::error!("TCP server exited with error: {}", e),
+                Err(e) => tracing::error!("TCP server task panicked: {}", e),
+                Ok(Ok(())) => tracing::error!("TCP server exited unexpectedly"),
+            }
+            exit_code = 1;
+        }
+        result = &mut udp_handle => {
+            match result {
+                Ok(Err(e)) => tracing::error!("UDP relay exited with error: {}", e),
+                Err(e) => tracing::error!("UDP relay task panicked: {}", e),
+                Ok(Ok(())) => tracing::error!("UDP relay exited unexpectedly"),
+            }
+            exit_code = 1;
+        }
+        result = &mut maint_handle => {
+            match result {
+                Ok(Err(e)) => tracing::error!("maintenance task exited with error: {}", e),
+                Err(e) => tracing::error!("maintenance task panicked: {}", e),
+                Ok(Ok(())) => tracing::error!("maintenance task exited unexpectedly"),
+            }
+            exit_code = 1;
         }
     }
 
-    // Give clients a moment to receive the message
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // Abort server tasks
-    tcp_handle.abort();
-    udp_handle.abort();
-    maint_handle.abort();
-
-    tracing::info!("server stopped");
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
 }
 

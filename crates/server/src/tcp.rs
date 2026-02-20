@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_rustls::TlsAcceptor;
 
 use bytes::BytesMut;
@@ -14,6 +15,15 @@ use tc_shared::{extract_frames, write_tcp_frame, ClientMessage, ServerMessage};
 
 use crate::rate_limit::RateLimiter;
 use crate::state::ServerState;
+
+/// Max concurrent TLS handshakes to prevent resource exhaustion.
+const MAX_CONCURRENT_TLS_HANDSHAKES: usize = 128;
+
+/// Timeout for TLS handshake completion.
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for idle clients (no data received). 3× the client heartbeat interval.
+const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Capacity for per-client outgoing message queue.
 const CLIENT_QUEUE_CAPACITY: usize = 128;
@@ -34,21 +44,46 @@ pub async fn run_tcp_server(
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!("TCP+TLS listening on {}", addr);
 
+    let tls_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TLS_HANDSHAKES));
+
     loop {
-        let (stream, peer_addr) = listener.accept().await?;
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("TCP accept error: {}, retrying...", e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         tracing::info!(%peer_addr, "new TCP connection");
 
         let acceptor = acceptor.clone();
         let state = state.clone();
         let senders = senders.clone();
+        let permit = tls_semaphore.clone();
         tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(stream).await {
-                Ok(s) => s,
-                Err(e) => {
+            let _permit = match permit.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return, // semaphore closed — shutting down
+            };
+
+            let tls_stream = match tokio::time::timeout(
+                TLS_HANDSHAKE_TIMEOUT,
+                acceptor.accept(stream),
+            )
+            .await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
                     tracing::warn!(%peer_addr, "TLS handshake failed: {}", e);
                     return;
                 }
+                Err(_) => {
+                    tracing::warn!(%peer_addr, "TLS handshake timed out");
+                    return;
+                }
             };
+            drop(_permit);
             tracing::info!(%peer_addr, "TLS handshake complete");
 
             if let Err(e) = handle_client(tls_stream, peer_addr, state, senders).await {
@@ -139,10 +174,15 @@ async fn reader_loop<R: AsyncRead + Unpin>(
     let mut create_limiter = RateLimiter::new(config::RATE_LIMIT_CREATE_PER_SEC, config::RATE_LIMIT_CREATE_BURST);
 
     loop {
-        let n = reader.read(&mut buf).await?;
-        if n == 0 {
-            return Ok(()); // Connection closed
-        }
+        let n = match tokio::time::timeout(CLIENT_IDLE_TIMEOUT, reader.read(&mut buf)).await {
+            Ok(Ok(0)) => return Ok(()), // Connection closed
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                tracing::info!(%peer_addr, "idle timeout, disconnecting");
+                return Ok(());
+            }
+        };
 
         pending.extend_from_slice(&buf[..n]);
 
@@ -159,7 +199,13 @@ async fn reader_loop<R: AsyncRead + Unpin>(
             }
         };
         for frame_data in frames {
-            let msg: ClientMessage = bincode::deserialize(&frame_data)?;
+            let msg: ClientMessage = match bincode::deserialize(&frame_data) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(%peer_addr, "bincode deserialize error: {}, skipping frame", e);
+                    continue;
+                }
+            };
 
             // Rate limit: Ping/Hello always allowed, CreateChannel has a stricter limit
             match &msg {

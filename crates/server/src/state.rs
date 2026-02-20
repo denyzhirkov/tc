@@ -266,7 +266,7 @@ impl ServerState {
     /// Zero-allocation on the hot path when the Vec has enough capacity.
     pub fn fill_channel_peers(&self, channel_id: &str, exclude: &SocketAddr, out: &mut Vec<SocketAddr>) {
         out.clear();
-        let cache = self.peer_cache.read().unwrap();
+        let cache = self.peer_cache.read().unwrap_or_else(|e| e.into_inner());
         if let Some(peers) = cache.get(channel_id) {
             out.extend(peers.iter().filter(|a| *a != exclude).copied());
         }
@@ -281,7 +281,7 @@ impl ServerState {
                 new_cache.insert(id.clone(), participants.iter().copied().collect());
             }
         }
-        *cache.write().unwrap() = new_cache;
+        *cache.write().unwrap_or_else(|e| e.into_inner()) = new_cache;
     }
 
     /// Iterate channel members under a single read lock, calling `send_fn` for each.
@@ -359,5 +359,325 @@ impl ServerState {
         let token_ttl = std::time::Duration::from_secs(30);
         inner.udp_tokens.retain(|_, (_, _, created)| created.elapsed() < token_ttl);
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unlimited() -> Limits {
+        Limits { max_channels: 0, max_clients: 0 }
+    }
+
+    fn addr(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    // ── register / remove ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn register_client_assigns_unique_names() {
+        let state = ServerState::new(unlimited());
+        let n1 = state.register_client(addr(1)).await.unwrap();
+        let n2 = state.register_client(addr(2)).await.unwrap();
+        assert_ne!(n1, n2);
+        assert!(n1.starts_with("user-"));
+    }
+
+    #[tokio::test]
+    async fn register_client_respects_max_clients() {
+        let limits = Limits { max_channels: 0, max_clients: 1 };
+        let state = ServerState::new(limits);
+        assert!(state.register_client(addr(1)).await.is_ok());
+        assert!(state.register_client(addr(2)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn remove_client_returns_name_and_channel() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+
+        let (name, channel) = state.remove_client(&addr(1)).await.unwrap();
+        assert!(name.starts_with("user-"));
+        assert_eq!(channel.as_deref(), Some(ch.as_str()));
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_client_returns_none() {
+        let state = ServerState::new(unlimited());
+        assert!(state.remove_client(&addr(99)).await.is_none());
+    }
+
+    // ── create channel ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_private_channel() {
+        let state = ServerState::new(unlimited());
+        let id = state.create_channel(None).await.unwrap();
+        assert!(!id.starts_with("pub-"));
+        assert_eq!(id.len(), tc_shared::config::CHANNEL_ID_LEN);
+    }
+
+    #[tokio::test]
+    async fn create_public_channel() {
+        let state = ServerState::new(unlimited());
+        let id = state.create_channel(Some("lobby")).await.unwrap();
+        assert_eq!(id, "pub-lobby");
+    }
+
+    #[tokio::test]
+    async fn create_duplicate_public_channel_fails() {
+        let state = ServerState::new(unlimited());
+        state.create_channel(Some("dup")).await.unwrap();
+        assert!(state.create_channel(Some("dup")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_channel_respects_max_channels() {
+        let limits = Limits { max_channels: 1, max_clients: 0 };
+        let state = ServerState::new(limits);
+        assert!(state.create_channel(None).await.is_ok());
+        assert!(state.create_channel(None).await.is_err());
+    }
+
+    // ── join / leave ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn join_channel_returns_participants_token_key() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (participants, token, key) = state.join_channel(&addr(1), &ch).await.unwrap();
+        assert_eq!(participants.len(), 1); // self
+        assert_ne!(token, 0);
+        assert_eq!(key.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn join_nonexistent_channel_fails() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        assert!(state.join_channel(&addr(1), &"nope".into()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn join_while_already_in_channel_fails() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+        assert!(state.join_channel(&addr(1), &ch).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn leave_channel_succeeds() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+
+        let (name, channel_id) = state.leave_channel(&addr(1)).await.unwrap();
+        assert!(name.starts_with("user-"));
+        assert_eq!(channel_id, ch);
+    }
+
+    #[tokio::test]
+    async fn leave_when_not_in_channel_returns_none() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        assert!(state.leave_channel(&addr(1)).await.is_none());
+    }
+
+    // ── UDP token registration ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn register_udp_by_valid_token() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, token, _) = state.join_channel(&addr(1), &ch).await.unwrap();
+
+        let udp_addr = addr(5000);
+        assert!(state.register_udp_by_token(token, udp_addr).await);
+
+        // Peer should be visible in peer cache
+        let mut peers = Vec::new();
+        state.fill_channel_peers(&ch, &addr(99), &mut peers);
+        assert!(peers.contains(&udp_addr));
+    }
+
+    #[tokio::test]
+    async fn register_udp_by_invalid_token() {
+        let state = ServerState::new(unlimited());
+        assert!(!state.register_udp_by_token(12345, addr(5000)).await);
+    }
+
+    // ── peer cache ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fill_channel_peers_excludes_sender() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        state.register_client(addr(2)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, t1, _) = state.join_channel(&addr(1), &ch).await.unwrap();
+        let (_, t2, _) = state.join_channel(&addr(2), &ch).await.unwrap();
+
+        let udp1 = addr(5001);
+        let udp2 = addr(5002);
+        state.register_udp_by_token(t1, udp1).await;
+        state.register_udp_by_token(t2, udp2).await;
+
+        let mut peers = Vec::new();
+        state.fill_channel_peers(&ch, &udp1, &mut peers);
+        assert_eq!(peers, vec![udp2]);
+    }
+
+    // ── rename ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rename_client_returns_old_name() {
+        let state = ServerState::new(unlimited());
+        let name = state.register_client(addr(1)).await.unwrap();
+        let (old, ch) = state.rename_client(&addr(1), "alice".into()).await.unwrap();
+        assert_eq!(old, name);
+        assert!(ch.is_none());
+    }
+
+    #[tokio::test]
+    async fn rename_nonexistent_client_returns_none() {
+        let state = ServerState::new(unlimited());
+        assert!(state.rename_client(&addr(99), "bob".into()).await.is_none());
+    }
+
+    // ── get_client ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_client_returns_info() {
+        let state = ServerState::new(unlimited());
+        let name = state.register_client(addr(1)).await.unwrap();
+        let info = state.get_client(&addr(1)).await.unwrap();
+        assert_eq!(info.name, name);
+        assert!(info.channel.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_nonexistent_client_returns_none() {
+        let state = ServerState::new(unlimited());
+        assert!(state.get_client(&addr(99)).await.is_none());
+    }
+
+    // ── list public channels ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_public_channels_filters_private() {
+        let state = ServerState::new(unlimited());
+        state.create_channel(None).await.unwrap();
+        state.create_channel(Some("pub1")).await.unwrap();
+        state.create_channel(Some("pub2")).await.unwrap();
+
+        let public = state.list_public_channels().await;
+        assert_eq!(public.len(), 2);
+        assert!(public.iter().all(|(id, _)| id.starts_with("pub-")));
+    }
+
+    // ── cleanup ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cleanup_removes_empty_channels_after_grace() {
+        let state = ServerState::new(unlimited());
+        let ch = state.create_channel(None).await.unwrap();
+
+        // Channel just created — grace period should protect it
+        let removed = state.cleanup_empty_channels().await;
+        assert_eq!(removed, 0);
+
+        // Backdate channel creation to bypass grace
+        {
+            let mut inner = state.inner.write().await;
+            inner.channel_created_at.insert(
+                ch.clone(),
+                Instant::now() - std::time::Duration::from_secs(300),
+            );
+        }
+
+        let removed = state.cleanup_empty_channels().await;
+        assert_eq!(removed, 1);
+    }
+
+    #[tokio::test]
+    async fn cleanup_keeps_occupied_channels() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+
+        // Backdate
+        {
+            let mut inner = state.inner.write().await;
+            inner.channel_created_at.insert(
+                ch.clone(),
+                Instant::now() - std::time::Duration::from_secs(300),
+            );
+        }
+
+        let removed = state.cleanup_empty_channels().await;
+        assert_eq!(removed, 0);
+    }
+
+    // ── stats ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stats_returns_correct_counts() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        state.register_client(addr(2)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, token, _) = state.join_channel(&addr(1), &ch).await.unwrap();
+        state.register_udp_by_token(token, addr(5001)).await;
+
+        let s = state.stats().await;
+        assert_eq!(s.clients, 2);
+        assert_eq!(s.channels, 1);
+        assert_eq!(s.udp_peers, 1);
+    }
+
+    // ── broadcast_channel ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn broadcast_channel_excludes_sender() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        state.register_client(addr(2)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+        state.join_channel(&addr(2), &ch).await.unwrap();
+
+        let mut received = Vec::new();
+        state.broadcast_channel(&ch, Some(&addr(1)), &tc_shared::ServerMessage::Pong, |a, _| {
+            received.push(*a);
+        }).await;
+
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0], addr(2));
+    }
+
+    // ── remove client cleans up channel ──────────────────────────────
+
+    #[tokio::test]
+    async fn remove_last_client_deletes_channel() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+
+        state.remove_client(&addr(1)).await;
+
+        // Channel should be gone
+        let s = state.stats().await;
+        assert_eq!(s.channels, 0);
     }
 }

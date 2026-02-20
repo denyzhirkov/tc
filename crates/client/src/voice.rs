@@ -777,3 +777,262 @@ impl Drop for VoiceHandle {
         self.recv_handle.abort();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── seq_before ───────────────────────────────────────────────────
+
+    #[test]
+    fn seq_before_basic() {
+        assert!(seq_before(1, 2));
+        assert!(seq_before(0, 1));
+        assert!(!seq_before(2, 1));
+        assert!(!seq_before(5, 5)); // equal
+    }
+
+    #[test]
+    fn seq_before_wrapping() {
+        // Near u32::MAX boundary
+        assert!(seq_before(u32::MAX - 1, u32::MAX));
+        assert!(seq_before(u32::MAX, 0)); // wrap around
+        assert!(seq_before(u32::MAX, 1)); // wrap around
+        assert!(!seq_before(1, u32::MAX)); // 1 is "after" MAX in wrapping
+    }
+
+    // ── QualityTier ──────────────────────────────────────────────────
+
+    #[test]
+    fn quality_tier_from_loss_thresholds() {
+        assert_eq!(QualityTier::from_loss(0), QualityTier::High);
+        assert_eq!(QualityTier::from_loss(4), QualityTier::High);
+        assert_eq!(QualityTier::from_loss(5), QualityTier::Medium);
+        assert_eq!(QualityTier::from_loss(14), QualityTier::Medium);
+        assert_eq!(QualityTier::from_loss(15), QualityTier::Low);
+        assert_eq!(QualityTier::from_loss(29), QualityTier::Low);
+        assert_eq!(QualityTier::from_loss(30), QualityTier::Minimum);
+        assert_eq!(QualityTier::from_loss(100), QualityTier::Minimum);
+    }
+
+    #[test]
+    fn quality_tier_u8_roundtrip() {
+        for tier in [QualityTier::High, QualityTier::Medium, QualityTier::Low, QualityTier::Minimum] {
+            assert_eq!(QualityTier::from_u8(tier.to_u8()), tier);
+        }
+    }
+
+    #[test]
+    fn quality_tier_unknown_u8_defaults_high() {
+        assert_eq!(QualityTier::from_u8(255), QualityTier::High);
+    }
+
+    #[test]
+    fn quality_tier_bitrate_decreasing() {
+        assert!(QualityTier::High.bitrate() > QualityTier::Medium.bitrate());
+        assert!(QualityTier::Medium.bitrate() > QualityTier::Low.bitrate());
+        assert!(QualityTier::Low.bitrate() > QualityTier::Minimum.bitrate());
+    }
+
+    #[test]
+    fn quality_tier_complexity_decreasing() {
+        assert!(QualityTier::High.complexity() > QualityTier::Medium.complexity());
+        assert!(QualityTier::Medium.complexity() > QualityTier::Low.complexity());
+        assert!(QualityTier::Low.complexity() > QualityTier::Minimum.complexity());
+    }
+
+    #[test]
+    fn quality_tier_fec_only_when_lossy() {
+        assert!(!QualityTier::High.fec());
+        assert!(QualityTier::Medium.fec());
+        assert!(QualityTier::Low.fec());
+        assert!(QualityTier::Minimum.fec());
+    }
+
+    #[test]
+    fn quality_tier_as_str() {
+        assert_eq!(QualityTier::High.as_str(), "high");
+        assert_eq!(QualityTier::Medium.as_str(), "medium");
+        assert_eq!(QualityTier::Low.as_str(), "low");
+        assert_eq!(QualityTier::Minimum.as_str(), "minimum");
+    }
+
+    // ── NetworkStats ─────────────────────────────────────────────────
+
+    #[test]
+    fn network_stats_initial_state() {
+        let stats = NetworkStats::new();
+        assert_eq!(stats.loss_percent(), 0);
+        assert_eq!(stats.current_tier(), QualityTier::High);
+    }
+
+    #[test]
+    fn network_stats_finalize_no_loss() {
+        let stats = NetworkStats::new();
+        for _ in 0..config::STATS_WINDOW_PACKETS {
+            stats.record_received();
+        }
+        stats.maybe_finalize_window();
+        assert_eq!(stats.loss_percent(), 0);
+        assert_eq!(stats.current_tier(), QualityTier::High);
+    }
+
+    #[test]
+    fn network_stats_finalize_high_loss() {
+        let stats = NetworkStats::new();
+        // 50% loss: 75 received, 75 lost
+        let half = config::STATS_WINDOW_PACKETS / 2;
+        for _ in 0..half {
+            stats.record_received();
+        }
+        for _ in 0..half {
+            stats.record_lost();
+        }
+        stats.maybe_finalize_window();
+        assert!(stats.loss_percent() >= 40); // ~50%
+        assert_eq!(stats.current_tier(), QualityTier::Minimum);
+    }
+
+    #[test]
+    fn network_stats_window_resets_after_finalize() {
+        let stats = NetworkStats::new();
+        for _ in 0..config::STATS_WINDOW_PACKETS {
+            stats.record_received();
+        }
+        stats.maybe_finalize_window();
+
+        // Window should be reset — not enough data to finalize again
+        stats.record_received();
+        stats.maybe_finalize_window(); // should not change since total < window
+        // Still reports previous window's result
+        assert_eq!(stats.loss_percent(), 0);
+    }
+
+    // ── JitterBuffer ─────────────────────────────────────────────────
+
+    #[test]
+    fn jitter_buffer_push_pop_in_order() {
+        let mut jb = JitterBuffer::new();
+        let mut out = Vec::new();
+
+        jb.push(1, &[10, 20]);
+        jb.push(2, &[30, 40]);
+
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![10, 20]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![30, 40]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Empty));
+    }
+
+    #[test]
+    fn jitter_buffer_missing_packet_detected() {
+        let mut jb = JitterBuffer::new();
+        let mut out = Vec::new();
+
+        jb.push(1, &[10]);
+        // Skip seq 2
+        jb.push(3, &[30]);
+
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet)); // seq 1
+        assert_eq!(out, vec![10]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Missing)); // seq 2 gap
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet)); // seq 3
+        assert_eq!(out, vec![30]);
+    }
+
+    #[test]
+    fn jitter_buffer_late_packet_dropped() {
+        let mut jb = JitterBuffer::new();
+        let mut out = Vec::new();
+
+        jb.push(5, &[50]);
+        jb.pop(&mut out); // consume seq 5, next_seq=6
+
+        // Push seq 5 again (late) — should be silently dropped
+        jb.push(5, &[99]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Empty));
+    }
+
+    #[test]
+    fn jitter_buffer_count_buffered() {
+        let mut jb = JitterBuffer::new();
+        jb.push(1, &[10]);
+        jb.push(2, &[20]);
+        jb.push(3, &[30]);
+        assert_eq!(jb.count_buffered(), 3);
+    }
+
+    #[test]
+    fn jitter_buffer_reset_to() {
+        let mut jb = JitterBuffer::new();
+        jb.push(100, &[1]);
+        jb.push(101, &[2]);
+
+        jb.reset_to(200);
+        assert_eq!(jb.count_buffered(), 0);
+        assert_eq!(jb.jitter_ms(), 0.0);
+
+        // Can push and pop from new sequence
+        let mut out = Vec::new();
+        jb.push(200, &[42]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![42]);
+    }
+
+    #[test]
+    fn jitter_buffer_stream_restart_detection() {
+        let mut jb = JitterBuffer::new();
+        let mut out = Vec::new();
+
+        // Simulate an advanced stream
+        jb.push(1000, &[1]);
+        jb.pop(&mut out); // next_seq = 1001
+
+        // Sender restarts at seq 1 — large backward jump
+        jb.push(1, &[99]);
+
+        // Buffer should have auto-reset
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![99]);
+    }
+
+    #[test]
+    fn jitter_buffer_far_ahead_packet_dropped() {
+        let mut jb = JitterBuffer::new();
+        jb.push(1, &[10]);
+        // Push way ahead (beyond capacity)
+        jb.push(1 + config::JITTER_BUF_MAX as u32, &[99]);
+
+        let mut out = Vec::new();
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![10]);
+        // The far-ahead packet should have been dropped
+        assert!(matches!(jb.pop(&mut out), PopResult::Empty));
+    }
+
+    #[test]
+    fn jitter_buffer_adapt_size() {
+        let mut jb = JitterBuffer::new();
+        // Jitter is 0 initially — adapt should set to minimum
+        jb.adapt_size();
+        assert!(jb.max_size >= config::JITTER_BUF_MIN);
+        assert!(jb.max_size <= config::JITTER_BUF_MAX);
+    }
+
+    #[test]
+    fn jitter_buffer_skip_to_oldest() {
+        let mut jb = JitterBuffer::new();
+        jb.push(1, &[10]); // start
+        let mut out = Vec::new();
+        jb.pop(&mut out); // consume seq 1, next_seq = 2
+
+        // Push 5 and 6, skip 2,3,4
+        jb.push(5, &[50]);
+        jb.push(6, &[60]);
+
+        jb.skip_to_oldest_available();
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![50]);
+    }
+}

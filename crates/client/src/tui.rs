@@ -650,3 +650,52 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         area.y + 1,
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_bytes_ranges() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1 KB");
+        assert_eq!(format_bytes(1536), "2 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    #[test]
+    fn matrix_state_tick_no_panic() {
+        let mut ms = MatrixState::new();
+        ms.tick(80, 24, 0.0);
+        ms.tick(80, 24, 10.0);
+        assert!(!ms.streams.is_empty());
+    }
+
+    #[test]
+    fn matrix_state_zero_dimensions() {
+        let mut ms = MatrixState::new();
+        ms.tick(0, 0, 5.0); // should not panic
+        assert!(ms.streams.is_empty());
+    }
+
+    #[test]
+    fn matrix_char_at_deterministic() {
+        let ms = MatrixState::new();
+        let c1 = ms.char_at(42, 10);
+        let c2 = ms.char_at(42, 10);
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn matrix_char_at_different_seeds() {
+        let ms = MatrixState::new();
+        // Different seeds should (almost certainly) give different chars
+        // at different positions
+        let chars: Vec<char> = (0..100).map(|i| ms.char_at(i, 0)).collect();
+        let unique: std::collections::HashSet<char> = chars.into_iter().collect();
+        assert!(unique.len() > 1);
+    }
+}

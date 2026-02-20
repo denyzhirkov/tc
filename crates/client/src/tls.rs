@@ -168,3 +168,147 @@ pub fn tls_connector(tofu: &TofuState) -> TlsConnector {
 
     TlsConnector::from(Arc::new(config))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls_pki_types::ServerName;
+
+    fn dummy_cert() -> CertificateDer<'static> {
+        CertificateDer::from(vec![1u8, 2, 3, 4, 5])
+    }
+
+    fn another_cert() -> CertificateDer<'static> {
+        CertificateDer::from(vec![10u8, 20, 30, 40, 50])
+    }
+
+    // ── cert_fingerprint ─────────────────────────────────────────────
+
+    #[test]
+    fn fingerprint_format() {
+        let cert = dummy_cert();
+        let fp = cert_fingerprint(&cert);
+        assert!(fp.starts_with("sha256:"));
+        // SHA-256 = 64 hex chars + "sha256:" prefix = 71 total
+        assert_eq!(fp.len(), 7 + 64);
+    }
+
+    #[test]
+    fn fingerprint_deterministic() {
+        let cert = dummy_cert();
+        assert_eq!(cert_fingerprint(&cert), cert_fingerprint(&cert));
+    }
+
+    #[test]
+    fn fingerprint_different_certs() {
+        assert_ne!(cert_fingerprint(&dummy_cert()), cert_fingerprint(&another_cert()));
+    }
+
+    // ── TofuState API ────────────────────────────────────────────────
+
+    #[test]
+    fn tofu_state_set_current_server() {
+        let tofu = TofuState::new(HashMap::new());
+        tofu.set_current_server("example.com:7100");
+        assert!(tofu.last_result().is_none());
+    }
+
+    #[test]
+    fn tofu_state_trust_and_retrieve() {
+        let tofu = TofuState::new(HashMap::new());
+        tofu.trust_server("srv1", "sha256:aaa");
+        tofu.trust_server("srv2", "sha256:bbb");
+
+        let map = tofu.trusted_map();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["srv1"], "sha256:aaa");
+    }
+
+    #[test]
+    fn tofu_state_remove_server() {
+        let tofu = TofuState::new(HashMap::new());
+        tofu.trust_server("srv1", "sha256:aaa");
+        tofu.remove_server("srv1");
+        assert!(tofu.trusted_map().is_empty());
+    }
+
+    #[test]
+    fn tofu_state_init_from_existing() {
+        let mut existing = HashMap::new();
+        existing.insert("srv1".into(), "sha256:aaa".into());
+        let tofu = TofuState::new(existing);
+        assert_eq!(tofu.trusted_map().len(), 1);
+    }
+
+    // ── TofuVerifier (TOFU logic) ────────────────────────────────────
+
+    fn verify(state: &TofuState, cert: &CertificateDer<'_>) -> Result<ServerCertVerified, Error> {
+        let verifier = TofuVerifier {
+            state: Arc::clone(&state.inner),
+        };
+        let sni = ServerName::try_from("localhost").unwrap();
+        verifier.verify_server_cert(cert, &[], &sni, &[], UnixTime::now())
+    }
+
+    #[test]
+    fn tofu_first_connection_trusts_automatically() {
+        let tofu = TofuState::new(HashMap::new());
+        tofu.set_current_server("new-server:7100");
+        let cert = dummy_cert();
+
+        assert!(verify(&tofu, &cert).is_ok());
+
+        match tofu.last_result().unwrap() {
+            TofuResult::TrustedNew(fp) => assert!(fp.starts_with("sha256:")),
+            other => panic!("expected TrustedNew, got {:?}", other),
+        }
+
+        // Fingerprint should be stored
+        let map = tofu.trusted_map();
+        assert!(map.contains_key("new-server:7100"));
+    }
+
+    #[test]
+    fn tofu_known_cert_matches() {
+        let cert = dummy_cert();
+        let fp = cert_fingerprint(&cert);
+        let mut trusted = HashMap::new();
+        trusted.insert("known-server:7100".into(), fp);
+        let tofu = TofuState::new(trusted);
+        tofu.set_current_server("known-server:7100");
+
+        assert!(verify(&tofu, &cert).is_ok());
+
+        match tofu.last_result().unwrap() {
+            TofuResult::TrustedKnown => {}
+            other => panic!("expected TrustedKnown, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tofu_cert_change_auto_trusts() {
+        let cert1 = dummy_cert();
+        let fp1 = cert_fingerprint(&cert1);
+        let mut trusted = HashMap::new();
+        trusted.insert("server:7100".into(), fp1);
+        let tofu = TofuState::new(trusted);
+        tofu.set_current_server("server:7100");
+
+        // Connect with a different cert
+        let cert2 = another_cert();
+        assert!(verify(&tofu, &cert2).is_ok());
+
+        match tofu.last_result().unwrap() {
+            TofuResult::Mismatch { expected, actual } => {
+                assert!(expected.starts_with("sha256:"));
+                assert!(actual.starts_with("sha256:"));
+                assert_ne!(expected, actual);
+            }
+            other => panic!("expected Mismatch, got {:?}", other),
+        }
+
+        // New fingerprint should be stored
+        let map = tofu.trusted_map();
+        assert_eq!(map["server:7100"], cert_fingerprint(&cert2));
+    }
+}
