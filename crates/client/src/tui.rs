@@ -206,6 +206,10 @@ pub struct App {
     pub voice_join_params: Option<VoiceJoinParams>,
     /// VAD threshold (f32 stored as AtomicU32 bits for lock-free sharing with voice thread).
     pub vad_threshold: Arc<AtomicU32>,
+    /// Microphone gain (f32 stored as AtomicU32 bits; 1.0 = 100%).
+    pub input_gain: Arc<AtomicU32>,
+    /// Incoming audio volume (f32 stored as AtomicU32 bits; 1.0 = 100%).
+    pub output_vol: Arc<AtomicU32>,
     /// Display name.
     pub name: Option<String>,
     /// Channel ID to auto-rejoin after reconnect.
@@ -266,6 +270,8 @@ impl App {
             output_device: None,
             voice_join_params: None,
             vad_threshold: Arc::new(AtomicU32::new(config::VAD_RMS_THRESHOLD.to_bits())),
+            input_gain: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            output_vol: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             name: None,
             rejoin_channel: None,
             scroll_offset: 0,

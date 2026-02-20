@@ -16,6 +16,12 @@ pub struct UserSettings {
     pub output_device: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vad_level: Option<u32>,
+    /// Microphone gain (0–200, default 100 = 1.0×).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_gain: Option<u32>,
+    /// Incoming audio volume (0–200, default 100 = 1.0×).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_vol: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// TOFU: trusted server certificate fingerprints (server_addr → "sha256:hex").

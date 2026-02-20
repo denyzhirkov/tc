@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -65,6 +65,14 @@ async fn main() -> Result<()> {
         let threshold = vad_threshold_from_level(level);
         app.vad_threshold
             .store(threshold.to_bits(), Ordering::Relaxed);
+    }
+    if let Some(pct) = user_settings.input_gain {
+        app.input_gain
+            .store(vol_from_percent(pct).to_bits(), Ordering::Relaxed);
+    }
+    if let Some(pct) = user_settings.output_vol {
+        app.output_vol
+            .store(vol_from_percent(pct).to_bits(), Ordering::Relaxed);
     }
     let mut terminal = tui::init_terminal()?;
 
@@ -337,7 +345,7 @@ async fn handle_command(
             do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
             return;
         }
-        "/server" => {
+        "/server" | "/s" => {
             if let Some(addr) = parts.get(1).map(|s| s.trim()) {
                 if !addr.is_empty() {
                     app.server_addr = if addr.contains(':') {
@@ -359,15 +367,15 @@ async fn handle_command(
             }
             return;
         }
-        "/reconnect" => {
+        "/reconnect" | "/r" => {
             do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
             return;
         }
-        "/config" => {
+        "/config" | "/cfg" => {
             handle_config(parts.get(1).copied(), app, muted, voice_handle).await;
             return;
         }
-        "/name" => {
+        "/name" | "/n" => {
             if let Some(new_name) = parts.get(1).map(|s| sanitize_name(s)) {
                 if !new_name.is_empty() {
                     app.add_message(format!("> /name {}", new_name));
@@ -408,25 +416,27 @@ async fn handle_command(
             }
             return;
         }
-        "/quit" | "/exit" => {
+        "/quit" | "/exit" | "/q" => {
             app.should_quit = true;
             return;
         }
-        "/help" => {
-            app.add_message("── commands ──".into());
-            app.add_message("  /config            list audio config".into());
+        "/help" | "/h" => {
+            app.add_message("── commands (short aliases in parens) ──".into());
+            app.add_message("  /config (/cfg)     list audio config".into());
             app.add_message("  /config input <N>  select input device".into());
             app.add_message("  /config output <N> select output device".into());
-            app.add_message("  /config vad <0-100> set vad level (0/off = disable, default 10)".into());
-            app.add_message("  /create            create a new channel".into());
-            app.add_message("  /connect <id>      join a channel".into());
-            app.add_message("  /leave             leave current channel".into());
-            app.add_message("  /mute              toggle mute".into());
-            app.add_message("  /name <name>       set your display name".into());
-            app.add_message("  /server <ip>       set server address".into());
-            app.add_message("  /reconnect         reconnect to server".into());
+            app.add_message("  /config gain <0-200> mic gain (default 100)".into());
+            app.add_message("  /config vol <0-200>  incoming volume (default 100)".into());
+            app.add_message("  /config vad <0-100>  vad level (0/off = disable, default 10)".into());
+            app.add_message("  /create (/c)       create a new channel".into());
+            app.add_message("  /connect (/j) <id> join a channel (or just #<id>)".into());
+            app.add_message("  /leave (/l)        leave current channel".into());
+            app.add_message("  /mute (/m)         toggle mute".into());
+            app.add_message("  /name (/n) <name>  set your display name".into());
+            app.add_message("  /server (/s) <ip>  set server address".into());
+            app.add_message("  /reconnect (/r)    reconnect to server".into());
             app.add_message("  /web <port>        start web UI on port".into());
-            app.add_message("  /quit              exit".into());
+            app.add_message("  /quit (/q)         exit".into());
             app.add_message("  <text>             send chat message".into());
             app.add_message("── keys ──".into());
             app.add_message("  Up/Down            command history".into());
@@ -443,11 +453,11 @@ async fn handle_command(
     }
 
     match parts[0] {
-        "/create" => {
+        "/create" | "/c" => {
             app.add_message("> /create".into());
             send_or_disconnect(conn, app, ClientMessage::CreateChannel);
         }
-        "/connect" | "/join" => {
+        "/connect" | "/join" | "/j" => {
             if let Some(id) = parts.get(1).map(|s| s.trim()) {
                 if !id.is_empty() {
                     app.add_message(format!("> /connect {}", id));
@@ -461,7 +471,7 @@ async fn handle_command(
                 app.add_message("usage: /connect <channel_id>".into());
             }
         }
-        "/leave" => {
+        "/leave" | "/l" => {
             app.add_message("> /leave".into());
             send_or_disconnect(conn, app, ClientMessage::LeaveChannel);
             *voice_handle = None;
@@ -472,7 +482,17 @@ async fn handle_command(
             app.rejoin_channel = None;
         }
         _ => {
-            if !input.starts_with('/') {
+            if let Some(id) = input.strip_prefix('#') {
+                let id = id.trim();
+                if !id.is_empty() {
+                    app.add_message(format!("> /connect {}", id));
+                    send_or_disconnect(conn, app, ClientMessage::JoinChannel {
+                        channel_id: id.to_string(),
+                    });
+                } else {
+                    app.add_message("usage: #<channel_id>".into());
+                }
+            } else if !input.starts_with('/') {
                 // Chat message
                 send_or_disconnect(conn, app, ClientMessage::ChatMessage {
                     text: input.to_string(),
@@ -603,6 +623,8 @@ async fn handle_server_message(
                 app.input_device.clone(),
                 app.output_device.clone(),
                 app.vad_threshold.clone(),
+                app.input_gain.clone(),
+                app.output_vol.clone(),
                 my_name,
             )
             .await
@@ -693,6 +715,11 @@ async fn handle_config(
             }
             Err(e) => app.add_message(format!("  error: {}", e)),
         }
+        app.add_message("── volume ──".into());
+        let gain = f32::from_bits(app.input_gain.load(Ordering::Relaxed));
+        let vol = f32::from_bits(app.output_vol.load(Ordering::Relaxed));
+        app.add_message(format!("  gain (mic): {}%", percent_from_vol(gain)));
+        app.add_message(format!("  vol (recv): {}%", percent_from_vol(vol)));
         app.add_message("── vad ──".into());
         let threshold = f32::from_bits(app.vad_threshold.load(Ordering::Relaxed));
         if threshold == 0.0 {
@@ -752,8 +779,20 @@ async fn handle_config(
                 save_settings(app);
             }
         }
+        "gain" => {
+            let gain = app.input_gain.clone();
+            if handle_config_vol(index_str, &gain, "gain (mic)", app) {
+                save_settings(app);
+            }
+        }
+        "vol" => {
+            let vol = app.output_vol.clone();
+            if handle_config_vol(index_str, &vol, "vol (recv)", app) {
+                save_settings(app);
+            }
+        }
         _ => {
-            app.add_message("usage: /config [input|output|vad] <value>".into());
+            app.add_message("usage: /config [input|output|gain|vol|vad] <value>".into());
         }
     }
 }
@@ -772,6 +811,14 @@ fn vad_level_from_threshold(threshold: f32) -> u32 {
 
 fn vad_threshold_from_level(level: u32) -> f32 {
     level as f32 * 0.001
+}
+
+fn vol_from_percent(pct: u32) -> f32 {
+    pct as f32 / 100.0
+}
+
+fn percent_from_vol(vol: f32) -> u32 {
+    (vol * 100.0).round() as u32
 }
 
 fn handle_config_vad(value: &str, app: &mut tui::App) -> bool {
@@ -811,6 +858,26 @@ fn handle_config_vad(value: &str, app: &mut tui::App) -> bool {
     }
 }
 
+fn handle_config_vol(value: &str, atomic: &Arc<AtomicU32>, label: &str, app: &mut tui::App) -> bool {
+    if value.is_empty() {
+        let current = f32::from_bits(atomic.load(Ordering::Relaxed));
+        app.add_message(format!("{}: {}%", label, percent_from_vol(current)));
+        return false;
+    }
+    match value.parse::<u32>() {
+        Ok(pct @ 0..=200) => {
+            let vol = vol_from_percent(pct);
+            atomic.store(vol.to_bits(), Ordering::Relaxed);
+            app.add_message(format!("{} set to {}%", label, pct));
+            true
+        }
+        _ => {
+            app.add_message(format!("usage: /config {} <0-200> (default 100)", label.split_whitespace().next().unwrap_or(label)));
+            false
+        }
+    }
+}
+
 fn handle_tofu_result(tofu: &TofuState, app: &mut tui::App) {
     if let Some(result) = tofu.last_result() {
         match result {
@@ -830,39 +897,25 @@ fn handle_tofu_result(tofu: &TofuState, app: &mut tui::App) {
 fn save_tofu(tofu: &TofuState, app: &tui::App) {
     let trusted = tofu.trusted_map();
     if !trusted.is_empty() {
-        // Re-save settings with updated trusted_servers
-        let default_server = format!("127.0.0.1:{}", config::TCP_PORT);
-        let threshold = f32::from_bits(app.vad_threshold.load(Ordering::Relaxed));
-        let level = vad_level_from_threshold(threshold);
-        let default_level = vad_level_from_threshold(config::VAD_RMS_THRESHOLD);
-
-        let s = settings::UserSettings {
-            server: if app.server_addr != default_server {
-                Some(app.server_addr.clone())
-            } else {
-                None
-            },
-            input_device: app.input_device.clone(),
-            output_device: app.output_device.clone(),
-            vad_level: if level != default_level {
-                Some(level)
-            } else {
-                None
-            },
-            name: app.name.clone(),
-            trusted_servers: trusted,
-        };
+        let mut s = build_settings(app);
+        s.trusted_servers = trusted;
         s.save();
     }
 }
 
 fn save_settings(app: &tui::App) {
+    build_settings(app).save();
+}
+
+fn build_settings(app: &tui::App) -> settings::UserSettings {
     let default_server = format!("127.0.0.1:{}", config::TCP_PORT);
     let threshold = f32::from_bits(app.vad_threshold.load(Ordering::Relaxed));
     let level = vad_level_from_threshold(threshold);
     let default_level = vad_level_from_threshold(config::VAD_RMS_THRESHOLD);
+    let gain_pct = percent_from_vol(f32::from_bits(app.input_gain.load(Ordering::Relaxed)));
+    let vol_pct = percent_from_vol(f32::from_bits(app.output_vol.load(Ordering::Relaxed)));
 
-    let s = settings::UserSettings {
+    settings::UserSettings {
         server: if app.server_addr != default_server {
             Some(app.server_addr.clone())
         } else {
@@ -875,10 +928,11 @@ fn save_settings(app: &tui::App) {
         } else {
             None
         },
+        input_gain: if gain_pct != 100 { Some(gain_pct) } else { None },
+        output_vol: if vol_pct != 100 { Some(vol_pct) } else { None },
         name: app.name.clone(),
         trusted_servers: Default::default(),
-    };
-    s.save();
+    }
 }
 
 async fn restart_voice(
@@ -904,6 +958,8 @@ async fn restart_voice(
         app.input_device.clone(),
         app.output_device.clone(),
         app.vad_threshold.clone(),
+        app.input_gain.clone(),
+        app.output_vol.clone(),
         my_name,
     )
     .await

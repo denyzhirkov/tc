@@ -159,7 +159,20 @@ impl JitterBuffer {
 
         // Drop packets that are too old (already played)
         if seq_before(seq, self.next_seq) {
-            return;
+            // Detect sender restart: a large backward jump means the remote
+            // peer likely left and rejoined, resetting their sequence counter.
+            // Without this, all new packets would be silently dropped until
+            // the sequence catches up to the old next_seq.
+            let gap = self.next_seq.wrapping_sub(seq);
+            if gap > self.capacity as u32 * 2 {
+                tracing::debug!(
+                    "jitter buffer: stream restart detected (seq={}, next_seq={}, gap={}), resetting",
+                    seq, self.next_seq, gap
+                );
+                self.reset_to(seq);
+            } else {
+                return;
+            }
         }
 
         // Drop packets too far ahead (would alias in the ring)
@@ -263,6 +276,18 @@ impl JitterBuffer {
         }
     }
 
+    /// Reset the buffer to accept a new stream starting at the given sequence.
+    /// Called when a large backward sequence jump is detected (peer rejoined).
+    fn reset_to(&mut self, seq: u32) {
+        self.next_seq = seq;
+        for slot in &mut self.slots {
+            *slot = None;
+        }
+        self.jitter_ms = 0.0;
+        self.last_arrival = None;
+        self.packets_since_adapt = 0;
+    }
+
     /// Current jitter estimate in milliseconds.
     fn jitter_ms(&self) -> f64 {
         self.jitter_ms
@@ -287,6 +312,8 @@ pub async fn start_voice(
     input_device: Option<String>,
     output_device: Option<String>,
     vad_threshold: Arc<AtomicU32>,
+    input_gain: Arc<AtomicU32>,
+    output_vol: Arc<AtomicU32>,
     sender_name: String,
 ) -> Result<VoiceHandle> {
     let udp_addr = if server_addr.contains(':') {
@@ -357,6 +384,7 @@ pub async fn start_voice(
     let send_muted = muted.clone();
     let send_stats = stats.clone();
     let send_vad_threshold = vad_threshold.clone();
+    let send_input_gain = input_gain.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let send_stop = stop.clone();
     let _send_handle = std::thread::spawn(move || {
@@ -379,13 +407,21 @@ pub async fn start_voice(
             if send_stop.load(Ordering::Relaxed) {
                 break;
             }
-            let pcm_frame = match capture_rx.recv_timeout(Duration::from_millis(100)) {
+            let mut pcm_frame = match capture_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(f) => f,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => break,
             };
             if send_muted.load(Ordering::Relaxed) {
                 continue;
+            }
+
+            // Apply microphone gain
+            let gain = f32::from_bits(send_input_gain.load(Ordering::Relaxed));
+            if gain != 1.0 {
+                for s in &mut pcm_frame {
+                    *s *= gain;
+                }
             }
 
             // Periodically check if quality tier changed
@@ -506,6 +542,7 @@ pub async fn start_voice(
     let recv_bytes_rx = bytes_rx.clone();
     let recv_playback_cap = playback_cap.clone();
     let recv_speaking = speaking.clone();
+    let recv_output_vol = output_vol.clone();
     let recv_handle = tokio::spawn(async move {
         let mut decoder = match OpusDecoder::new() {
             Ok(d) => d,
@@ -565,7 +602,13 @@ pub async fn start_voice(
                                         s.maybe_finalize_window();
                                     }
                                     match decoder.decode(&opus_data) {
-                                        Ok(pcm) => {
+                                        Ok(mut pcm) => {
+                                            let vol = f32::from_bits(recv_output_vol.load(Ordering::Relaxed));
+                                            if vol != 1.0 {
+                                                for s in &mut pcm {
+                                                    *s *= vol;
+                                                }
+                                            }
                                             let _ = playback_tx.send(pcm);
                                         }
                                         Err(e) => {
@@ -580,7 +623,13 @@ pub async fn start_voice(
                                     }
                                     // Use Opus PLC for lost packet
                                     match decoder.decode_plc() {
-                                        Ok(pcm) => {
+                                        Ok(mut pcm) => {
+                                            let vol = f32::from_bits(recv_output_vol.load(Ordering::Relaxed));
+                                            if vol != 1.0 {
+                                                for s in &mut pcm {
+                                                    *s *= vol;
+                                                }
+                                            }
                                             let _ = playback_tx.send(pcm);
                                         }
                                         Err(e) => {
