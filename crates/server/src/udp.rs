@@ -18,6 +18,11 @@ struct BatchSender {
     msgs: Vec<libc::mmsghdr>,
 }
 
+// SAFETY: BatchSender is used from a single tokio task. The raw pointers
+// in iovec/mmsghdr are only valid during send_to_all and never escape.
+#[cfg(target_os = "linux")]
+unsafe impl Send for BatchSender {}
+
 #[cfg(target_os = "linux")]
 impl BatchSender {
     fn new() -> Self {
@@ -99,7 +104,7 @@ impl BatchSender {
         }
 
         unsafe {
-            libc::sendmmsg(fd, self.msgs.as_mut_ptr(), n as u32, libc::MSG_DONTWAIT);
+            libc::sendmmsg(fd, self.msgs.as_mut_ptr(), n as u32, libc::MSG_DONTWAIT as _);
         }
     }
 }
