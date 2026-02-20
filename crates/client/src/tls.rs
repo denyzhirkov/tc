@@ -104,11 +104,14 @@ impl ServerCertVerifier for TofuVerifier {
                 inner.last_result = Some(TofuResult::TrustedKnown);
                 Ok(ServerCertVerified::assertion())
             } else {
+                // Certificate changed — auto-trust the new one
+                let old = known.clone();
+                inner.trusted.insert(server, fingerprint.clone());
                 inner.last_result = Some(TofuResult::Mismatch {
-                    expected: known.clone(),
+                    expected: old,
                     actual: fingerprint,
                 });
-                Err(Error::General("server certificate fingerprint changed".into()))
+                Ok(ServerCertVerified::assertion())
             }
         } else {
             // First time — trust it

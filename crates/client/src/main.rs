@@ -115,8 +115,9 @@ async fn main() -> Result<()> {
             save_tofu(&tofu, &app);
         }
         Err(e) => {
+            handle_tofu_result(&tofu, &mut app);
             app.conn_state = ConnectionState::Disconnected;
-            app.add_message(format!("connection failed: {}", e));
+            app.add_message(format!("connection failed: {:#}", e));
             app.add_message("use /server <ip> to set address, then /reconnect".into());
         }
     }
@@ -271,22 +272,10 @@ async fn main() -> Result<()> {
                         save_tofu(&tofu, &app);
                     }
                     Err(_) => {
-                        // Stop auto-reconnect on TOFU mismatch — user must /trust
-                        if matches!(tofu.last_result(), Some(tls::TofuResult::Mismatch { .. })) {
-                            if let Some(tls::TofuResult::Mismatch { expected, actual }) = tofu.last_result() {
-                                app.add_message("WARNING: server certificate has changed!".into());
-                                app.add_message(format!("  expected: {}", expected));
-                                app.add_message(format!("  actual:   {}", actual));
-                                app.add_message("use /trust to accept the new certificate".into());
-                            }
-                            app.conn_state = ConnectionState::Disconnected;
-                            next_reconnect = None;
-                        } else {
-                            let delay_ms = (RECONNECT_BASE_MS * 2u64.saturating_pow(reconnect_attempt.min(5)))
-                                .min(RECONNECT_MAX_MS);
-                            tracing::debug!("reconnect attempt {} failed, next in {}ms", reconnect_attempt, delay_ms);
-                            next_reconnect = Some(Instant::now() + Duration::from_millis(delay_ms));
-                        }
+                        let delay_ms = (RECONNECT_BASE_MS * 2u64.saturating_pow(reconnect_attempt.min(5)))
+                            .min(RECONNECT_MAX_MS);
+                        tracing::debug!("reconnect attempt {} failed, next in {}ms", reconnect_attempt, delay_ms);
+                        next_reconnect = Some(Instant::now() + Duration::from_millis(delay_ms));
                     }
                 }
             }
@@ -571,15 +560,8 @@ async fn do_reconnect(
             save_tofu(tofu, app);
         }
         Err(e) => {
-            // Check if it was a TOFU mismatch
-            if let Some(tls::TofuResult::Mismatch { expected, actual }) = tofu.last_result() {
-                app.add_message("WARNING: server certificate has changed!".into());
-                app.add_message(format!("  expected: {}", expected));
-                app.add_message(format!("  actual:   {}", actual));
-                app.add_message("use /trust to accept the new certificate".into());
-            }
             app.conn_state = ConnectionState::Disconnected;
-            app.add_message(format!("connection failed: {}", e));
+            app.add_message(format!("connection failed: {:#}", e));
         }
     }
 }
@@ -929,9 +911,9 @@ fn handle_tofu_result(tofu: &TofuState, app: &mut tui::App) {
             }
             tls::TofuResult::TrustedKnown => {}
             tls::TofuResult::Mismatch { expected, actual } => {
-                app.add_message("WARNING: server certificate has changed!".into());
-                app.add_message(format!("  expected: {}", expected));
-                app.add_message(format!("  actual:   {}", actual));
+                app.add_message("server certificate changed (auto-trusted)".into());
+                app.add_message(format!("  old: {}", expected));
+                app.add_message(format!("  new: {}", actual));
             }
         }
     }
