@@ -59,17 +59,19 @@ impl OpusDecoder {
     }
 
     /// Decode Opus bytes into f32 PCM samples.
-    pub fn decode(&mut self, opus_data: &[u8]) -> Result<Vec<f32>> {
+    /// Returns a slice into the internal buffer (valid until next decode call).
+    pub fn decode(&mut self, opus_data: &[u8]) -> Result<&[f32]> {
         let packet = audiopus::packet::Packet::try_from(opus_data)?;
         let signals = audiopus::MutSignals::try_from(self.decode_buf.as_mut_slice())?;
         let samples = self.decoder.decode_float(Some(packet), signals, false)?;
-        Ok(self.decode_buf[..samples].to_vec())
+        Ok(&self.decode_buf[..samples])
     }
 
     /// Packet loss concealment — generate a replacement frame for a missing packet.
-    pub fn decode_plc(&mut self) -> Result<Vec<f32>> {
+    /// Returns a slice into the internal buffer (valid until next decode call).
+    pub fn decode_plc(&mut self) -> Result<&[f32]> {
         let signals = audiopus::MutSignals::try_from(self.decode_buf.as_mut_slice())?;
         let samples = self.decoder.decode_float(None, signals, false)?;
-        Ok(self.decode_buf[..samples].to_vec())
+        Ok(&self.decode_buf[..samples])
     }
 }

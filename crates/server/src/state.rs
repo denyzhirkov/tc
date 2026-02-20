@@ -266,15 +266,27 @@ impl ServerState {
         *cache.write().unwrap() = new_cache;
     }
 
-    /// Get all TCP addresses in a channel (for broadcasting control messages).
-    pub async fn get_channel_tcp_addrs(&self, channel_id: &str) -> Vec<SocketAddr> {
+    /// Iterate channel members under a single read lock, calling `send_fn` for each.
+    /// Avoids intermediate Vec allocation and extra lock round-trip.
+    pub async fn broadcast_channel<F>(
+        &self,
+        channel_id: &str,
+        exclude: Option<&SocketAddr>,
+        msg: &tc_shared::ServerMessage,
+        mut send_fn: F,
+    ) where
+        F: FnMut(&SocketAddr, tc_shared::ServerMessage),
+    {
         let inner = self.inner.read().await;
-        inner
-            .clients
-            .iter()
-            .filter(|(_, info)| info.channel.as_deref() == Some(channel_id))
-            .map(|(addr, _)| *addr)
-            .collect()
+        for (addr, info) in &inner.clients {
+            if info.channel.as_deref() != Some(channel_id) {
+                continue;
+            }
+            if exclude.is_some_and(|ex| ex == addr) {
+                continue;
+            }
+            send_fn(addr, msg.clone());
+        }
     }
 
     /// Rename a client. Returns (old_name, channel_id) if successful.

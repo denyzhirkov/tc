@@ -370,6 +370,8 @@ async fn send_to(senders: &ClientSenders, addr: &SocketAddr, msg: ServerMessage)
 }
 
 /// Broadcast a message to all clients in a channel, optionally excluding one.
+/// Acquires both locks in a single scope to avoid intermediate Vec allocation
+/// and reduce total lock hold time.
 async fn broadcast_to_channel(
     state: &ServerState,
     senders: &ClientSenders,
@@ -377,16 +379,12 @@ async fn broadcast_to_channel(
     exclude: Option<&SocketAddr>,
     msg: ServerMessage,
 ) {
-    let addrs = state.get_channel_tcp_addrs(channel_id).await;
     let senders = senders.read().await;
-    for addr in &addrs {
-        if exclude.is_some_and(|ex| ex == addr) {
-            continue;
-        }
+    state.broadcast_channel(channel_id, exclude, &msg, |addr, m| {
         if let Some(tx) = senders.get(addr) {
-            if tx.try_send(msg.clone()).is_err() {
+            if tx.try_send(m).is_err() {
                 tracing::debug!(%addr, "client queue full, dropping broadcast");
             }
         }
-    }
+    }).await;
 }

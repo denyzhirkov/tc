@@ -1,13 +1,22 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::HeapRb;
 
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 use tc_shared::config;
+
+/// SPSC ring buffer halves for lock-free audio transport.
+pub type AudioProducer = ringbuf::HeapProd<f32>;
+pub type AudioConsumer = ringbuf::HeapCons<f32>;
+
+/// Number of Opus frames to buffer in ring buffers.
+const RING_BUF_FRAMES: usize = 8;
 
 /// Device stream parameters resolved at runtime.
 struct DeviceStreamParams {
@@ -54,16 +63,6 @@ fn resolve_stream_params(device: &cpal::Device, is_input: bool) -> Result<Device
             sample_rate: config::SAMPLE_RATE,
         })
     }
-}
-
-/// Linear-interpolation resampler (good enough for voice).
-fn resample(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate || input.is_empty() {
-        return input.to_vec();
-    }
-    let mut out = Vec::new();
-    resample_into(input, from_rate, to_rate, &mut out);
-    out
 }
 
 /// Linear-interpolation resampler writing into a provided buffer (zero allocation).
@@ -178,9 +177,9 @@ pub fn list_output_devices() -> Result<Vec<DeviceInfo>> {
 }
 
 /// Start capturing audio from an input device.
-/// If `device_name` is provided, uses that device; otherwise uses the system default.
-/// Returns a stream handle (must be kept alive) and a receiver of PCM frames.
-pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Receiver<Vec<f32>>)> {
+/// Returns a stream handle (must be kept alive) and a lock-free ring buffer consumer
+/// delivering 48 kHz mono PCM samples. Zero allocation on the audio callback thread.
+pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, AudioConsumer)> {
     let host = cpal::default_host();
     let device = if let Some(name) = device_name {
         host.input_devices()
@@ -210,10 +209,12 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
         / config::SAMPLE_RATE as f64)
         .round() as usize;
 
-    let (tx, rx) = std_mpsc::channel::<Vec<f32>>();
+    // Lock-free SPSC ring buffer for capture → encoder (no allocation on audio thread)
+    let rb = HeapRb::<f32>::new(config::FRAME_SIZE * RING_BUF_FRAMES);
+    let (mut prod, cons) = rb.split();
 
-    // Accumulate mono samples at device sample rate
-    let mut accumulator = Vec::with_capacity(device_frame_size * 2);
+    // Accumulate mono samples at device sample rate (VecDeque for O(1) front drain)
+    let mut accumulator: VecDeque<f32> = VecDeque::with_capacity(device_frame_size * 2);
     // Reusable buffer for a device-rate chunk (avoids per-frame allocation)
     let mut chunk_buf = vec![0.0f32; device_frame_size];
     // Sinc resampler for high-quality capture resampling (if needed)
@@ -246,25 +247,23 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
                 let ch = device_channels as usize;
                 for chunk in data.chunks_exact(ch) {
                     let mono: f32 = chunk.iter().sum::<f32>() / ch as f32;
-                    accumulator.push(mono);
+                    accumulator.push_back(mono);
                 }
             } else {
-                accumulator.extend_from_slice(data);
+                accumulator.extend(data.iter().copied());
             }
 
-            // 2. Drain in device-frame-sized chunks, resample to 48 kHz, send
+            // 2. Drain in device-frame-sized chunks, resample to 48 kHz, push to ring buffer
             while accumulator.len() >= device_frame_size {
-                chunk_buf[..device_frame_size]
-                    .copy_from_slice(&accumulator[..device_frame_size]);
-                accumulator.drain(..device_frame_size);
-
-                let mut opus_frame = vec![0.0f32; config::FRAME_SIZE];
+                // Copy and drain in one pass (VecDeque drain is O(1) head advance)
+                for (i, sample) in accumulator.drain(..device_frame_size).enumerate() {
+                    chunk_buf[i] = sample;
+                }
 
                 if let Some(ref mut sinc) = sinc_resampler {
-                    // High-quality sinc resampling
+                    // High-quality sinc resampling — push resampled samples to ring buffer
                     let resampled = sinc.process(&chunk_buf[..device_frame_size]);
-                    let n = resampled.len().min(config::FRAME_SIZE);
-                    opus_frame[..n].copy_from_slice(&resampled[..n]);
+                    prod.push_slice(resampled);
                 } else if need_resample {
                     // Fallback: linear interpolation
                     resample_into(
@@ -273,14 +272,10 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
                         config::SAMPLE_RATE,
                         &mut resample_buf,
                     );
-                    let n = resample_buf.len().min(config::FRAME_SIZE);
-                    opus_frame[..n].copy_from_slice(&resample_buf[..n]);
+                    prod.push_slice(&resample_buf);
                 } else {
-                    let n = device_frame_size.min(config::FRAME_SIZE);
-                    opus_frame[..n].copy_from_slice(&chunk_buf[..n]);
+                    prod.push_slice(&chunk_buf[..device_frame_size]);
                 }
-
-                let _ = tx.send(opus_frame);
             }
         },
         |err| {
@@ -290,13 +285,17 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, std_mpsc::Rec
     )?;
 
     stream.play()?;
-    Ok((stream, rx))
+    Ok((stream, cons))
 }
 
 /// Start playing audio on an output device.
-/// If `device_name` is provided, uses that device; otherwise uses the system default.
-/// Returns a stream handle (must be kept alive) and a sender to feed PCM frames.
-pub fn start_playback(device_name: Option<&str>, playback_cap: Arc<AtomicU32>) -> Result<(Stream, std_mpsc::Sender<Vec<f32>>)> {
+/// Returns a stream handle (must be kept alive) and a lock-free ring buffer producer
+/// accepting 48 kHz mono PCM samples. Volume is applied in the playback callback.
+pub fn start_playback(
+    device_name: Option<&str>,
+    playback_cap: Arc<AtomicU32>,
+    output_vol: Arc<AtomicU32>,
+) -> Result<(Stream, AudioProducer)> {
     let host = cpal::default_host();
     let device = if let Some(name) = device_name {
         host.output_devices()
@@ -321,21 +320,40 @@ pub fn start_playback(device_name: Option<&str>, playback_cap: Arc<AtomicU32>) -
     let device_rate = params.sample_rate;
     let need_resample = device_rate != config::SAMPLE_RATE;
 
-    let (tx, rx) = std_mpsc::channel::<Vec<f32>>();
+    // Lock-free SPSC ring buffer for decode → playback
+    let rb = HeapRb::<f32>::new(config::FRAME_SIZE * RING_BUF_FRAMES);
+    let (prod, mut cons) = rb.split();
 
-    // Buffer holds mono samples at device sample rate
-    let mut playback_buf: Vec<f32> = Vec::with_capacity(config::MAX_PLAYBACK_BUF);
+    // Buffer holds mono samples at device sample rate (VecDeque for O(1) front drain)
+    let mut playback_buf: VecDeque<f32> = VecDeque::with_capacity(config::MAX_PLAYBACK_BUF);
+    // Reusable buffer for playback resampling (avoids per-frame allocation)
+    let mut resample_out = if need_resample {
+        Vec::with_capacity(config::FRAME_SIZE * 2)
+    } else {
+        Vec::new()
+    };
+    // Reusable buffer for reading FRAME_SIZE chunks from ring buffer
+    let mut temp_frame = vec![0.0f32; config::FRAME_SIZE];
 
     let stream = device.build_output_stream(
         &params.stream_config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            // Drain received 48 kHz mono frames, resample to device rate
-            while let Ok(frame) = rx.try_recv() {
+            let vol = f32::from_bits(output_vol.load(Ordering::Relaxed));
+
+            // Read FRAME_SIZE chunks from ring buffer, apply volume, resample to device rate
+            while cons.occupied_len() >= config::FRAME_SIZE {
+                let n = cons.pop_slice(&mut temp_frame[..config::FRAME_SIZE]);
+                // Apply output volume
+                if vol != 1.0 {
+                    for s in &mut temp_frame[..n] {
+                        *s *= vol;
+                    }
+                }
                 if need_resample {
-                    let resampled = resample(&frame, config::SAMPLE_RATE, device_rate);
-                    playback_buf.extend_from_slice(&resampled);
+                    resample_into(&temp_frame[..n], config::SAMPLE_RATE, device_rate, &mut resample_out);
+                    playback_buf.extend(resample_out.iter().copied());
                 } else {
-                    playback_buf.extend_from_slice(&frame);
+                    playback_buf.extend(temp_frame[..n].iter().copied());
                 }
             }
 
@@ -357,20 +375,19 @@ pub fn start_playback(device_name: Option<&str>, playback_cap: Arc<AtomicU32>) -
                 let ch = device_channels as usize;
                 let mono_needed = data.len() / ch;
                 let available = playback_buf.len().min(mono_needed);
-                for i in 0..available {
-                    let sample = playback_buf[i];
+                for (i, sample) in playback_buf.drain(..available).enumerate() {
                     for c in 0..ch {
                         data[i * ch + c] = sample;
                     }
                 }
-                playback_buf.drain(..available);
                 for sample in &mut data[available * ch..] {
                     *sample = 0.0;
                 }
             } else {
                 let available = playback_buf.len().min(data.len());
-                data[..available].copy_from_slice(&playback_buf[..available]);
-                playback_buf.drain(..available);
+                for (i, sample) in playback_buf.drain(..available).enumerate() {
+                    data[i] = sample;
+                }
                 for sample in &mut data[available..] {
                     *sample = 0.0;
                 }
@@ -383,5 +400,5 @@ pub fn start_playback(device_name: Option<&str>, playback_cap: Arc<AtomicU32>) -
     )?;
 
     stream.play()?;
-    Ok((stream, tx))
+    Ok((stream, prod))
 }

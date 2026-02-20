@@ -175,6 +175,23 @@ impl VoicePacket {
         })
     }
 
+    /// Zero-copy parse: extract (sequence, encrypted_payload) without allocating.
+    /// Used by the client receiver where channel_id is not needed.
+    pub fn parse_voice_data(data: &[u8]) -> Option<(u32, &[u8])> {
+        if data.len() < 6 {
+            return None;
+        }
+        let sequence = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        if sequence == 0 {
+            return None;
+        }
+        let id_len = data[4] as usize;
+        if data.len() < 5 + id_len + 1 {
+            return None;
+        }
+        Some((sequence, &data[5 + id_len..]))
+    }
+
     /// Parse only the channel_id from raw bytes without copying opus_data.
     pub fn parse_channel_id(data: &[u8]) -> Option<&str> {
         if data.len() < 6 {

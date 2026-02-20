@@ -1,12 +1,13 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use bytes::{BufMut, BytesMut};
 use tokio::net::UdpSocket;
 
-use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit};
+use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePacket};
 
@@ -30,6 +31,24 @@ impl QualityTier {
             Self::Medium => "medium",
             Self::Low => "low",
             Self::Minimum => "minimum",
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::High => 0,
+            Self::Medium => 1,
+            Self::Low => 2,
+            Self::Minimum => 3,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Medium,
+            2 => Self::Low,
+            3 => Self::Minimum,
+            _ => Self::High,
         }
     }
 
@@ -69,38 +88,49 @@ impl QualityTier {
 }
 
 pub struct NetworkStats {
-    received: u32,
-    lost: u32,
-    pub loss_percent: u8,
-    pub current_tier: QualityTier,
+    received: AtomicU32,
+    lost: AtomicU32,
+    loss_percent: AtomicU8,
+    current_tier: AtomicU8,
 }
 
 impl NetworkStats {
     fn new() -> Self {
         Self {
-            received: 0,
-            lost: 0,
-            loss_percent: 0,
-            current_tier: QualityTier::High,
+            received: AtomicU32::new(0),
+            lost: AtomicU32::new(0),
+            loss_percent: AtomicU8::new(0),
+            current_tier: AtomicU8::new(QualityTier::High.to_u8()),
         }
     }
 
-    fn record_received(&mut self) {
-        self.received += 1;
+    fn record_received(&self) {
+        self.received.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn record_lost(&mut self) {
-        self.lost += 1;
+    fn record_lost(&self) {
+        self.lost.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn loss_percent(&self) -> u8 {
+        self.loss_percent.load(Ordering::Relaxed)
+    }
+
+    pub fn current_tier(&self) -> QualityTier {
+        QualityTier::from_u8(self.current_tier.load(Ordering::Relaxed))
     }
 
     /// Check if the measurement window is complete and recalculate tier.
-    fn maybe_finalize_window(&mut self) {
-        let total = self.received + self.lost;
+    fn maybe_finalize_window(&self) {
+        let received = self.received.load(Ordering::Relaxed);
+        let lost = self.lost.load(Ordering::Relaxed);
+        let total = received + lost;
         if total >= config::STATS_WINDOW_PACKETS {
-            self.loss_percent = ((self.lost as f32 / total as f32) * 100.0) as u8;
-            self.current_tier = QualityTier::from_loss(self.loss_percent);
-            self.received = 0;
-            self.lost = 0;
+            let loss = ((lost as f32 / total as f32) * 100.0) as u8;
+            self.loss_percent.store(loss, Ordering::Relaxed);
+            self.current_tier.store(QualityTier::from_loss(loss).to_u8(), Ordering::Relaxed);
+            self.received.store(0, Ordering::Relaxed);
+            self.lost.store(0, Ordering::Relaxed);
         }
     }
 }
@@ -114,11 +144,11 @@ fn seq_before(a: u32, b: u32) -> bool {
 
 /// Adaptive jitter buffer backed by a fixed-size ring.
 /// Uses RFC 3550-style jitter estimation to pick optimal buffer depth.
-/// Ring buffer avoids HashMap allocation overhead and improves cache locality.
+/// Pre-allocated slots avoid per-packet heap allocation on the hot path.
 struct JitterBuffer {
-    /// Fixed-size ring of slots: (sequence, opus_data).
-    /// Indexed by `seq % capacity`. Storing seq validates freshness.
-    slots: Vec<Option<(u32, Vec<u8>)>>,
+    /// Fixed-size ring of (seq, data) slots. seq=0 means slot is empty.
+    /// Vecs are pre-allocated and reused — no heap alloc after warmup.
+    slots: Vec<(u32, Vec<u8>)>,
     capacity: usize,
     next_seq: u32,
     started: bool,
@@ -136,8 +166,9 @@ struct JitterBuffer {
 impl JitterBuffer {
     fn new() -> Self {
         let capacity = config::JITTER_BUF_MAX;
-        let mut slots = Vec::with_capacity(capacity);
-        slots.resize_with(capacity, || None);
+        let slots = (0..capacity)
+            .map(|_| (0u32, Vec::with_capacity(256)))
+            .collect();
         Self {
             slots,
             capacity,
@@ -151,7 +182,8 @@ impl JitterBuffer {
         }
     }
 
-    fn push(&mut self, seq: u32, opus_data: Vec<u8>) {
+    /// Push a packet into the buffer. Copies opus_data into a pre-allocated slot.
+    fn push(&mut self, seq: u32, opus_data: &[u8]) {
         if !self.started {
             self.next_seq = seq;
             self.started = true;
@@ -191,8 +223,11 @@ impl JitterBuffer {
         }
         self.last_arrival = Some(now);
 
+        // Copy into pre-allocated slot (reuses existing Vec capacity)
         let idx = seq as usize % self.capacity;
-        self.slots[idx] = Some((seq, opus_data));
+        self.slots[idx].0 = seq;
+        self.slots[idx].1.clear();
+        self.slots[idx].1.extend_from_slice(opus_data);
 
         // Periodically adapt buffer size
         self.packets_since_adapt += 1;
@@ -222,30 +257,32 @@ impl JitterBuffer {
         }
     }
 
-    /// Returns the next packet if available, or None to signal a gap.
-    fn pop(&mut self) -> PopResult {
+    /// Pop the next packet. Data is swapped into `out` (zero-alloc after warmup).
+    fn pop(&mut self, out: &mut Vec<u8>) -> PopResult {
         if !self.started {
             return PopResult::Empty;
         }
 
         let idx = self.next_seq as usize % self.capacity;
-        if let Some((seq, _)) = &self.slots[idx] {
-            if *seq == self.next_seq {
-                let (_, data) = self.slots[idx].take().unwrap();
-                self.next_seq = self.next_seq.wrapping_add(1);
-                return PopResult::Packet(data);
-            }
+        if self.slots[idx].0 == self.next_seq {
+            // Swap data out: slot gets the (empty) out buffer, caller gets the data.
+            // Both Vecs keep their capacity — no allocation.
+            std::mem::swap(&mut self.slots[idx].1, out);
+            self.slots[idx].0 = 0; // mark empty
+            self.next_seq = self.next_seq.wrapping_add(1);
+            return PopResult::Packet;
         }
 
         // Slot empty or stale — check if any future packets exist
         let has_future = (1..self.capacity).any(|offset| {
             let future_seq = self.next_seq.wrapping_add(offset as u32);
             let future_idx = future_seq as usize % self.capacity;
-            matches!(&self.slots[future_idx], Some((s, _)) if *s == future_seq)
+            let slot = &self.slots[future_idx];
+            slot.0 == future_seq && slot.0 != 0
         });
         if has_future {
             // Clear stale data at current slot
-            self.slots[idx] = None;
+            self.slots[idx].0 = 0;
             self.next_seq = self.next_seq.wrapping_add(1);
             PopResult::Missing
         } else {
@@ -259,7 +296,7 @@ impl JitterBuffer {
             .filter(|&offset| {
                 let seq = self.next_seq.wrapping_add(offset as u32);
                 let idx = seq as usize % self.capacity;
-                matches!(&self.slots[idx], Some((s, _)) if *s == seq)
+                self.slots[idx].0 == seq && seq != 0
             })
             .count()
     }
@@ -269,7 +306,7 @@ impl JitterBuffer {
         for offset in 0..self.capacity {
             let seq = self.next_seq.wrapping_add(offset as u32);
             let idx = seq as usize % self.capacity;
-            if matches!(&self.slots[idx], Some((s, _)) if *s == seq) {
+            if self.slots[idx].0 == seq && seq != 0 {
                 self.next_seq = seq;
                 return;
             }
@@ -281,7 +318,7 @@ impl JitterBuffer {
     fn reset_to(&mut self, seq: u32) {
         self.next_seq = seq;
         for slot in &mut self.slots {
-            *slot = None;
+            slot.0 = 0; // mark empty (Vecs keep their capacity)
         }
         self.jitter_ms = 0.0;
         self.last_arrival = None;
@@ -295,7 +332,7 @@ impl JitterBuffer {
 }
 
 enum PopResult {
-    Packet(Vec<u8>),
+    Packet,  // Data available in the swap buffer
     Missing, // Gap detected — use PLC
     Empty,   // Nothing available
 }
@@ -358,7 +395,7 @@ pub async fn start_voice(
     }
 
     let socket = Arc::new(socket);
-    let stats = Arc::new(Mutex::new(NetworkStats::new()));
+    let stats = Arc::new(NetworkStats::new());
     let bytes_tx = Arc::new(AtomicU64::new(0));
     let bytes_rx = Arc::new(AtomicU64::new(0));
 
@@ -369,14 +406,19 @@ pub async fn start_voice(
     // Adaptive playback buffer cap (samples), shared with audio output callback
     let playback_cap = Arc::new(AtomicU32::new(config::MAX_PLAYBACK_BUF as u32));
 
-    // Start audio I/O
-    let (_capture_stream, capture_rx) = audio::start_capture(input_device.as_deref())?;
-    let (_playback_stream, playback_tx) = audio::start_playback(output_device.as_deref(), playback_cap.clone())?;
+    // Start audio I/O (lock-free ring buffers, zero allocation on audio threads)
+    let (_capture_stream, mut capture_cons) = audio::start_capture(input_device.as_deref())?;
+    let (_playback_stream, playback_prod) = audio::start_playback(
+        output_device.as_deref(),
+        playback_cap.clone(),
+        output_vol.clone(),
+    )?;
 
     // Sender pipeline: std::thread (capture → encode) → channel → tokio task (UDP send)
     // Using a channel avoids calling tokio try_send() from a non-runtime thread,
     // which fails on Windows IOCP because readiness isn't tracked outside async context.
-    let (encoded_tx, mut encoded_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    // Channel carries Bytes (ref-counted) to avoid cloning the packet buffer each frame.
+    let (encoded_tx, mut encoded_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(64);
 
     let send_channel = channel_id.clone();
     // Truncate sender name to fit in a u8 length prefix
@@ -388,6 +430,8 @@ pub async fn start_voice(
     let stop = Arc::new(AtomicBool::new(false));
     let send_stop = stop.clone();
     let _send_handle = std::thread::spawn(move || {
+        use ringbuf::traits::{Consumer, Observer};
+
         let mut encoder = match OpusEncoder::new() {
             Ok(e) => e,
             Err(e) => {
@@ -400,18 +444,22 @@ pub async fn start_voice(
         let mut current_tier = QualityTier::High;
         let mut frames_since_check: u32 = 0;
         let mut hangover_remaining: u32 = 0;
-        // Reusable buffer for building UDP packets: [header | nonce | ciphertext | tag]
-        let mut packet_buf = Vec::with_capacity(config::MAX_UDP_PACKET);
+        // Reusable BytesMut for building UDP packets: [header | nonce | ciphertext | tag]
+        // .freeze() produces a ref-counted Bytes — zero-copy send through channel.
+        let mut packet_buf = BytesMut::with_capacity(config::MAX_UDP_PACKET);
+        // Pre-allocated frame buffer — reads from ring buffer, no allocation per frame
+        let mut pcm_frame = vec![0.0f32; config::FRAME_SIZE];
 
         loop {
             if send_stop.load(Ordering::Relaxed) {
                 break;
             }
-            let mut pcm_frame = match capture_rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(f) => f,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(_) => break,
-            };
+            // Poll ring buffer for a full frame (capture callback fires every ~20ms)
+            if capture_cons.occupied_len() < config::FRAME_SIZE {
+                std::thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            capture_cons.pop_slice(&mut pcm_frame);
             if send_muted.load(Ordering::Relaxed) {
                 continue;
             }
@@ -428,28 +476,25 @@ pub async fn start_voice(
             frames_since_check += 1;
             if frames_since_check >= config::STATS_WINDOW_PACKETS {
                 frames_since_check = 0;
-                if let Ok(s) = send_stats.lock() {
-                    let new_tier = s.current_tier;
-                    if new_tier != current_tier {
-                        let loss = s.loss_percent;
-                        drop(s);
-                        current_tier = new_tier;
-                        let loss_hint = if current_tier.fec() { loss } else { 0 };
-                        if let Err(e) = encoder.apply_quality_settings(
+                let new_tier = send_stats.current_tier();
+                if new_tier != current_tier {
+                    let loss = send_stats.loss_percent();
+                    current_tier = new_tier;
+                    let loss_hint = if current_tier.fec() { loss } else { 0 };
+                    if let Err(e) = encoder.apply_quality_settings(
+                        current_tier.bitrate(),
+                        current_tier.complexity(),
+                        current_tier.fec(),
+                        loss_hint,
+                    ) {
+                        tracing::warn!("failed to apply quality settings: {}", e);
+                    } else {
+                        tracing::info!(
+                            "encoder adapted: tier={}, bitrate={}, loss={}%",
+                            current_tier.as_str(),
                             current_tier.bitrate(),
-                            current_tier.complexity(),
-                            current_tier.fec(),
                             loss_hint,
-                        ) {
-                            tracing::warn!("failed to apply quality settings: {}", e);
-                        } else {
-                            tracing::info!(
-                                "encoder adapted: tier={}, bitrate={}, loss={}%",
-                                current_tier.as_str(),
-                                current_tier.bitrate(),
-                                loss_hint,
-                            );
-                        }
+                        );
                     }
                 }
             }
@@ -481,19 +526,19 @@ pub async fn start_voice(
             // Build UDP packet directly in reusable buffer:
             // [seq:4][id_len:1][channel_id:N][nonce:24][ciphertext][tag:16]
             packet_buf.clear();
-            packet_buf.extend_from_slice(&sequence.to_be_bytes());
+            packet_buf.put_slice(&sequence.to_be_bytes());
             let id_bytes = send_channel.as_bytes();
-            packet_buf.push(id_bytes.len() as u8);
-            packet_buf.extend_from_slice(id_bytes);
+            packet_buf.put_u8(id_bytes.len() as u8);
+            packet_buf.put_slice(id_bytes);
 
             let nonce_bytes: [u8; config::XCHACHA20_NONCE_SIZE] = rand::random();
             let nonce = XNonce::from(nonce_bytes);
-            packet_buf.extend_from_slice(&nonce_bytes);
+            packet_buf.put_slice(&nonce_bytes);
             let plaintext_start = packet_buf.len();
             // Plaintext: [name_len:1][name:M][opus_data]
-            packet_buf.push(send_name_bytes.len() as u8);
-            packet_buf.extend_from_slice(&send_name_bytes);
-            packet_buf.extend_from_slice(opus_data);
+            packet_buf.put_u8(send_name_bytes.len() as u8);
+            packet_buf.put_slice(&send_name_bytes);
+            packet_buf.put_slice(opus_data);
 
             // Encrypt in-place (avoids intermediate Vec allocations)
             let tag = match send_cipher.encrypt_in_place_detached(
@@ -507,9 +552,11 @@ pub async fn start_voice(
                     continue;
                 }
             };
-            packet_buf.extend_from_slice(tag.as_slice());
+            packet_buf.put_slice(tag.as_slice());
 
-            if encoded_tx.blocking_send(packet_buf.clone()).is_err() {
+            // freeze() → Bytes (ref-counted, zero-copy clone for channel send)
+            let frozen = packet_buf.split().freeze();
+            if encoded_tx.blocking_send(frozen).is_err() {
                 break; // receiver dropped, pipeline shutting down
             }
             sequence = sequence.wrapping_add(1);
@@ -536,13 +583,13 @@ pub async fn start_voice(
     // Active speakers: name → last heard timestamp
     let speaking: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // Receiver task (UDP → decode → playback)
+    // Receiver task (UDP → decode → ring buffer → playback)
     let recv_socket = socket.clone();
     let recv_stats = stats.clone();
     let recv_bytes_rx = bytes_rx.clone();
     let recv_playback_cap = playback_cap.clone();
     let recv_speaking = speaking.clone();
-    let recv_output_vol = output_vol.clone();
+    let mut playback_prod = playback_prod;
     let recv_handle = tokio::spawn(async move {
         let mut decoder = match OpusDecoder::new() {
             Ok(d) => d,
@@ -554,38 +601,42 @@ pub async fn start_voice(
 
         let mut jitter = JitterBuffer::new();
         let mut buf = vec![0u8; config::MAX_UDP_PACKET + 64];
+        // Reusable buffer for in-place decryption (avoids per-packet Vec allocation)
+        let mut decrypt_buf: Vec<u8> = Vec::with_capacity(config::MAX_UDP_PACKET);
+        // Reusable swap buffer for jitter pop (zero-alloc after warmup)
+        let mut opus_swap: Vec<u8> = Vec::with_capacity(256);
 
         loop {
             match recv_socket.recv(&mut buf).await {
                 Ok(len) => {
                     recv_bytes_rx.fetch_add(len as u64, Ordering::Relaxed);
-                    if let Some(packet) = VoicePacket::decode(&buf[..len]) {
-                        // Decrypt: [nonce][ciphertext+tag]
-                        if packet.opus_data.len() < config::XCHACHA20_NONCE_SIZE + config::POLY1305_TAG_SIZE {
+                    // Zero-copy parse: get (sequence, encrypted_payload) without allocating
+                    if let Some((sequence, encrypted)) = VoicePacket::parse_voice_data(&buf[..len]) {
+                        // Decrypt in-place: [nonce:24][ciphertext+tag:16]
+                        if encrypted.len() < config::XCHACHA20_NONCE_SIZE + config::POLY1305_TAG_SIZE {
                             continue;
                         }
-                        let nonce = XNonce::from_slice(&packet.opus_data[..config::XCHACHA20_NONCE_SIZE]);
-                        let plaintext = match cipher.decrypt(nonce, &packet.opus_data[config::XCHACHA20_NONCE_SIZE..]) {
-                            Ok(pt) => pt,
-                            Err(_) => {
-                                tracing::trace!("decrypt failed, dropping packet");
-                                continue;
-                            }
-                        };
+                        let nonce = XNonce::from_slice(&encrypted[..config::XCHACHA20_NONCE_SIZE]);
+                        // Copy ciphertext+tag into reusable buffer, decrypt in-place
+                        decrypt_buf.clear();
+                        decrypt_buf.extend_from_slice(&encrypted[config::XCHACHA20_NONCE_SIZE..]);
+                        if cipher.decrypt_in_place(nonce, b"", &mut decrypt_buf).is_err() {
+                            tracing::trace!("decrypt failed, dropping packet");
+                            continue;
+                        }
 
-                        // Parse sender name: [name_len:1][name:M][opus_data]
-                        if plaintext.is_empty() { continue; }
-                        let name_len = plaintext[0] as usize;
-                        if plaintext.len() < 1 + name_len { continue; }
+                        // Parse sender name from decrypted plaintext: [name_len:1][name:M][opus_data]
+                        if decrypt_buf.is_empty() { continue; }
+                        let name_len = decrypt_buf[0] as usize;
+                        if decrypt_buf.len() < 1 + name_len { continue; }
                         if name_len > 0 {
-                            if let Ok(name) = std::str::from_utf8(&plaintext[1..1 + name_len]) {
+                            if let Ok(name) = std::str::from_utf8(&decrypt_buf[1..1 + name_len]) {
                                 if let Ok(mut sp) = recv_speaking.lock() {
                                     sp.insert(name.to_string(), Instant::now());
                                 }
                             }
                         }
-                        let opus_data = plaintext[1 + name_len..].to_vec();
-                        jitter.push(packet.sequence, opus_data);
+                        jitter.push(sequence, &decrypt_buf[1 + name_len..]);
 
                         // Sync playback buffer cap with jitter estimate
                         let jitter_cap = ((jitter.jitter_ms() * 2.0 / jitter.expected_interval_ms).ceil() as usize)
@@ -593,23 +644,17 @@ pub async fn start_voice(
                         let cap_samples = (jitter_cap * config::FRAME_SIZE) as u32;
                         recv_playback_cap.store(cap_samples.max(config::MAX_PLAYBACK_BUF as u32), Ordering::Relaxed);
 
-                        // Drain available packets
+                        // Drain available packets — push decoded PCM directly to
+                        // ring buffer (zero alloc; volume applied in playback callback)
                         loop {
-                            match jitter.pop() {
-                                PopResult::Packet(opus_data) => {
-                                    if let Ok(mut s) = recv_stats.lock() {
-                                        s.record_received();
-                                        s.maybe_finalize_window();
-                                    }
-                                    match decoder.decode(&opus_data) {
-                                        Ok(mut pcm) => {
-                                            let vol = f32::from_bits(recv_output_vol.load(Ordering::Relaxed));
-                                            if vol != 1.0 {
-                                                for s in &mut pcm {
-                                                    *s *= vol;
-                                                }
-                                            }
-                                            let _ = playback_tx.send(pcm);
+                            match jitter.pop(&mut opus_swap) {
+                                PopResult::Packet => {
+                                    recv_stats.record_received();
+                                    recv_stats.maybe_finalize_window();
+                                    match decoder.decode(&opus_swap) {
+                                        Ok(pcm) => {
+                                            use ringbuf::traits::Producer;
+                                            playback_prod.push_slice(pcm);
                                         }
                                         Err(e) => {
                                             tracing::trace!("decode error: {}", e);
@@ -617,20 +662,12 @@ pub async fn start_voice(
                                     }
                                 }
                                 PopResult::Missing => {
-                                    if let Ok(mut s) = recv_stats.lock() {
-                                        s.record_lost();
-                                        s.maybe_finalize_window();
-                                    }
-                                    // Use Opus PLC for lost packet
+                                    recv_stats.record_lost();
+                                    recv_stats.maybe_finalize_window();
                                     match decoder.decode_plc() {
-                                        Ok(mut pcm) => {
-                                            let vol = f32::from_bits(recv_output_vol.load(Ordering::Relaxed));
-                                            if vol != 1.0 {
-                                                for s in &mut pcm {
-                                                    *s *= vol;
-                                                }
-                                            }
-                                            let _ = playback_tx.send(pcm);
+                                        Ok(pcm) => {
+                                            use ringbuf::traits::Producer;
+                                            playback_prod.push_slice(pcm);
                                         }
                                         Err(e) => {
                                             tracing::trace!("PLC error: {}", e);
@@ -686,7 +723,7 @@ pub struct VoiceHandle {
     _capture_stream: cpal::Stream,
     _playback_stream: cpal::Stream,
     recv_handle: tokio::task::JoinHandle<()>,
-    stats: Arc<Mutex<NetworkStats>>,
+    stats: Arc<NetworkStats>,
     stop: Arc<AtomicBool>,
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
@@ -697,11 +734,7 @@ pub struct VoiceHandle {
 impl VoiceHandle {
     /// Returns `(loss_percent, tier_name)` for display in the TUI.
     pub fn quality_info(&self) -> (u8, &'static str) {
-        if let Ok(s) = self.stats.lock() {
-            (s.loss_percent, s.current_tier.as_str())
-        } else {
-            (0, "high")
-        }
+        (self.stats.loss_percent(), self.stats.current_tier().as_str())
     }
 
     /// Returns names of speakers active within the last 300ms.
