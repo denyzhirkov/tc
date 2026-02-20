@@ -74,7 +74,8 @@ async fn handle_client(
             return Ok(());
         }
     };
-    tracing::info!(%peer_addr, %name, "client registered");
+    let total = state.stats().await.clients;
+    tracing::info!(%peer_addr, %name, total, "client registered");
 
     // Create outgoing message channel (bounded to prevent memory growth)
     let (tx, rx) = mpsc::channel::<ServerMessage>(CLIENT_QUEUE_CAPACITY);
@@ -106,7 +107,8 @@ async fn handle_client(
         )
         .await;
     }
-    tracing::info!(%peer_addr, %name, "client disconnected");
+    let total = state.stats().await.clients;
+    tracing::info!(%peer_addr, %name, total, "client disconnected");
 
     writer_handle.abort();
     result
@@ -198,10 +200,12 @@ async fn handle_message(
         ClientMessage::CreateChannel { name: chan_name } => {
             match state.create_channel(chan_name.as_deref()).await {
                 Ok(channel_id) => {
-                    tracing::info!(%peer_addr, %name, %channel_id, "channel created");
+                    let total = state.stats().await.channels;
+                    tracing::info!(%peer_addr, %name, %channel_id, total_channels = total, "channel created");
                     send_to(senders, &peer_addr, ServerMessage::ChannelCreated { channel_id }).await;
                 }
                 Err(err) => {
+                    tracing::debug!(%peer_addr, %name, %err, "create channel failed");
                     send_to(senders, &peer_addr, ServerMessage::Error { message: err }).await;
                 }
             }
@@ -210,7 +214,7 @@ async fn handle_message(
         ClientMessage::JoinChannel { channel_id } => {
             match state.join_channel(&peer_addr, &channel_id).await {
                 Ok((participants, udp_token, voice_key)) => {
-                    tracing::info!(%peer_addr, %name, %channel_id, "joined channel");
+                    tracing::info!(%peer_addr, %name, %channel_id, participants = participants.len(), "joined channel");
 
                     // Notify existing participants
                     broadcast_to_channel(
@@ -238,6 +242,7 @@ async fn handle_message(
                     .await;
                 }
                 Err(err) => {
+                    tracing::debug!(%peer_addr, %name, %channel_id, %err, "join channel failed");
                     send_to(senders, &peer_addr, ServerMessage::Error { message: err }).await;
                 }
             }
@@ -258,6 +263,7 @@ async fn handle_message(
                 )
                 .await;
             } else {
+                tracing::debug!(%peer_addr, %name, "leave failed: not in a channel");
                 send_to(
                     senders,
                     &peer_addr,
@@ -271,6 +277,7 @@ async fn handle_message(
 
         ClientMessage::ChatMessage { text } => {
             if text.len() > config::MAX_CHAT_LEN {
+                tracing::debug!(%peer_addr, %name, len = text.len(), "chat rejected: too long");
                 send_to(
                     senders,
                     &peer_addr,
@@ -281,6 +288,7 @@ async fn handle_message(
                 .await;
             } else if let Some(client) = state.get_client(&peer_addr).await {
                 if let Some(ref channel_id) = client.channel {
+                    tracing::debug!(%peer_addr, %name, %channel_id, len = text.len(), "chat relayed");
                     broadcast_to_channel(
                         state,
                         senders,
@@ -299,6 +307,7 @@ async fn handle_message(
         ClientMessage::SetName { name: new_name } => {
             let new_name = new_name.trim().to_string();
             if new_name.is_empty() || new_name.len() > config::MAX_NAME_LEN {
+                tracing::debug!(%peer_addr, %name, "rename rejected: invalid length");
                 send_to(
                     senders,
                     &peer_addr,
@@ -341,6 +350,7 @@ async fn handle_message(
 
         ClientMessage::ListChannels => {
             let public = state.list_public_channels().await;
+            tracing::debug!(%peer_addr, %name, count = public.len(), "channel list requested");
             let channels = public
                 .into_iter()
                 .map(|(channel_id, participant_count)| tc_shared::ChannelInfo {

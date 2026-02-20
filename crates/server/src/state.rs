@@ -10,6 +10,13 @@ use tc_shared::ChannelId;
 /// touching the main tokio::RwLock, eliminating contention on the hot path.
 type PeerCache = Arc<std::sync::RwLock<HashMap<String, Vec<SocketAddr>>>>;
 
+/// Snapshot of server counters for logging.
+pub struct Stats {
+    pub clients: usize,
+    pub channels: usize,
+    pub udp_peers: usize,
+}
+
 /// Resource limits configured via CLI args.
 #[derive(Debug, Clone)]
 pub struct Limits {
@@ -64,6 +71,17 @@ impl ServerState {
                 limits,
             })),
             peer_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Snapshot of server counters for logging.
+    pub async fn stats(&self) -> Stats {
+        let inner = self.inner.read().await;
+        let udp_peers: usize = inner.channels.values().map(|p| p.len()).sum();
+        Stats {
+            clients: inner.clients.len(),
+            channels: inner.channels.len(),
+            udp_peers,
         }
     }
 

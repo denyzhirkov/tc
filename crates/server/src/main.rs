@@ -65,6 +65,12 @@ async fn main() -> Result<()> {
     let udp_addr = format!("{}:{}", args.host, args.udp_port);
 
     tracing::info!("tc-server starting on TCP:{} UDP:{}", tcp_addr, udp_addr);
+    tracing::info!(
+        max_clients = if args.max_clients == 0 { "unlimited".to_string() } else { args.max_clients.to_string() },
+        max_channels = if args.max_channels == 0 { "unlimited".to_string() } else { args.max_channels.to_string() },
+        maintenance_interval = args.maintenance_interval,
+        "limits"
+    );
 
     let tls_config = tls::load_or_generate_tls_config()?;
     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
@@ -145,5 +151,12 @@ async fn run_maintenance(state: ServerState, interval_secs: u64) -> Result<()> {
         if removed > 0 {
             tracing::info!("cleaned up {} empty channels", removed);
         }
+        let stats = state.stats().await;
+        tracing::debug!(
+            clients = stats.clients,
+            channels = stats.channels,
+            udp_peers = stats.udp_peers,
+            "status"
+        );
     }
 }
