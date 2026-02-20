@@ -371,6 +371,8 @@ pub fn poll_event(app: &mut App, timeout: Duration) -> Action {
                         if app.autocomplete_sel > 0 {
                             app.autocomplete_sel -= 1;
                         }
+                        let idx = app.autocomplete[app.autocomplete_sel];
+                        app.input = COMMANDS[idx].0.to_string();
                     } else if !app.history.is_empty() {
                         match app.history_pos {
                             None => {
@@ -394,6 +396,8 @@ pub fn poll_event(app: &mut App, timeout: Duration) -> Action {
                         if app.autocomplete_sel + 1 < app.autocomplete.len() {
                             app.autocomplete_sel += 1;
                         }
+                        let idx = app.autocomplete[app.autocomplete_sel];
+                        app.input = COMMANDS[idx].0.to_string();
                     } else if let Some(pos) = app.history_pos {
                         if pos + 1 < app.history.len() {
                             let pos = pos + 1;
