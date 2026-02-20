@@ -39,6 +39,10 @@ const RECONNECT_MAX_MS: u64 = 30_000;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     // Log to file so it doesn't mess up the TUI
     let log_file = std::fs::File::create("/tmp/tc-client.log").ok();
     if let Some(file) = log_file {

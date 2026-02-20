@@ -50,6 +50,10 @@ pub struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     let args = Args::parse();
 
     let directive = format!("tc={}", args.log_level);
