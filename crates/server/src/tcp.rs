@@ -162,7 +162,7 @@ async fn reader_loop<R: AsyncRead + Unpin>(
             // Rate limit: Ping/Hello always allowed, CreateChannel has a stricter limit
             match &msg {
                 ClientMessage::Ping | ClientMessage::Hello { .. } => {}
-                ClientMessage::CreateChannel => {
+                ClientMessage::CreateChannel { .. } => {
                     if !cmd_limiter.check() || !create_limiter.check() {
                         tracing::debug!(%peer_addr, "rate limited (create)");
                         send_to(senders, &peer_addr, ServerMessage::Error {
@@ -195,8 +195,8 @@ async fn handle_message(
     senders: &ClientSenders,
 ) -> Result<()> {
     match msg {
-        ClientMessage::CreateChannel => {
-            match state.create_channel().await {
+        ClientMessage::CreateChannel { name: chan_name } => {
+            match state.create_channel(chan_name.as_deref()).await {
                 Ok(channel_id) => {
                     tracing::info!(%peer_addr, %name, %channel_id, "channel created");
                     send_to(senders, &peer_addr, ServerMessage::ChannelCreated { channel_id }).await;
@@ -337,6 +337,18 @@ async fn handle_message(
 
         ClientMessage::Hello { version, protocol } => {
             tracing::info!(%peer_addr, %name, %version, %protocol, "client hello");
+        }
+
+        ClientMessage::ListChannels => {
+            let public = state.list_public_channels().await;
+            let channels = public
+                .into_iter()
+                .map(|(channel_id, participant_count)| tc_shared::ChannelInfo {
+                    channel_id,
+                    participant_count,
+                })
+                .collect();
+            send_to(senders, &peer_addr, ServerMessage::ChannelList { channels }).await;
         }
 
         ClientMessage::Ping => {

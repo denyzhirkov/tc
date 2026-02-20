@@ -34,12 +34,14 @@ pub enum ClientMessage {
         version: String,
         protocol: u16,
     },
-    /// Create a new channel.
-    CreateChannel,
+    /// Create a new channel. If `name` is set, creates a public channel "pub-<name>".
+    CreateChannel { name: Option<String> },
     /// Join an existing channel.
     JoinChannel { channel_id: ChannelId },
     /// Leave the current channel.
     LeaveChannel,
+    /// List public channels.
+    ListChannels,
     /// Send a text chat message.
     ChatMessage { text: String },
     /// Set display name.
@@ -80,10 +82,19 @@ pub enum ServerMessage {
     ChatMessage { from: String, text: String },
     /// Name was changed.
     NameChanged { old_name: String, new_name: String },
+    /// List of public channels.
+    ChannelList { channels: Vec<ChannelInfo> },
     /// Error from server.
     Error { message: String },
     /// Pong (keep-alive response).
     Pong,
+}
+
+/// Info about a public channel (for /list).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelInfo {
+    pub channel_id: ChannelId,
+    pub participant_count: u32,
 }
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ use tui::ConnectionState;
 use web::WebState;
 
 #[derive(Parser)]
-#[command(name = "tc-client", about = "termicall voice chat client")]
+#[command(name = "tc-client", about = "tc voice chat client")]
 struct Args {
     /// Web UI port (default: 17300)
     #[arg(long = "web-port", default_value_t = config::WEB_PORT)]
@@ -428,7 +428,9 @@ async fn handle_command(
             app.add_message("  /config gain <0-200> mic gain (default 100)".into());
             app.add_message("  /config vol <0-200>  incoming volume (default 100)".into());
             app.add_message("  /config vad <0-100>  vad level (0/off = disable, default 10)".into());
-            app.add_message("  /create (/c)       create a new channel".into());
+            app.add_message("  /create (/c)       create a private channel".into());
+            app.add_message("  /create (/c) <name> create a public channel".into());
+            app.add_message("  /list (/ls)        list public channels".into());
             app.add_message("  /connect (/j) <id> join a channel (or just #<id>)".into());
             app.add_message("  /leave (/l)        leave current channel".into());
             app.add_message("  /mute (/m)         toggle mute".into());
@@ -454,8 +456,25 @@ async fn handle_command(
 
     match parts[0] {
         "/create" | "/c" => {
-            app.add_message("> /create".into());
-            send_or_disconnect(conn, app, ClientMessage::CreateChannel);
+            let chan_name = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty());
+            if let Some(raw_name) = chan_name {
+                let name = sanitize_channel_name(raw_name);
+                if name.is_empty() {
+                    app.add_message("channel name must contain [a-z0-9-]".into());
+                } else if name.len() > config::MAX_CHANNEL_NAME_LEN {
+                    app.add_message(format!("channel name too long (max {})", config::MAX_CHANNEL_NAME_LEN));
+                } else {
+                    app.add_message(format!("> /create {}", name));
+                    send_or_disconnect(conn, app, ClientMessage::CreateChannel { name: Some(name) });
+                }
+            } else {
+                app.add_message("> /create".into());
+                send_or_disconnect(conn, app, ClientMessage::CreateChannel { name: None });
+            }
+        }
+        "/list" | "/ls" => {
+            app.add_message("> /list".into());
+            send_or_disconnect(conn, app, ClientMessage::ListChannels);
         }
         "/connect" | "/join" | "/j" => {
             if let Some(id) = parts.get(1).map(|s| s.trim()) {
@@ -666,6 +685,16 @@ async fn handle_server_message(
         ServerMessage::ChatMessage { from, text } => {
             app.add_message(format!("{}: {}", from, text));
         }
+        ServerMessage::ChannelList { channels } => {
+            if channels.is_empty() {
+                app.add_message("no public channels".into());
+            } else {
+                app.add_message("── public channels ──".into());
+                for ch in channels {
+                    app.add_message(format!("  {} ({} users)", ch.channel_id, ch.participant_count));
+                }
+            }
+        }
         ServerMessage::Error { message } => {
             app.add_message(format!("error: {}", message));
         }
@@ -802,6 +831,16 @@ fn sanitize_name(s: &str) -> String {
         .filter(|c| *c != '\n' && *c != '\r' && *c != '\t')
         .collect::<String>()
         .trim()
+        .to_string()
+}
+
+/// Sanitize a public channel name: lowercase, keep only [a-z0-9-].
+fn sanitize_channel_name(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        .collect::<String>()
+        .trim_matches('-')
         .to_string()
 }
 

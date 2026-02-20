@@ -89,7 +89,7 @@ Browser (UI) <--WS JSON--> tc-client (localhost) <--TLS/UDP--> tc-server
 ## Architecture
 
 ```
-termicall/
+tc/
   crates/
     shared/    # protocol, config constants, framing
     server/    # TLS+TCP control, UDP voice relay, rate limiting

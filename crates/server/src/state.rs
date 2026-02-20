@@ -109,21 +109,53 @@ impl ServerState {
     }
 
     /// Create a new channel, returns channel_id or error if at capacity.
-    pub async fn create_channel(&self) -> Result<ChannelId, String> {
+    /// If `name` is Some, creates a public channel with id "pub-<name>".
+    pub async fn create_channel(&self, name: Option<&str>) -> Result<ChannelId, String> {
         let mut inner = self.inner.write().await;
         if inner.limits.max_channels > 0 && inner.channels.len() >= inner.limits.max_channels {
             return Err("channel limit reached".into());
         }
-        loop {
-            let id = tc_shared::generate_channel_id();
-            if !inner.channels.contains_key(&id) {
-                inner.channels.insert(id.clone(), HashSet::new());
-                let key: [u8; 32] = rand::random();
-                inner.channel_keys.insert(id.clone(), key.to_vec());
-                inner.channel_created_at.insert(id.clone(), Instant::now());
-                return Ok(id);
+
+        let id = if let Some(name) = name {
+            let id = format!("{}{}", tc_shared::config::PUBLIC_CHANNEL_PREFIX, name);
+            if inner.channels.contains_key(&id) {
+                return Err(format!("channel '{}' already exists", id));
             }
-        }
+            id
+        } else {
+            loop {
+                let id = tc_shared::generate_channel_id();
+                if !inner.channels.contains_key(&id) {
+                    break id;
+                }
+            }
+        };
+
+        inner.channels.insert(id.clone(), HashSet::new());
+        let key: [u8; 32] = rand::random();
+        inner.channel_keys.insert(id.clone(), key.to_vec());
+        inner.channel_created_at.insert(id.clone(), Instant::now());
+        Ok(id)
+    }
+
+    /// List public channels with participant counts.
+    pub async fn list_public_channels(&self) -> Vec<(ChannelId, u32)> {
+        let inner = self.inner.read().await;
+        let prefix = tc_shared::config::PUBLIC_CHANNEL_PREFIX;
+        inner
+            .channels
+            .iter()
+            .filter(|(id, _)| id.starts_with(prefix))
+            .map(|(id, _udp_participants)| {
+                // Count TCP clients in this channel (more accurate than UDP set)
+                let tcp_count = inner
+                    .clients
+                    .values()
+                    .filter(|c| c.channel.as_deref() == Some(id.as_str()))
+                    .count();
+                (id.clone(), tcp_count as u32)
+            })
+            .collect()
     }
 
     /// Join a channel. Returns (participant names, udp_token, voice_key).

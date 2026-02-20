@@ -4,7 +4,7 @@
 // ── Version ─────────────────────────────────────────────────────────────
 
 /// Protocol version — bump on every breaking protocol change.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 // ── Network ──────────────────────────────────────────────────────────────
 
@@ -42,6 +42,10 @@ pub const MAX_MESSAGE_HISTORY: usize = 500;
 
 /// Length of generated channel IDs.
 pub const CHANNEL_ID_LEN: usize = 5;
+/// Prefix for public (named) channels.
+pub const PUBLIC_CHANNEL_PREFIX: &str = "pub-";
+/// Max length of a public channel name (without prefix).
+pub const MAX_CHANNEL_NAME_LEN: usize = 20;
 
 // ── Audio ─────────────────────────────────────────────────────────────────
 
