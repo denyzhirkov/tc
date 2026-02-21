@@ -29,8 +29,9 @@ case "${OS}" in
     ;;
   Linux)
     case "${ARCH}" in
-      x86_64) SUFFIX="linux-amd64" ;;
-      *)      echo "Unsupported architecture: ${ARCH}"; exit 1 ;;
+      x86_64)  SUFFIX="linux-amd64" ;;
+      aarch64) SUFFIX="linux-arm64" ;;
+      *)       echo "Unsupported architecture: ${ARCH}"; exit 1 ;;
     esac
     ;;
   *)

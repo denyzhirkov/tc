@@ -42,6 +42,10 @@ jobs:
           - os: ubuntu-latest
             suffix: linux-amd64
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            suffix: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            use_cross: true
           - os: windows-latest
             suffix: windows-amd64
             target: x86_64-pc-windows-msvc
@@ -61,10 +65,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
       - name: Build
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       - name: Package binaries
         run: |
