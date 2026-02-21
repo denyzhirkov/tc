@@ -2,6 +2,19 @@
 set -e
 
 REPO="denyzhirkov/tc"
+INSTALL_SERVER=false
+
+for arg in "$@"; do
+  case "${arg}" in
+    --server|--all) INSTALL_SERVER=true ;;
+    --help|-h)
+      echo "Usage: install.sh [--server]"
+      echo "  --server  Also install tc-server"
+      exit 0
+      ;;
+    *) echo "Unknown option: ${arg}"; exit 1 ;;
+  esac
+done
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -32,22 +45,32 @@ INSTALL_DIR="/usr/local/bin"
 
 echo "Downloading tc-client (${SUFFIX})..."
 curl -fSL -o /tmp/tc-client "${CLIENT_URL}"
+chmod +x /tmp/tc-client
 
-echo "Downloading tc-server (${SUFFIX})..."
-curl -fSL -o /tmp/tc-server "${SERVER_URL}"
-
-chmod +x /tmp/tc-client /tmp/tc-server
+if [ "${INSTALL_SERVER}" = true ]; then
+  echo "Downloading tc-server (${SUFFIX})..."
+  curl -fSL -o /tmp/tc-server "${SERVER_URL}"
+  chmod +x /tmp/tc-server
+fi
 
 if [ -w "${INSTALL_DIR}" ]; then
   mv /tmp/tc-client "${INSTALL_DIR}/tc-client"
-  mv /tmp/tc-server "${INSTALL_DIR}/tc-server"
   ln -sf "${INSTALL_DIR}/tc-client" "${INSTALL_DIR}/tc"
+  if [ "${INSTALL_SERVER}" = true ]; then
+    mv /tmp/tc-server "${INSTALL_DIR}/tc-server"
+  fi
 else
   echo "Installing to ${INSTALL_DIR} (requires sudo)..."
   sudo mv /tmp/tc-client "${INSTALL_DIR}/tc-client"
-  sudo mv /tmp/tc-server "${INSTALL_DIR}/tc-server"
   sudo ln -sf "${INSTALL_DIR}/tc-client" "${INSTALL_DIR}/tc"
+  if [ "${INSTALL_SERVER}" = true ]; then
+    sudo mv /tmp/tc-server "${INSTALL_DIR}/tc-server"
+  fi
 fi
 
-echo "Installed tc-client and tc-server to ${INSTALL_DIR}"
+if [ "${INSTALL_SERVER}" = true ]; then
+  echo "Installed tc-client and tc-server to ${INSTALL_DIR}"
+else
+  echo "Installed tc-client to ${INSTALL_DIR}"
+fi
 echo "Run 'tc' to start the client."
