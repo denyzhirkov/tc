@@ -27,7 +27,8 @@ export type AppStatus = {
 export type ConnState =
   | { state: "disconnected" }
   | { state: "connecting" }
-  | { state: "connected"; server: string };
+  | { state: "connected"; server: string }
+  | { state: "reconnecting"; attempt: number; delay_secs: number };
 
 export type JoinedPayload = { channel_id: string; participants: string[] };
 export type ChannelListEntry = { channel_id: string; participant_count: number };

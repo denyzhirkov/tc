@@ -24,15 +24,21 @@ function ConnDot() {
       case "connected":
         return "bg-ok";
       case "connecting":
+      case "reconnecting":
         return "bg-warn";
       default:
         return "bg-faint";
     }
   };
-  const title = () =>
-    state.conn === "connected" ? "click: disconnect" : "click: connect";
+  const title = () => {
+    if (state.conn === "connected") return "click: disconnect";
+    if (state.conn === "reconnecting") return "reconnecting… click: cancel";
+    return "click: connect";
+  };
   const onClick = () =>
-    state.conn === "connected" ? disconnect() : reconnect();
+    state.conn === "connected" || state.conn === "reconnecting"
+      ? disconnect()
+      : reconnect();
   return (
     <span
       class={`inline-block w-1.5 h-1.5 rounded-full cursor-pointer ${cls()}`}
@@ -93,23 +99,41 @@ function ServerPicker() {
                 : b.last_used_unix - a.last_used_unix,
             )}
           >
-            {(s) => (
-              <button
-                class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-hover text-left text-sm"
-                onClick={() => {
-                  setOpen(false);
-                  connectTo(s.addr);
-                }}
-              >
-                <span class={s.favourite ? "text-accent" : "text-faint"}>
-                  {s.favourite ? "★" : "·"}
-                </span>
-                <span class="flex-1 truncate">{s.addr}</span>
-                <Show when={s.label}>
-                  <span class="text-muted text-xs truncate">{s.label}</span>
-                </Show>
-              </button>
-            )}
+            {(s) => {
+              const isActive = () =>
+                state.serverAddr === s.addr &&
+                (state.conn === "connected" || state.conn === "reconnecting");
+              return (
+                <button
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-hover text-left text-sm"
+                  onClick={() => {
+                    setOpen(false);
+                    connectTo(s.addr);
+                  }}
+                >
+                  <span class={s.favourite ? "text-accent" : "text-faint"}>
+                    {s.favourite ? "★" : "·"}
+                  </span>
+                  <span class="flex-1 truncate">{s.addr}</span>
+                  <Show when={s.label}>
+                    <span class="text-muted text-xs truncate">{s.label}</span>
+                  </Show>
+                  <Show when={isActive()}>
+                    <span
+                      role="button"
+                      aria-label="disconnect"
+                      title="disconnect"
+                      class="inline-block w-3 h-3 rounded-sm bg-red-500 hover:bg-red-400 cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpen(false);
+                        openPalette("/disconnect ");
+                      }}
+                    />
+                  </Show>
+                </button>
+              );
+            }}
           </For>
           <Show when={servers().length === 0}>
             <div class="text-muted text-xs px-2 py-1.5">no known servers</div>

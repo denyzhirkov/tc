@@ -15,7 +15,7 @@ export type LogLine = {
 
 export type AppState = {
   status: AppStatus | null;
-  conn: "disconnected" | "connecting" | "connected";
+  conn: "disconnected" | "connecting" | "connected" | "reconnecting";
   serverAddr: string;
   channel: string | null;
   participants: string[];

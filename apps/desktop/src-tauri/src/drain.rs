@@ -2,11 +2,19 @@
 //!   1) updates AppCore where state has shifted (channel join/leave),
 //!   2) starts/stops the voice handle on join/leave,
 //!   3) emits Tauri events to the frontend.
+//!
+//! Also owns automatic reconnect: when the underlying TCP/TLS connection drops
+//! the task tears down channel + voice and retries `network::connect` with a
+//! 5s, 5s, then 10s-forever backoff. The user-initiated `disconnect` command
+//! aborts this task via its `JoinHandle`, so explicit disconnects never
+//! reconnect on their own.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
-use tc_shared::ServerMessage;
+use tc_client::network;
+use tc_shared::{ClientMessage, ServerMessage};
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
@@ -36,26 +44,127 @@ async fn maybe_notify(app: &AppHandle, core: &Arc<Mutex<AppCore>>, title: &str, 
 pub fn spawn(
     app: AppHandle,
     core: Arc<Mutex<AppCore>>,
-    mut rx: mpsc::Receiver<Option<ServerMessage>>,
+    rx: mpsc::Receiver<Option<ServerMessage>>,
     server_addr: String,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Some(maybe_msg) = rx.recv().await {
-            let Some(msg) = maybe_msg else {
-                // Disconnect: writer task returned None.
-                {
+    tokio::spawn(run(app, core, rx, server_addr))
+}
+
+/// Top-level loop: drain → on disconnect, reconnect with backoff → drain again.
+///
+/// We exit only when `tokio::task::JoinHandle::abort` is called from
+/// `commands::connect` (user switching servers) or `commands::disconnect`
+/// (user-initiated). In both cases the caller already cleared state, so
+/// returning from here is the only thing left.
+async fn run(
+    app: AppHandle,
+    core: Arc<Mutex<AppCore>>,
+    mut rx: mpsc::Receiver<Option<ServerMessage>>,
+    server_addr: String,
+) {
+    loop {
+        // Drain messages until the underlying connection signals disconnect.
+        drain_until_disconnect(&app, &core, &server_addr, &mut rx).await;
+
+        // Connection lost. Tear down channel + voice; keep server_addr around
+        // so we can reconnect to the same target.
+        tear_down_session(&core).await;
+        tracing::info!("server disconnected, will attempt reconnect");
+
+        // Backoff schedule: 5s, 5s, then 10s forever (until success or abort).
+        let new_rx = match reconnect_loop(&app, &core, &server_addr).await {
+            Some(rx) => rx,
+            None => return, // unreachable today: we never give up
+        };
+        rx = new_rx;
+    }
+}
+
+/// Inner message loop. Returns when the receiver yields `None` (disconnect)
+/// or its sender is dropped.
+async fn drain_until_disconnect(
+    app: &AppHandle,
+    core: &Arc<Mutex<AppCore>>,
+    server_addr: &str,
+    rx: &mut mpsc::Receiver<Option<ServerMessage>>,
+) {
+    while let Some(maybe_msg) = rx.recv().await {
+        let Some(msg) = maybe_msg else {
+            return;
+        };
+        handle(app, core, server_addr, msg).await;
+    }
+}
+
+/// Clear channel + voice and drop the dead `ServerConnection`.
+/// `server_addr` stays in core so reconnect knows where to dial.
+async fn tear_down_session(core: &Arc<Mutex<AppCore>>) {
+    let voice = {
+        let mut c = core.lock().await;
+        c.conn = None;
+        c.channel = None;
+        c.pending_join = None;
+        c.voice.clone()
+    };
+    voice.stop().await;
+}
+
+/// Retry connecting to `server_addr` until success.
+/// Schedule: 5s, 5s, then 10s indefinitely.
+/// Aborting the JoinHandle is the only way out — we never give up on our own.
+async fn reconnect_loop(
+    app: &AppHandle,
+    core: &Arc<Mutex<AppCore>>,
+    server_addr: &str,
+) -> Option<mpsc::Receiver<Option<ServerMessage>>> {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt = attempt.saturating_add(1);
+        let delay_secs = backoff_seconds(attempt);
+
+        emit(
+            app,
+            "connection_state",
+            ConnState::Reconnecting { attempt, delay_secs },
+        );
+        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+
+        let (pubkey, tofu) = {
+            let c = core.lock().await;
+            (c.pubkey(), c.tofu.clone())
+        };
+
+        match network::connect(server_addr, &tofu, pubkey).await {
+            Ok((conn, new_rx)) => {
+                // Restore the saved name so the server's view of us is consistent.
+                let saved_name = {
                     let mut c = core.lock().await;
-                    c.conn = None;
-                    c.channel = None;
-                    c.voice.stop().await;
+                    c.conn = Some(conn);
+                    c.name.clone()
+                };
+                if let Some(name) = saved_name {
+                    if let Some(conn) = core.lock().await.conn.as_ref() {
+                        let _ = conn.send(ClientMessage::SetName { name });
+                    }
                 }
-                emit(&app, "connection_state", ConnState::Disconnected);
-                tracing::info!("server disconnected");
-                break;
-            };
-            handle(&app, &core, &server_addr, msg).await;
+                tracing::info!(attempt, "reconnected");
+                return Some(new_rx);
+            }
+            Err(e) => {
+                tracing::warn!(attempt, delay_secs, "reconnect failed: {:#}", e);
+                // Loop and try again with the next backoff slot.
+            }
         }
-    })
+    }
+}
+
+/// 5s for the first two attempts, 10s thereafter.
+fn backoff_seconds(attempt: u32) -> u64 {
+    if attempt <= 2 {
+        5
+    } else {
+        10
+    }
 }
 
 async fn handle(

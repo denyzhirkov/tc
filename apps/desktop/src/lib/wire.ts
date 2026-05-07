@@ -21,6 +21,18 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
         update.serverAddr(s.server);
         pushLog(`connected to ${s.server}`, "system");
         cmd.listChannels().catch(() => {});
+      } else if (s.state === "reconnecting") {
+        // Connection dropped; backend is retrying. Keep server addr but clear
+        // channel/voice state so the UI reflects we're not actually live.
+        update.conn("reconnecting");
+        update.channel(null);
+        update.channelList([]);
+        update.speakers({});
+        update.voice(null);
+        pushLog(
+          `reconnecting (attempt ${s.attempt}, in ${s.delay_secs}s)…`,
+          "system",
+        );
       } else {
         update.conn("disconnected");
         update.channel(null);

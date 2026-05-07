@@ -9,6 +9,8 @@ pub enum ConnState {
     Disconnected,
     Connecting,
     Connected { server: String },
+    /// Connection dropped; backoff scheduled before next attempt.
+    Reconnecting { attempt: u32, delay_secs: u64 },
 }
 
 #[derive(Debug, Clone, Serialize)]
