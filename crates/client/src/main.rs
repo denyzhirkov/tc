@@ -994,6 +994,7 @@ fn build_settings(app: &tui::App) -> settings::UserSettings {
         notifications: None,
         autostart: None,
         close_to_tray: None,
+        language: None,
         trusted_servers: Default::default(),
         servers: Vec::new(),
         dm_peers: Vec::new(),

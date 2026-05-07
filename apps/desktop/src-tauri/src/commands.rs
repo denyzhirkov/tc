@@ -35,6 +35,7 @@ pub struct AppStatus {
     pub notifications: bool,
     pub close_to_tray: bool,
     pub autostart: bool,
+    pub language: String,
 }
 
 #[tauri::command]
@@ -58,6 +59,7 @@ pub async fn app_status(state: CoreState<'_>) -> Result<AppStatus, String> {
         notifications: c.notifications,
         close_to_tray: c.close_to_tray,
         autostart: c.autostart,
+        language: c.language.clone(),
     })
 }
 
@@ -237,6 +239,7 @@ pub async fn export_settings(state: CoreState<'_>) -> Result<String, String> {
         notifications: Some(c.notifications),
         autostart: Some(c.autostart),
         close_to_tray: Some(c.close_to_tray),
+        language: Some(c.language.clone()),
         trusted_servers: c.tofu.trusted_map(),
         servers: c.servers.clone(),
         dm_peers: c.dm_peers.clone(),
@@ -277,6 +280,11 @@ pub async fn import_settings(state: CoreState<'_>, json: String) -> Result<(), S
     }
     if let Some(v) = s.close_to_tray {
         c.close_to_tray = v;
+    }
+    if let Some(v) = s.language.as_deref() {
+        if matches!(v, "en" | "ru") {
+            c.language = v.to_string();
+        }
     }
     c.tofu = tc_client::tls::TofuState::new(s.trusted_servers.clone());
     c.servers = s.servers.clone();

@@ -2,6 +2,7 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { cmd, on } from "./tauri";
 import { pushLog, state, update } from "./store";
+import { t } from "./i18n";
 
 export async function subscribeAll(): Promise<UnlistenFn[]> {
   return await Promise.all([
@@ -15,11 +16,11 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
         update.channelList([]);
         update.speakers({});
         update.voice(null);
-        pushLog("connecting...", "system");
+        pushLog(t("conn.connecting"), "system");
       } else if (s.state === "connected") {
         update.conn("connected");
         update.serverAddr(s.server);
-        pushLog(`connected to ${s.server}`, "system");
+        pushLog(t("conn.connected", { server: s.server }), "system");
         cmd.listChannels().catch(() => {});
       } else if (s.state === "reconnecting") {
         // Connection dropped; backend is retrying. Keep server addr but clear
@@ -30,7 +31,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
         update.speakers({});
         update.voice(null);
         pushLog(
-          `reconnecting (attempt ${s.attempt}, in ${s.delay_secs}s)…`,
+          t("conn.reconnecting", { attempt: s.attempt, delay: s.delay_secs }),
           "system",
         );
       } else {
@@ -39,25 +40,36 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
         update.channelList([]);
         update.speakers({});
         update.voice(null);
-        pushLog("disconnected", "system");
+        pushLog(t("conn.disconnected"), "system");
       }
     }),
     on("joined_channel", async (p) => {
       update.channel(p.channel_id, p.participants);
-      pushLog(`joined #${p.channel_id} (${p.participants.length} peers)`, "system");
+      pushLog(
+        t("log.joined_channel", {
+          channel: p.channel_id,
+          count: p.participants.length,
+        }),
+        "system",
+      );
       await loadChannelHistory(state.serverAddr, p.channel_id);
+      // Backend auto-mutes on join — pull a fresh status so the mic icon
+      // reflects the new muted state without waiting for the next user action.
+      try {
+        update.status(await cmd.status());
+      } catch {}
     }),
     on("left_channel", () => {
       update.channel(null);
-      pushLog("left channel", "system");
+      pushLog(t("log.left_channel"), "system");
     }),
     on("peer_joined", (p) => {
       update.addParticipant(p.name);
-      pushLog(`* ${p.name} joined`, "system");
+      pushLog(t("log.peer_joined", { name: p.name }), "system");
     }),
     on("peer_left", (p) => {
       update.removeParticipant(p.name);
-      pushLog(`* ${p.name} left`, "system");
+      pushLog(t("log.peer_left", { name: p.name }), "system");
     }),
     on("chat_message", (p) =>
       pushLog(`${p.from}: ${p.text}`, "chat", Math.floor(Date.now() / 1000)),
@@ -69,15 +81,15 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
       if (state.dm && state.dm.pubkey_hex === p.from_pubkey) {
         update.pushDmLog(`${p.from_name}: ${p.text}`, "dm", ts);
       } else {
-        pushLog(`(dm from ${p.from_name}) ${p.text}`, "dm", ts);
+        pushLog(t("log.dm_from", { name: p.from_name, text: p.text }), "dm", ts);
       }
     }),
     on("channel_list", (p) => {
       update.channelList(p.channels);
     }),
-    on("error", (p) => pushLog(`error: ${p.message}`, "error")),
+    on("error", (p) => pushLog(t("log.error", { message: p.message }), "error")),
     on("name_changed", (p) => {
-      pushLog(`* ${p.old_name} → ${p.new_name}`, "system");
+      pushLog(t("log.name_changed", { old: p.old_name, new: p.new_name }), "system");
       update.renameParticipant(p.old_name, p.new_name);
     }),
     on("voice_level", (v) => {
@@ -100,7 +112,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
           }, 400);
         }
       } catch (e) {
-        pushLog(`invite failed: ${e}`, "error");
+        pushLog(t("log.invite_failed", { error: String(e) }), "error");
       }
     }),
   ]);

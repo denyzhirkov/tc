@@ -117,6 +117,7 @@ pub fn run() {
             settings_cmd::set_notifications,
             settings_cmd::set_autostart,
             settings_cmd::set_close_to_tray,
+            settings_cmd::set_language,
             server_registry::list_servers,
             server_registry::forget_server,
             server_registry::set_server_favourite,

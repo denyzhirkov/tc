@@ -39,6 +39,9 @@ pub struct UserSettings {
     /// Hide window to tray instead of closing on the close button.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_to_tray: Option<bool>,
+    /// UI language code: "en" or "ru". None = default ("en").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// TOFU: trusted server certificate fingerprints (server_addr → "sha256:hex").
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub trusted_servers: HashMap<String, String>,

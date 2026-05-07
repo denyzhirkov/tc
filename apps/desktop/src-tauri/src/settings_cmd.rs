@@ -44,3 +44,15 @@ pub async fn set_close_to_tray(state: CoreState<'_>, enabled: bool) -> Result<()
     c.save();
     Ok(())
 }
+
+#[tauri::command]
+pub async fn set_language(state: CoreState<'_>, lang: String) -> Result<(), String> {
+    let lang = match lang.as_str() {
+        "en" | "ru" => lang,
+        other => return Err(format!("unsupported language: {}", other)),
+    };
+    let mut c = state.lock().await;
+    c.language = lang;
+    c.save();
+    Ok(())
+}

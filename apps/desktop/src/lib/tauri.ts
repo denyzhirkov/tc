@@ -22,6 +22,7 @@ export type AppStatus = {
   notifications: boolean;
   close_to_tray: boolean;
   autostart: boolean;
+  language: string;
 };
 
 export type ConnState =
@@ -74,6 +75,7 @@ export const cmd = {
   setNotifications: (enabled: boolean) => invoke<void>("set_notifications", { enabled }),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   setCloseToTray: (enabled: boolean) => invoke<void>("set_close_to_tray", { enabled }),
+  setLanguage: (lang: string) => invoke<void>("set_language", { lang }),
   // server registry
   listServers: () => invoke<ServerView[]>("list_servers"),
   forgetServer: (addr: string) => invoke<void>("forget_server", { addr }),

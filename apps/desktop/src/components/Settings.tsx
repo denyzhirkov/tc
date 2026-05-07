@@ -22,6 +22,7 @@ import {
   type Typeface,
 } from "../lib/theme";
 import { isMac } from "../lib/platform";
+import { SUPPORTED_LANGS, t, type Lang } from "../lib/i18n";
 import Identicon from "./Identicon";
 
 function Section(props: { title: string; children: any }) {
@@ -362,55 +363,55 @@ export default function Settings() {
     <div class="fixed inset-0 z-40 bg-black/40 flex items-start justify-center pt-12 pb-12 overflow-y-auto">
       <div class="w-[720px] max-w-[92vw] bg-bg border border-line rounded-2xl shadow-2xl p-6">
         <div class="flex items-center mb-4">
-          <h2 class="text-lg font-semibold">settings</h2>
+          <h2 class="text-lg font-semibold">{t("settings.title")}</h2>
           <button
             class={`ml-auto ${btnCls()}`}
             onClick={() => closeSettings()}
           >
-            esc · close
+            {t("settings.esc_close")}
           </button>
         </div>
 
-        <Section title="appearance">
+        <Section title={t("common.appearance")}>
           <Appearance />
         </Section>
 
-        <Section title="identity">
-          <Row label="nickname">
+        <Section title={t("settings.identity")}>
+          <Row label={t("common.nickname")}>
             <NameInput />
           </Row>
-          <Row label="identicon">
+          <Row label={t("common.identicon")}>
             <Identicon pubkeyHex={state.status?.pubkey} />
           </Row>
-          <Row label="fingerprint">
+          <Row label={t("settings.fingerprint")}>
             <span class="font-mono text-muted text-sm">{fp()}</span>
-            <CopyBtn value={state.status?.fingerprint ?? ""}>copy</CopyBtn>
+            <CopyBtn value={state.status?.fingerprint ?? ""}>{t("common.copy")}</CopyBtn>
           </Row>
-          <Row label="pubkey">
+          <Row label={t("settings.pubkey")}>
             <span class="font-mono text-muted text-xs break-all">
-              {state.status?.pubkey ?? "(none)"}
+              {state.status?.pubkey ?? t("common.none")}
             </span>
-            <CopyBtn value={state.status?.pubkey ?? ""}>copy</CopyBtn>
+            <CopyBtn value={state.status?.pubkey ?? ""}>{t("common.copy")}</CopyBtn>
           </Row>
         </Section>
 
-        <Section title="audio">
-          <Row label="input">
+        <Section title={t("settings.audio")}>
+          <Row label={t("settings.input")}>
             <DeviceSelect
               kind="input"
               current={state.status?.input_device ?? null}
             />
           </Row>
-          <Row label="output">
+          <Row label={t("settings.output")}>
             <DeviceSelect
               kind="output"
               current={state.status?.output_device ?? null}
             />
             <span class={btnCls()} onClick={() => cmd.playTestSignal()}>
-              test
+              {t("common.test")}
             </span>
           </Row>
-          <Row label="mic gain">
+          <Row label={t("settings.input_gain")}>
             <Slider
               value={state.status?.input_gain_pct ?? 100}
               min={0}
@@ -419,7 +420,7 @@ export default function Settings() {
               apply={(v) => cmd.setInputGain(v)}
             />
           </Row>
-          <Row label="output vol">
+          <Row label={t("settings.output_volume")}>
             <Slider
               value={state.status?.output_vol_pct ?? 100}
               min={0}
@@ -429,7 +430,7 @@ export default function Settings() {
             />
           </Row>
           <Show when={state.status?.voice_mode === "vad"}>
-            <Row label="vad level">
+            <Row label={t("settings.vad_level")}>
               <Slider
                 value={state.status?.vad_level_pct ?? 15}
                 min={0}
@@ -438,12 +439,12 @@ export default function Settings() {
               />
             </Row>
           </Show>
-          <Row label="mode">
+          <Row label={t("settings.voice_mode")}>
             <ModePicker />
           </Row>
         </Section>
 
-        <Section title="hotkeys">
+        <Section title={t("settings.hotkeys")}>
           <HotkeyRow
             action="mute"
             current={hotkeys()["mute"] ?? null}
@@ -460,13 +461,15 @@ export default function Settings() {
             refresh={refreshHotkeys}
           />
           <div class="text-xs text-muted ml-32">
-            format: e.g. {isMac ? "Alt+M" : "Ctrl+Alt+M"}, CommandOrControl+Shift+M, F19
+            {t("settings.hotkey_format", {
+              example: isMac ? "Alt+M" : "Ctrl+Alt+M",
+            })}
           </div>
         </Section>
 
-        <Section title="app">
+        <Section title={t("settings.app")}>
           <Toggle
-            label="OS notifications when window unfocused"
+            label={t("settings.notifications_desc")}
             value={notify()}
             onChange={async (v) => {
               setNotify(v);
@@ -474,7 +477,7 @@ export default function Settings() {
             }}
           />
           <Toggle
-            label="hide to tray on close (instead of quit)"
+            label={t("settings.tray_desc")}
             value={tray()}
             onChange={async (v) => {
               setTray(v);
@@ -482,7 +485,7 @@ export default function Settings() {
             }}
           />
           <Toggle
-            label="launch on system login"
+            label={t("settings.autostart_desc")}
             value={auto()}
             onChange={async (v) => {
               setAuto(v);
@@ -494,6 +497,25 @@ export default function Settings() {
               }
             }}
           />
+          <Row label={t("settings.language")}>
+            <select
+              class="bg-surface border border-line rounded px-2 py-1 text-sm"
+              value={state.status?.language ?? "en"}
+              onChange={async (e) => {
+                const lang = (e.currentTarget.value as Lang) ?? "en";
+                try {
+                  await cmd.setLanguage(lang);
+                  await refreshStatus();
+                } catch (err) {
+                  alert(`language: ${err}`);
+                }
+              }}
+            >
+              <For each={SUPPORTED_LANGS}>
+                {(l) => <option value={l.code}>{l.label}</option>}
+              </For>
+            </select>
+          </Row>
         </Section>
       </div>
     </div>

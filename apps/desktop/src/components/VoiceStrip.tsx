@@ -5,6 +5,7 @@ import { Show } from "solid-js";
 import { state } from "../lib/store";
 import { leaveChannel, toggleMute, toggleVadPtt } from "../lib/actions";
 import { Mic, MicOff, PhoneOff, Hash, SpeakerOff } from "./Icons";
+import { t } from "../lib/i18n";
 
 function CtrlBtn(props: {
   onClick: () => void;
@@ -39,7 +40,7 @@ export default function VoiceStrip() {
         <div class="flex items-center gap-2">
           <span class="inline-block w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
           <span class="text-[10px] uppercase tracking-wider text-muted">
-            connected
+            {t("voice.connected")}
           </span>
         </div>
         <div class="flex items-center gap-1.5 text-text">
@@ -61,20 +62,20 @@ export default function VoiceStrip() {
           <CtrlBtn
             onClick={() => toggleMute()}
             active={muted()}
-            title={muted() ? "unmute" : "mute"}
+            title={muted() ? t("common.unmute") : t("common.mute")}
           >
             {muted() ? <MicOff size={16} /> : <Mic size={16} />}
           </CtrlBtn>
           <CtrlBtn
             onClick={() => toggleVadPtt()}
-            title={`mode: ${mode()} (click vad ↔ ptt)`}
+            title={t("voice.toggle_mode", { mode: mode() })}
           >
             <span class="flex items-center gap-1 text-[10px] uppercase tracking-wider">
               <SpeakerOff size={14} />
               {mode()}
             </span>
           </CtrlBtn>
-          <CtrlBtn onClick={() => leaveChannel()} danger title="leave call">
+          <CtrlBtn onClick={() => leaveChannel()} danger title={t("voice.leave_call")}>
             <PhoneOff size={16} />
           </CtrlBtn>
         </div>

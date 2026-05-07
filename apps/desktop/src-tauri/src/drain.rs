@@ -9,6 +9,7 @@
 //! aborts this task via its `JoinHandle`, so explicit disconnects never
 //! reconnect on their own.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -218,6 +219,9 @@ async fn handle(
                     udp_token,
                     voice_key: voice_key.clone(),
                 });
+                // Default-mute on every channel join so the user never bursts
+                // into a new room with a hot mic. They can unmute explicitly.
+                c.muted.store(true, Ordering::Relaxed);
                 match (c.name.clone(), c.conn.as_ref()) {
                     (Some(name), Some(_)) if !participants.contains(&name) => Some(name),
                     _ => None,

@@ -65,6 +65,8 @@ pub struct AppCore {
     pub notifications: bool,
     pub autostart: bool,
     pub close_to_tray: bool,
+    /// UI language: "en" or "ru". Defaults to "en".
+    pub language: String,
     pub servers: Vec<ServerEntry>,
     pub dm_peers: Vec<DmPeer>,
     /// Atomics shared with the audio capture thread.
@@ -133,6 +135,12 @@ impl AppCore {
             notifications: saved.notifications.unwrap_or(true),
             autostart: saved.autostart.unwrap_or(false),
             close_to_tray: saved.close_to_tray.unwrap_or(false),
+            language: saved
+                .language
+                .as_deref()
+                .filter(|s| matches!(*s, "en" | "ru"))
+                .unwrap_or("en")
+                .to_string(),
             servers: saved.servers.clone(),
             dm_peers: saved.dm_peers.clone(),
             muted,
@@ -171,6 +179,7 @@ impl AppCore {
             notifications: Some(self.notifications),
             autostart: Some(self.autostart),
             close_to_tray: Some(self.close_to_tray),
+            language: Some(self.language.clone()),
             trusted_servers: self.tofu.trusted_map(),
             servers: self.servers.clone(),
             dm_peers: self.dm_peers.clone(),

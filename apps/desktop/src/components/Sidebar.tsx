@@ -17,6 +17,7 @@ import VoiceStrip from "./VoiceStrip";
 import VoiceWave from "./VoiceWave";
 import { Hash, Plus, Chev, Search } from "./Icons";
 import { shortcut } from "../lib/platform";
+import { t } from "../lib/i18n";
 
 function ConnDot() {
   const cls = () => {
@@ -122,7 +123,7 @@ function ServerPicker() {
                     <span
                       role="button"
                       aria-label="disconnect"
-                      title="disconnect"
+                      title={t("common.disconnect")}
                       class="inline-block w-3 h-3 rounded-sm bg-red-500 hover:bg-red-400 cursor-pointer"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -136,7 +137,7 @@ function ServerPicker() {
             }}
           </For>
           <Show when={servers().length === 0}>
-            <div class="text-muted text-xs px-2 py-1.5">no known servers</div>
+            <div class="text-muted text-xs px-2 py-1.5">{t("sidebar.no_servers")}</div>
           </Show>
           <div class="border-t border-line mt-1 pt-1">
             <button
@@ -146,7 +147,7 @@ function ServerPicker() {
                 openPalette("/server ");
               }}
             >
-              <Plus size={12} /> add server…
+              <Plus size={12} /> {t("sidebar.add_server")}
             </button>
           </div>
         </div>
@@ -163,7 +164,7 @@ function SectionHead(props: { label: string; action?: () => void }) {
         <button
           class="p-0.5 rounded hover:bg-hover text-faint hover:text-text"
           onClick={props.action}
-          title="add"
+          title={t("common.add")}
         >
           <Plus size={12} />
         </button>
@@ -296,7 +297,7 @@ export default function Sidebar() {
           title={shortcut("k")}
         >
           <Search size={14} />
-          <span class="flex-1 text-left">jump to…</span>
+          <span class="flex-1 text-left">{t("sidebar.jump_to")}</span>
           <span class="text-xs text-faint">{shortcut("k")}</span>
         </button>
       </div>
@@ -304,7 +305,7 @@ export default function Sidebar() {
       {/* channels + dms */}
       <div class="flex-1 overflow-y-auto py-2">
         <SectionHead
-          label="channels"
+          label={t("sidebar.channels")}
           action={() => openPalette("/create ")}
         />
         <div class="px-1.5 mb-3 flex flex-col gap-0.5">
@@ -336,12 +337,12 @@ export default function Sidebar() {
           </Show>
           <Show when={state.channelList.length === 0 && !state.channel}>
             <div class="text-muted text-xs px-2 py-1">
-              no channels — try /list
+              {t("sidebar.no_channels")}
             </div>
           </Show>
         </div>
 
-        <SectionHead label="direct messages" />
+        <SectionHead label={t("sidebar.dms")} />
         <div class="px-1.5 flex flex-col gap-0.5">
           <For each={dms()}>
             {(p) => (
@@ -349,7 +350,7 @@ export default function Sidebar() {
             )}
           </For>
           <Show when={dms().length === 0}>
-            <div class="text-muted text-xs px-2 py-1">no DMs yet</div>
+            <div class="text-muted text-xs px-2 py-1">{t("sidebar.no_dms")}</div>
           </Show>
         </div>
       </div>
