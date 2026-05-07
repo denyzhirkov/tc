@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-ui: "Inter Tight", "Inter", ui-sans-serif, -apple-system, system-ui,
+    sans-serif;
+
+  /* dark default */
+  --c-bg: #16171a;
+  --c-surface: #1c1d20;
+  --c-surface2: #222428;
+  --c-hover: #26282d;
+  --c-line: #2a2c30;
+  --c-line2: #222428;
+  --c-text: #e8e8e6;
+  --c-text2: #bcbdba;
+  --c-muted: #797a76;
+  --c-faint: #5a5b58;
+  --c-accent: #5b6cff;
+  --c-accent-bg: rgba(91, 108, 255, 0.16);
+  --c-danger: #c44a4a;
+  --c-warn: #c2862b;
+  --c-ok: #3a8a5e;
+}
+
+:root[data-theme="light"] {
+  --c-bg: #fafaf8;
+  --c-surface: #ffffff;
+  --c-surface2: #f4f4f1;
+  --c-hover: #efefec;
+  --c-line: #ececea;
+  --c-line2: #f0f0ee;
+  --c-text: #1a1a19;
+  --c-text2: #3a3a37;
+  --c-muted: #8a8a86;
+  --c-faint: #b3b3af;
+  --c-accent-bg: rgba(91, 108, 255, 0.10);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* Reset native form chrome — we style everything ourselves. */
+input,
+button,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+/* Native-looking scrollbars, subdued */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--c-line);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-faint);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

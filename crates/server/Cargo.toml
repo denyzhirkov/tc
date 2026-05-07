@@ -1,0 +1,25 @@
+[package]
+name = "tc-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tc-shared = { path = "../shared" }
+tokio.workspace = true
+serde.workspace = true
+bincode.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+arc-swap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true
+clap.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+rcgen.workspace = true
+rustls-pemfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

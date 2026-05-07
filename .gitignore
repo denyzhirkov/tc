@@ -1,0 +1,17 @@
+/target
+/dist
+node_modules/
+.vite/
+*.tsbuildinfo
+apps/desktop/vite.config.js
+apps/desktop/vite.config.d.ts
+**/*.rs.bk
+*.swp
+*.swo
+.DS_Store
+*.log
+/tmp
+.tsk
+.kungfu
+CLAUDE.md
+.claude
