@@ -122,3 +122,13 @@ pub const RATE_LIMIT_CMD_BURST: f64 = 20.0;
 pub const RATE_LIMIT_CREATE_PER_SEC: f64 = 0.1;
 /// Maximum burst for channel creation.
 pub const RATE_LIMIT_CREATE_BURST: f64 = 3.0;
+
+/// General command rate limit per source IP (defends against multi-connection
+/// abuse from a single attacker that would otherwise multiply the per-client cap).
+/// Sized higher than per-client to leave headroom for legitimate NAT'd users.
+pub const RATE_LIMIT_IP_CMD_PER_SEC: f64 = 30.0;
+/// Maximum burst per source IP.
+pub const RATE_LIMIT_IP_CMD_BURST: f64 = 60.0;
+/// Idle entries in the per-IP limiter map are cleared after this many seconds
+/// when no connections from that IP remain.
+pub const IP_LIMITER_IDLE_TTL_SECS: u64 = 300;

@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::net::UdpSocket;
@@ -6,7 +8,101 @@ use tokio::net::UdpSocket;
 use tc_shared::config;
 use tc_shared::{decode_udp_hello, encode_udp_hello, VoicePacket};
 
+use crate::metrics::Metrics;
 use crate::state::ServerState;
+
+// ── SO_REUSEPORT bind (Linux only) ──────────────────────────────────
+//
+// On Linux 3.9+ multiple sockets may bind to the same UDP port if all of them
+// set SO_REUSEPORT. The kernel hashes incoming datagrams across the bound
+// sockets by 4-tuple, giving free horizontal scaling — N workers each owning
+// one socket can saturate N cores without coordination.
+//
+// macOS/BSD have a flag with the same name but different semantics
+// (only one socket actually receives), so we stay single-socket there.
+
+#[cfg(target_os = "linux")]
+fn bind_reuseport(addr: SocketAddr) -> Result<UdpSocket> {
+    use std::os::unix::io::FromRawFd;
+
+    let domain = match addr {
+        SocketAddr::V4(_) => libc::AF_INET,
+        SocketAddr::V6(_) => libc::AF_INET6,
+    };
+    let fd = unsafe {
+        libc::socket(
+            domain,
+            libc::SOCK_DGRAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    // Helper: setsockopt int. On error, close fd and return.
+    let setopt_int = |opt: libc::c_int| -> Result<()> {
+        let v: libc::c_int = 1;
+        let rc = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                opt,
+                &v as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            let e = std::io::Error::last_os_error();
+            return Err(e.into());
+        }
+        Ok(())
+    };
+
+    if let Err(e) = setopt_int(libc::SO_REUSEADDR).and_then(|_| setopt_int(libc::SO_REUSEPORT)) {
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+
+    let bind_rc = match addr {
+        SocketAddr::V4(v4) => {
+            let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+            sa.sin_family = libc::AF_INET as libc::sa_family_t;
+            sa.sin_port = v4.port().to_be();
+            sa.sin_addr.s_addr = u32::from(*v4.ip()).to_be();
+            unsafe {
+                libc::bind(
+                    fd,
+                    &sa as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                )
+            }
+        }
+        SocketAddr::V6(v6) => {
+            let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+            sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            sa.sin6_port = v6.port().to_be();
+            sa.sin6_addr.s6_addr = v6.ip().octets();
+            sa.sin6_flowinfo = v6.flowinfo();
+            sa.sin6_scope_id = v6.scope_id();
+            unsafe {
+                libc::bind(
+                    fd,
+                    &sa as *const _ as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+                )
+            }
+        }
+    };
+    if bind_rc != 0 {
+        let e = std::io::Error::last_os_error();
+        unsafe { libc::close(fd) };
+        return Err(e.into());
+    }
+
+    let std_sock = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
+    Ok(UdpSocket::from_std(std_sock)?)
+}
 
 // ── Linux: batch UDP send via sendmmsg ──────────────────────────────
 
@@ -141,13 +237,93 @@ fn send_to_all(socket: &UdpSocket, data: &[u8], addrs: &[SocketAddr]) {
 
 // ── UDP relay loop ──────────────────────────────────────────────────
 
-/// Start the UDP voice relay server.
-pub async fn run_udp_relay(state: ServerState, addr: String) -> Result<()> {
-    let socket = UdpSocket::bind(&addr).await?;
-    tracing::info!("UDP listening on {}", addr);
+/// Resolve the number of UDP workers to spawn.
+///
+/// On Linux, multiple workers share the port via SO_REUSEPORT and the kernel
+/// load-balances incoming datagrams across them, scaling near-linearly with cores.
+/// On other platforms a single worker is used regardless of `requested`.
+fn resolve_workers(requested: usize) -> usize {
+    let resolved = if requested == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        requested
+    };
 
+    #[cfg(target_os = "linux")]
+    {
+        resolved.max(1)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if resolved > 1 {
+            tracing::warn!(
+                "udp-workers={} requested but multi-socket REUSEPORT is Linux-only; using 1",
+                resolved
+            );
+        }
+        1
+    }
+}
+
+/// Start the UDP voice relay server.
+///
+/// Spawns `workers` parallel relay loops, each owning its own UDP socket.
+/// On Linux the sockets share the port via SO_REUSEPORT; on other platforms
+/// a single socket is bound and `workers` is forced to 1.
+pub async fn run_udp_relay(
+    state: ServerState,
+    metrics: Arc<Metrics>,
+    addr: String,
+    workers: usize,
+) -> Result<()> {
+    let workers = resolve_workers(workers);
+    let bind_addr: SocketAddr = addr.parse()?;
+
+    let mut handles = Vec::with_capacity(workers);
+    for worker_id in 0..workers {
+        let socket = bind_worker_socket(bind_addr).await?;
+        let state = state.clone();
+        let metrics = metrics.clone();
+        handles.push(tokio::spawn(async move {
+            relay_loop(socket, state, metrics, worker_id).await
+        }));
+    }
+    tracing::info!("UDP listening on {} ({} worker(s))", addr, workers);
+
+    // If any worker exits (unexpected), propagate so the supervisor restarts.
+    for h in handles {
+        match h.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(join_err) => return Err(anyhow::anyhow!("UDP worker panicked: {}", join_err)),
+        }
+    }
+    Ok(())
+}
+
+/// Bind one socket for a worker. SO_REUSEPORT on Linux, regular bind elsewhere.
+async fn bind_worker_socket(addr: SocketAddr) -> Result<UdpSocket> {
+    #[cfg(target_os = "linux")]
+    {
+        bind_reuseport(addr)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(UdpSocket::bind(addr).await?)
+    }
+}
+
+/// Per-worker hot loop. Each worker has its own buffer, peer scratch and
+/// (on Linux) BatchSender state — no shared mutable state between workers.
+async fn relay_loop(
+    socket: UdpSocket,
+    state: ServerState,
+    metrics: Arc<Metrics>,
+    worker_id: usize,
+) -> Result<()> {
     let mut buf = vec![0u8; config::MAX_UDP_PACKET + 64];
-    // Reusable peer list — avoids allocation on every packet
     let mut peers = Vec::<SocketAddr>::with_capacity(16);
 
     #[cfg(target_os = "linux")]
@@ -157,22 +333,27 @@ pub async fn run_udp_relay(state: ServerState, addr: String) -> Result<()> {
         let (len, src_addr) = match socket.recv_from(&mut buf).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!("UDP recv error: {}", e);
+                tracing::warn!(worker_id, "UDP recv error: {}", e);
                 continue;
             }
         };
+
+        metrics.udp_packets_in.fetch_add(1, Ordering::Relaxed);
+        metrics.udp_bytes_in.fetch_add(len as u64, Ordering::Relaxed);
 
         let data = &buf[..len];
 
         // Check for hello packet (token-based UDP registration)
         if let Some(token) = decode_udp_hello(data) {
             if state.register_udp_by_token(token, src_addr).await {
-                tracing::debug!(%src_addr, "UDP hello registered via token");
+                metrics.udp_hellos_ok.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(%src_addr, worker_id, "UDP hello registered via token");
                 // Send ACK (echo the hello back)
                 let ack = encode_udp_hello(token);
                 let _ = socket.send_to(&ack, src_addr).await;
             } else {
-                tracing::debug!(%src_addr, "UDP hello with invalid token");
+                metrics.udp_hellos_invalid.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!(%src_addr, worker_id, "UDP hello with invalid token");
             }
             continue;
         }
@@ -180,11 +361,22 @@ pub async fn run_udp_relay(state: ServerState, addr: String) -> Result<()> {
         // Parse only the channel_id without copying opus_data
         let channel_id = match VoicePacket::parse_channel_id(data) {
             Some(id) => id,
-            None => continue,
+            None => {
+                metrics.udp_voice_malformed.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
         };
 
         // Fill reusable peer buffer (no allocation when capacity suffices)
         state.fill_channel_peers(channel_id, &src_addr, &mut peers);
+
+        if !peers.is_empty() {
+            metrics.udp_voice_relayed.fetch_add(1, Ordering::Relaxed);
+            metrics.udp_fanout_total.fetch_add(peers.len() as u64, Ordering::Relaxed);
+            metrics
+                .udp_bytes_relayed
+                .fetch_add((data.len() as u64) * (peers.len() as u64), Ordering::Relaxed);
+        }
 
         // Relay raw bytes to all other participants in the channel
         #[cfg(target_os = "linux")]

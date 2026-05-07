@@ -127,18 +127,20 @@ async fn start_server() -> TestServer {
     let udp_addr = udp_sock.local_addr().unwrap();
     drop(udp_sock);
 
-    let state = tc_server::state::ServerState::new(tc_server::state::Limits {
-        max_channels: 0,
-        max_clients: 0,
-    });
+    let state = tc_server::state::ServerState::new(tc_server::state::Limits::default());
     let senders: tc_server::tcp::ClientSenders = Arc::new(RwLock::new(HashMap::new()));
 
     let tcp_state = state.clone();
     let tcp_senders = senders.clone();
+    let ip_limiter = Arc::new(tc_server::rate_limit::IpRateLimiter::new(
+        tc_shared::config::RATE_LIMIT_IP_CMD_PER_SEC,
+        tc_shared::config::RATE_LIMIT_IP_CMD_BURST,
+    ));
     let tcp_handle = tokio::spawn(async move {
         let _ = tc_server::tcp::run_tcp_server(
             tcp_state,
             tcp_senders,
+            ip_limiter,
             tcp_addr.to_string(),
             acceptor,
         )
@@ -146,8 +148,9 @@ async fn start_server() -> TestServer {
     });
 
     let udp_state = state.clone();
+    let udp_metrics = state.metrics().clone();
     let udp_handle = tokio::spawn(async move {
-        let _ = tc_server::udp::run_udp_relay(udp_state, udp_addr.to_string()).await;
+        let _ = tc_server::udp::run_udp_relay(udp_state, udp_metrics, udp_addr.to_string(), 1).await;
     });
 
     // Wait for TCP server to be ready (retry connect)

@@ -6,6 +6,7 @@ use clap::Parser;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
+use tc_server::rate_limit::IpRateLimiter;
 use tc_server::state;
 use tc_server::tcp;
 use tc_server::tls;
@@ -45,6 +46,19 @@ pub struct Args {
     /// Maintenance cleanup interval in seconds
     #[arg(long, default_value_t = config::MAINTENANCE_INTERVAL_SECS)]
     maintenance_interval: u64,
+
+    /// Number of UDP relay workers. 0 = auto (one per available core).
+    /// On Linux multiple workers share the port via SO_REUSEPORT; on other
+    /// platforms this is forced to 1.
+    #[arg(long, default_value_t = 0)]
+    udp_workers: usize,
+
+    /// Multiplier applied to all rate-limit buckets (rate and burst).
+    /// 1.0 = production defaults. Useful for local load tests where many
+    /// simulated clients share a source IP and would otherwise trip the
+    /// per-IP cap. Values < 1.0 tighten the limits.
+    #[arg(long, default_value_t = 1.0)]
+    rate_limit_multiplier: f64,
 }
 
 #[tokio::main]
@@ -74,12 +88,21 @@ async fn main() -> Result<()> {
     let tls_config = tls::load_or_generate_tls_config()?;
     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
 
+    let m = args.rate_limit_multiplier.max(0.0001);
+    if (m - 1.0).abs() > f64::EPSILON {
+        tracing::warn!(multiplier = m, "rate-limit multiplier != 1.0");
+    }
     let limits = state::Limits {
         max_channels: args.max_channels,
         max_clients: args.max_clients,
+        rate_limit_multiplier: m,
     };
     let state = ServerState::new(limits);
     let senders: tcp::ClientSenders = Arc::new(RwLock::new(HashMap::new()));
+    let ip_limiter = Arc::new(IpRateLimiter::new(
+        config::RATE_LIMIT_IP_CMD_PER_SEC * m,
+        config::RATE_LIMIT_IP_CMD_BURST * m,
+    ));
 
     let shutdown_senders = senders.clone();
 
@@ -87,11 +110,21 @@ async fn main() -> Result<()> {
     let mut tcp_handle = tokio::spawn(tcp::run_tcp_server(
         state.clone(),
         senders,
+        ip_limiter.clone(),
         tcp_addr,
         acceptor,
     ));
-    let mut udp_handle = tokio::spawn(udp::run_udp_relay(state.clone(), udp_addr));
-    let mut maint_handle = tokio::spawn(run_maintenance(state, args.maintenance_interval));
+    let mut udp_handle = tokio::spawn(udp::run_udp_relay(
+        state.clone(),
+        state.metrics().clone(),
+        udp_addr,
+        args.udp_workers,
+    ));
+    let mut maint_handle = tokio::spawn(run_maintenance(
+        state,
+        ip_limiter,
+        args.maintenance_interval,
+    ));
 
     // Monitor tasks: if any exits unexpectedly, log and exit so
     // systemd/docker can restart the process.
@@ -100,15 +133,18 @@ async fn main() -> Result<()> {
         _ = shutdown_signal() => {
             tracing::info!("shutdown signal received, notifying clients...");
 
-            // Broadcast shutdown message to all connected clients
+            // Broadcast shutdown message to all connected clients.
+            // Serialize once, fan out cheap Bytes clones.
             {
                 let senders = shutdown_senders.read().await;
                 let msg = ServerMessage::Error {
                     message: "server shutting down".into(),
                 };
-                for (addr, tx) in senders.iter() {
-                    if tx.try_send(msg.clone()).is_err() {
-                        tracing::trace!(%addr, "could not send shutdown notice");
+                if let Ok(frame) = tc_shared::encode_tcp_frame_bytes(&msg) {
+                    for (addr, tx) in senders.iter() {
+                        if tx.try_send(frame.clone()).is_err() {
+                            tracing::trace!(%addr, "could not send shutdown notice");
+                        }
                     }
                 }
             }
@@ -174,19 +210,43 @@ async fn shutdown_signal() {
     }
 }
 
-async fn run_maintenance(state: ServerState, interval_secs: u64) -> Result<()> {
+async fn run_maintenance(
+    state: ServerState,
+    ip_limiter: Arc<IpRateLimiter>,
+    interval_secs: u64,
+) -> Result<()> {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    let mut prev = state.metrics().snapshot();
+    let ip_ttl = std::time::Duration::from_secs(config::IP_LIMITER_IDLE_TTL_SECS);
     loop {
         interval.tick().await;
         let removed = state.cleanup_empty_channels().await;
         if removed > 0 {
             tracing::info!("cleaned up {} empty channels", removed);
         }
+        let ip_reclaimed = ip_limiter.sweep_idle(ip_ttl);
+        if ip_reclaimed > 0 {
+            tracing::debug!("reclaimed {} idle IP rate-limit entries", ip_reclaimed);
+        }
         let stats = state.stats().await;
-        tracing::debug!(
+        let now = state.metrics().snapshot();
+        let d = now.delta(&prev);
+        prev = now;
+        tracing::info!(
             clients = stats.clients,
             channels = stats.channels,
             udp_peers = stats.udp_peers,
+            udp_in = d.udp_packets_in,
+            udp_relayed = d.udp_voice_relayed,
+            udp_fanout = d.udp_fanout_total,
+            udp_malformed = d.udp_voice_malformed,
+            udp_bytes_in = d.udp_bytes_in,
+            udp_bytes_relayed = d.udp_bytes_relayed,
+            tcp_sends = d.tcp_sends,
+            tcp_bcast = d.tcp_broadcast_sends,
+            tcp_drops = d.tcp_drops_queue_full,
+            tcp_rate_limited = d.tcp_rate_limited,
+            interval_secs,
             "status"
         );
     }

@@ -1,19 +1,20 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_rustls::TlsAcceptor;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use tc_shared::config;
-use tc_shared::{extract_frames, write_tcp_frame, ChannelId, ClientMessage, ServerMessage};
+use tc_shared::{encode_tcp_frame_bytes, extract_frames, ChannelId, ClientMessage, ServerMessage};
 
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::{IpRateLimiter, RateLimiter};
 use crate::state::ServerState;
 
 /// Max concurrent TLS handshakes to prevent resource exhaustion.
@@ -29,15 +30,31 @@ const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const CLIENT_QUEUE_CAPACITY: usize = 128;
 
 /// Per-client sender for outgoing TCP messages.
-pub type ClientSender = mpsc::Sender<ServerMessage>;
+///
+/// Carries pre-serialized framed bytes so a single broadcast serializes
+/// the message once and fans out cheap [`Bytes`] clones (refcount bumps).
+pub type ClientSender = mpsc::Sender<Bytes>;
 
 /// Shared map of all connected clients' senders, keyed by TCP address.
 pub type ClientSenders = Arc<RwLock<HashMap<SocketAddr, ClientSender>>>;
+
+/// Serialize a [`ServerMessage`] to a framed [`Bytes`].
+/// Logs and returns `None` on serialization failure (should be unreachable for our types).
+fn encode(msg: &ServerMessage) -> Option<Bytes> {
+    match encode_tcp_frame_bytes(msg) {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::error!("failed to encode server message: {}", e);
+            None
+        }
+    }
+}
 
 /// Start the TCP control server.
 pub async fn run_tcp_server(
     state: ServerState,
     senders: ClientSenders,
+    ip_limiter: Arc<IpRateLimiter>,
     addr: String,
     acceptor: TlsAcceptor,
 ) -> Result<()> {
@@ -61,6 +78,7 @@ pub async fn run_tcp_server(
         let state = state.clone();
         let senders = senders.clone();
         let permit = tls_semaphore.clone();
+        let ip_limiter = ip_limiter.clone();
         tokio::spawn(async move {
             let _permit = match permit.acquire_owned().await {
                 Ok(p) => p,
@@ -86,7 +104,7 @@ pub async fn run_tcp_server(
             drop(_permit);
             tracing::info!(%peer_addr, "TLS handshake complete");
 
-            if let Err(e) = handle_client(tls_stream, peer_addr, state, senders).await {
+            if let Err(e) = handle_client(tls_stream, peer_addr, state, senders, ip_limiter).await {
                 tracing::warn!(%peer_addr, "client error: {}", e);
             }
         });
@@ -98,6 +116,7 @@ async fn handle_client(
     peer_addr: SocketAddr,
     state: ServerState,
     senders: ClientSenders,
+    ip_limiter: Arc<IpRateLimiter>,
 ) -> Result<()> {
     let (reader, writer) = tokio::io::split(stream);
 
@@ -112,21 +131,26 @@ async fn handle_client(
     let total = state.stats().await.clients;
     tracing::info!(%peer_addr, %name, total, "client registered");
 
+    // Track this connection in the per-IP limiter (for cross-connection abuse defense).
+    ip_limiter.track(peer_addr.ip());
+
     // Create outgoing message channel (bounded to prevent memory growth)
-    let (tx, rx) = mpsc::channel::<ServerMessage>(CLIENT_QUEUE_CAPACITY);
+    let (tx, rx) = mpsc::channel::<Bytes>(CLIENT_QUEUE_CAPACITY);
     senders.write().await.insert(peer_addr, tx.clone());
 
     // Send Welcome with server version as first message
-    let _ = tx.try_send(ServerMessage::Welcome {
+    if let Some(b) = encode(&ServerMessage::Welcome {
         version: env!("CARGO_PKG_VERSION").to_string(),
         protocol: config::PROTOCOL_VERSION,
-    });
+    }) {
+        let _ = tx.try_send(b);
+    }
 
     // Writer task: sends queued ServerMessages to this client
     let writer_handle = tokio::spawn(writer_task(writer, rx));
 
     // Reader loop: reads incoming ClientMessages
-    let result = reader_loop(reader, peer_addr, name.clone(), &state, &senders).await;
+    let result = reader_loop(reader, peer_addr, name.clone(), &state, &senders, &ip_limiter).await;
 
     // Cleanup on disconnect
     senders.write().await.remove(&peer_addr);
@@ -142,6 +166,7 @@ async fn handle_client(
         )
         .await;
     }
+    ip_limiter.untrack(peer_addr.ip());
     let total = state.stats().await.clients;
     tracing::info!(%peer_addr, %name, total, "client disconnected");
 
@@ -151,11 +176,15 @@ async fn handle_client(
 
 async fn writer_task<W: AsyncWrite + Unpin>(
     mut writer: W,
-    mut rx: mpsc::Receiver<ServerMessage>,
+    mut rx: mpsc::Receiver<Bytes>,
 ) {
-    while let Some(msg) = rx.recv().await {
-        if let Err(e) = write_tcp_frame(&mut writer, &msg).await {
+    while let Some(frame) = rx.recv().await {
+        if let Err(e) = writer.write_all(&frame).await {
             tracing::debug!("writer stopped: {}", e);
+            break;
+        }
+        if let Err(e) = writer.flush().await {
+            tracing::debug!("writer flush stopped: {}", e);
             break;
         }
     }
@@ -167,11 +196,17 @@ async fn reader_loop<R: AsyncRead + Unpin>(
     mut name: String,
     state: &ServerState,
     senders: &ClientSenders,
+    ip_limiter: &IpRateLimiter,
 ) -> Result<()> {
     let mut buf = vec![0u8; config::TCP_READ_BUF];
     let mut pending = BytesMut::new();
-    let mut cmd_limiter = RateLimiter::new(config::RATE_LIMIT_CMD_PER_SEC, config::RATE_LIMIT_CMD_BURST);
-    let mut create_limiter = RateLimiter::new(config::RATE_LIMIT_CREATE_PER_SEC, config::RATE_LIMIT_CREATE_BURST);
+    let m = state.rate_limit_multiplier().await;
+    let mut cmd_limiter =
+        RateLimiter::new(config::RATE_LIMIT_CMD_PER_SEC * m, config::RATE_LIMIT_CMD_BURST * m);
+    let mut create_limiter = RateLimiter::new(
+        config::RATE_LIMIT_CREATE_PER_SEC * m,
+        config::RATE_LIMIT_CREATE_BURST * m,
+    );
 
     loop {
         let n = match tokio::time::timeout(CLIENT_IDLE_TIMEOUT, reader.read(&mut buf)).await {
@@ -207,22 +242,28 @@ async fn reader_loop<R: AsyncRead + Unpin>(
                 }
             };
 
-            // Rate limit: Ping/Hello always allowed, CreateChannel has a stricter limit
+            // Rate limit: Ping/Hello always allowed; CreateChannel has a stricter cap.
+            // Two layers checked in order: per-IP (cross-connection) then per-connection.
             match &msg {
                 ClientMessage::Ping | ClientMessage::Hello { .. } => {}
                 ClientMessage::CreateChannel { .. } => {
-                    if !cmd_limiter.check() || !create_limiter.check() {
+                    if !ip_limiter.check(peer_addr.ip())
+                        || !cmd_limiter.check()
+                        || !create_limiter.check()
+                    {
+                        state.metrics().tcp_rate_limited.fetch_add(1, Ordering::Relaxed);
                         tracing::debug!(%peer_addr, "rate limited (create)");
-                        send_to(senders, &peer_addr, ServerMessage::Error {
+                        send_to(state, senders, &peer_addr, ServerMessage::Error {
                             message: "rate limited, slow down".into(),
                         }).await;
                         continue;
                     }
                 }
                 _ => {
-                    if !cmd_limiter.check() {
+                    if !ip_limiter.check(peer_addr.ip()) || !cmd_limiter.check() {
+                        state.metrics().tcp_rate_limited.fetch_add(1, Ordering::Relaxed);
                         tracing::debug!(%peer_addr, "rate limited");
-                        send_to(senders, &peer_addr, ServerMessage::Error {
+                        send_to(state, senders, &peer_addr, ServerMessage::Error {
                             message: "rate limited, slow down".into(),
                         }).await;
                         continue;
@@ -275,7 +316,7 @@ async fn handle_message(
             handle_list_channels(peer_addr, name, state, senders).await
         }
         ClientMessage::Ping => {
-            send_to(senders, &peer_addr, ServerMessage::Pong).await;
+            send_to(state, senders, &peer_addr, ServerMessage::Pong).await;
         }
     }
 
@@ -293,11 +334,11 @@ async fn handle_create_channel(
         Ok(channel_id) => {
             let total = state.stats().await.channels;
             tracing::info!(%peer_addr, %name, %channel_id, total_channels = total, "channel created");
-            send_to(senders, &peer_addr, ServerMessage::ChannelCreated { channel_id }).await;
+            send_to(state, senders, &peer_addr, ServerMessage::ChannelCreated { channel_id }).await;
         }
         Err(err) => {
             tracing::debug!(%peer_addr, %name, %err, "create channel failed");
-            send_to(senders, &peer_addr, ServerMessage::Error { message: err }).await;
+            send_to(state, senders, &peer_addr, ServerMessage::Error { message: err }).await;
         }
     }
 }
@@ -321,6 +362,7 @@ async fn handle_join_channel(
             )
             .await;
             send_to(
+                state,
                 senders,
                 &peer_addr,
                 ServerMessage::JoinedChannel { channel_id, participants, udp_token, voice_key },
@@ -329,7 +371,7 @@ async fn handle_join_channel(
         }
         Err(err) => {
             tracing::debug!(%peer_addr, %name, %channel_id, %err, "join channel failed");
-            send_to(senders, &peer_addr, ServerMessage::Error { message: err }).await;
+            send_to(state, senders, &peer_addr, ServerMessage::Error { message: err }).await;
         }
     }
 }
@@ -342,7 +384,7 @@ async fn handle_leave_channel(
 ) {
     if let Some((left_name, channel_id)) = state.leave_channel(&peer_addr).await {
         tracing::info!(%peer_addr, %left_name, %channel_id, "left channel");
-        send_to(senders, &peer_addr, ServerMessage::LeftChannel).await;
+        send_to(state, senders, &peer_addr, ServerMessage::LeftChannel).await;
         broadcast_to_channel(
             state,
             senders,
@@ -354,6 +396,7 @@ async fn handle_leave_channel(
     } else {
         tracing::debug!(%peer_addr, %name, "leave failed: not in a channel");
         send_to(
+            state,
             senders,
             &peer_addr,
             ServerMessage::Error { message: "not in a channel".into() },
@@ -372,6 +415,7 @@ async fn handle_chat_message(
     if text.len() > config::MAX_CHAT_LEN {
         tracing::debug!(%peer_addr, %name, len = text.len(), "chat rejected: too long");
         send_to(
+            state,
             senders,
             &peer_addr,
             ServerMessage::Error { message: "message too long".into() },
@@ -403,30 +447,31 @@ async fn handle_direct_message(
     senders: &ClientSenders,
 ) {
     if text.len() > config::MAX_CHAT_LEN {
-        send_to(senders, &peer_addr, ServerMessage::Error { message: "message too long".into() }).await;
+        send_to(state, senders, &peer_addr, ServerMessage::Error { message: "message too long".into() }).await;
         return;
     }
     if to_pubkey.len() != 32 {
-        send_to(senders, &peer_addr, ServerMessage::Error { message: "invalid pubkey".into() }).await;
+        send_to(state, senders, &peer_addr, ServerMessage::Error { message: "invalid pubkey".into() }).await;
         return;
     }
     // Resolve sender's pubkey for the from_pubkey field.
     let from_pubkey = match state.get_client(&peer_addr).await.and_then(|c| c.pubkey) {
         Some(pk) => pk,
         None => {
-            send_to(senders, &peer_addr, ServerMessage::Error { message: "must send Hello with pubkey first".into() }).await;
+            send_to(state, senders, &peer_addr, ServerMessage::Error { message: "must send Hello with pubkey first".into() }).await;
             return;
         }
     };
     let target = match state.lookup_pubkey(&to_pubkey).await {
         Some(addr) => addr,
         None => {
-            send_to(senders, &peer_addr, ServerMessage::Error { message: "recipient not online".into() }).await;
+            send_to(state, senders, &peer_addr, ServerMessage::Error { message: "recipient not online".into() }).await;
             return;
         }
     };
     tracing::debug!(%peer_addr, %name, target = %target, len = text.len(), "DM relayed");
     send_to(
+        state,
         senders,
         &target,
         ServerMessage::DirectMessage { from_pubkey, from_name: name.to_string(), text },
@@ -445,6 +490,7 @@ async fn handle_set_name(
     if new_name.is_empty() || new_name.len() > config::MAX_NAME_LEN {
         tracing::debug!(%peer_addr, %name, "rename rejected: invalid length");
         send_to(
+            state,
             senders,
             &peer_addr,
             ServerMessage::Error { message: "name must be 1-32 characters".into() },
@@ -456,6 +502,7 @@ async fn handle_set_name(
         tracing::info!(%peer_addr, %old_name, %new_name, "renamed");
         *name = new_name.clone();
         send_to(
+            state,
             senders,
             &peer_addr,
             ServerMessage::NameChanged { old_name: old_name.clone(), new_name: new_name.clone() },
@@ -489,15 +536,28 @@ async fn handle_list_channels(
             participant_count,
         })
         .collect();
-    send_to(senders, &peer_addr, ServerMessage::ChannelList { channels }).await;
+    send_to(state, senders, &peer_addr, ServerMessage::ChannelList { channels }).await;
 }
 
 /// Send a message to a specific client (non-blocking, drops on full queue).
-async fn send_to(senders: &ClientSenders, addr: &SocketAddr, msg: ServerMessage) {
+async fn send_to(
+    state: &ServerState,
+    senders: &ClientSenders,
+    addr: &SocketAddr,
+    msg: ServerMessage,
+) {
+    let frame = match encode(&msg) {
+        Some(b) => b,
+        None => return,
+    };
+    let metrics = state.metrics();
     let senders = senders.read().await;
     if let Some(tx) = senders.get(addr) {
-        if tx.try_send(msg).is_err() {
+        if tx.try_send(frame).is_err() {
+            metrics.tcp_drops_queue_full.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(%addr, "client queue full, dropping message");
+        } else {
+            metrics.tcp_sends.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -511,11 +571,17 @@ mod tests {
         SocketAddr::from(([127, 0, 0, 1], port))
     }
 
-    async fn setup() -> (ServerState, ClientSenders, SocketAddr, mpsc::Receiver<ServerMessage>) {
-        let state = ServerState::new(Limits {
-            max_channels: 0,
-            max_clients: 0,
-        });
+    /// Decode a framed [`Bytes`] back into a [`ServerMessage`] for assertions.
+    fn decode_frame(frame: Bytes) -> ServerMessage {
+        // Frame layout: [u32 BE length][bincode payload]
+        assert!(frame.len() >= 4, "frame too short");
+        let len = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+        assert_eq!(frame.len(), 4 + len, "frame length mismatch");
+        bincode::deserialize(&frame[4..]).expect("decode ServerMessage")
+    }
+
+    async fn setup() -> (ServerState, ClientSenders, SocketAddr, mpsc::Receiver<Bytes>) {
+        let state = ServerState::new(Limits::default());
         let senders: ClientSenders = Arc::new(RwLock::new(HashMap::new()));
         let peer = test_addr(9000);
 
@@ -536,7 +602,7 @@ mod tests {
         handle_message(peer, &mut name, ClientMessage::Ping, &state, &senders)
             .await
             .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::Pong));
     }
 
@@ -553,7 +619,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::ChannelCreated { .. }));
     }
 
@@ -572,7 +638,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::Error { .. }));
     }
 
@@ -591,7 +657,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let channel_id = match rx.try_recv().unwrap() {
+        let channel_id = match decode_frame(rx.try_recv().unwrap()) {
             ServerMessage::ChannelCreated { channel_id } => channel_id,
             other => panic!("expected ChannelCreated, got {:?}", other),
         };
@@ -606,7 +672,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::JoinedChannel { .. }));
     }
 
@@ -617,7 +683,7 @@ mod tests {
         handle_message(peer, &mut name, ClientMessage::LeaveChannel, &state, &senders)
             .await
             .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::Error { .. }));
     }
 
@@ -636,7 +702,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::NameChanged { .. }));
         assert_eq!(name, "bob");
     }
@@ -656,7 +722,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::Error { .. }));
         assert_eq!(name, "alice"); // unchanged
     }
@@ -694,7 +760,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::Error { .. }));
     }
 
@@ -705,7 +771,7 @@ mod tests {
         handle_message(peer, &mut name, ClientMessage::ListChannels, &state, &senders)
             .await
             .unwrap();
-        let msg = rx.try_recv().unwrap();
+        let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::ChannelList { .. }));
     }
 
@@ -724,7 +790,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let channel_id = match rx.try_recv().unwrap() {
+        let channel_id = match decode_frame(rx.try_recv().unwrap()) {
             ServerMessage::ChannelCreated { channel_id } => channel_id,
             other => panic!("expected ChannelCreated, got {:?}", other),
         };
@@ -739,7 +805,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let _ = rx.try_recv().unwrap(); // JoinedChannel
+        let _ = decode_frame(rx.try_recv().unwrap()); // JoinedChannel
 
         // Add a second client
         let peer2 = test_addr(9001);
@@ -762,7 +828,7 @@ mod tests {
         .unwrap();
 
         // Bob should receive it
-        let msg = rx2.try_recv().unwrap();
+        let msg = decode_frame(rx2.try_recv().unwrap());
         match msg {
             ServerMessage::ChatMessage { from, text } => {
                 assert_eq!(from, "alice");
@@ -776,8 +842,7 @@ mod tests {
 }
 
 /// Broadcast a message to all clients in a channel, optionally excluding one.
-/// Acquires both locks in a single scope to avoid intermediate Vec allocation
-/// and reduce total lock hold time.
+/// Serializes the message once and fans out cheap [`Bytes`] clones.
 async fn broadcast_to_channel(
     state: &ServerState,
     senders: &ClientSenders,
@@ -785,11 +850,19 @@ async fn broadcast_to_channel(
     exclude: Option<&SocketAddr>,
     msg: ServerMessage,
 ) {
+    let frame = match encode(&msg) {
+        Some(b) => b,
+        None => return,
+    };
+    let metrics = state.metrics().clone();
     let senders = senders.read().await;
-    state.broadcast_channel(channel_id, exclude, &msg, |addr, m| {
+    state.broadcast_channel_addrs(channel_id, exclude, |addr| {
         if let Some(tx) = senders.get(addr) {
-            if tx.try_send(m).is_err() {
+            if tx.try_send(frame.clone()).is_err() {
+                metrics.tcp_drops_queue_full.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(%addr, "client queue full, dropping broadcast");
+            } else {
+                metrics.tcp_broadcast_sends.fetch_add(1, Ordering::Relaxed);
             }
         }
     }).await;

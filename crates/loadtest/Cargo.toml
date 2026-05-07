@@ -1,0 +1,22 @@
+[package]
+name = "tc-loadtest"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "tc-loadtest"
+path = "src/main.rs"
+
+[dependencies]
+tc-shared = { path = "../shared" }
+tokio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+bincode.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+rand.workspace = true

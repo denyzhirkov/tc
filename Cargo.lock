@@ -4963,7 +4963,7 @@ dependencies = [
 
 [[package]]
 name = "tc-client"
-version = "1.8.2"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "audiopus",
@@ -4995,7 +4995,7 @@ dependencies = [
 
 [[package]]
 name = "tc-desktop"
-version = "1.8.2"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -5019,8 +5019,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tc-loadtest"
+version = "1.9.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "bytes",
+ "clap",
+ "rand 0.8.5",
+ "rustls",
+ "rustls-pki-types",
+ "tc-shared",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tc-server"
-version = "1.8.2"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5043,7 +5061,7 @@ dependencies = [
 
 [[package]]
 name = "tc-shared"
-version = "1.8.2"
+version = "1.9.0"
 dependencies = [
  "anyhow",
  "bincode",

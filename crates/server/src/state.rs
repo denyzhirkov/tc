@@ -6,10 +6,19 @@ use arc_swap::ArcSwap;
 use tokio::sync::RwLock;
 use tc_shared::ChannelId;
 
+use crate::metrics::Metrics;
+
 /// Lock-free-read cache of channel → UDP peer addresses.
-/// Rebuilt on join/leave/register_udp. UDP relay reads this without
-/// touching any lock — `ArcSwap` gives wait-free atomic reads on the hot path.
-type PeerCache = Arc<ArcSwap<HashMap<String, Vec<SocketAddr>>>>;
+///
+/// Two-level [`ArcSwap`]:
+/// * outer — channel set (rebuilt only when channels are added/removed),
+/// * inner — peer list per channel (atomically swapped on every join/leave).
+///
+/// On the UDP relay hot path: one atomic load of the outer map, one atomic
+/// load of the inner peer list. No locks, no allocations, no per-channel copies
+/// of unrelated state.
+type ChannelPeers = Arc<ArcSwap<Vec<SocketAddr>>>;
+type PeerCache = Arc<ArcSwap<HashMap<String, ChannelPeers>>>;
 
 /// Snapshot of server counters for logging.
 pub struct Stats {
@@ -25,6 +34,19 @@ pub struct Limits {
     pub max_channels: usize,
     /// Max clients (0 = unlimited).
     pub max_clients: usize,
+    /// Multiplier applied to all rate-limit buckets (per-conn and per-IP).
+    /// 1.0 = production defaults.
+    pub rate_limit_multiplier: f64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_channels: 0,
+            max_clients: 0,
+            rate_limit_multiplier: 1.0,
+        }
+    }
 }
 
 /// Global server state shared across tasks.
@@ -32,6 +54,7 @@ pub struct Limits {
 pub struct ServerState {
     inner: Arc<RwLock<Inner>>,
     peer_cache: PeerCache,
+    metrics: Arc<Metrics>,
 }
 
 #[derive(Debug)]
@@ -64,6 +87,10 @@ pub struct ClientInfo {
 
 impl ServerState {
     pub fn new(limits: Limits) -> Self {
+        Self::with_metrics(limits, Metrics::new())
+    }
+
+    pub fn with_metrics(limits: Limits, metrics: Arc<Metrics>) -> Self {
         Self {
             inner: Arc::new(RwLock::new(Inner {
                 channels: HashMap::new(),
@@ -76,7 +103,18 @@ impl ServerState {
                 limits,
             })),
             peer_cache: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            metrics,
         }
+    }
+
+    /// Access shared metrics handle.
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
+    }
+
+    /// Read the configured rate-limit multiplier (≥ 0).
+    pub async fn rate_limit_multiplier(&self) -> f64 {
+        self.inner.read().await.limits.rate_limit_multiplier.max(0.0001)
     }
 
     /// Snapshot of server counters for logging.
@@ -139,6 +177,7 @@ impl ServerState {
         // Remove any pending UDP tokens for this client
         inner.udp_tokens.retain(|_, (addr, _, _)| addr != tcp_addr);
         if let Some(ref ch) = info.channel {
+            let mut channel_destroyed = false;
             if let Some(participants) = inner.channels.get_mut(ch) {
                 if let Some(udp) = info.udp_addr {
                     participants.remove(&udp);
@@ -147,9 +186,14 @@ impl ServerState {
                     inner.channels.remove(ch);
                     inner.channel_keys.remove(ch);
                     inner.channel_created_at.remove(ch);
+                    channel_destroyed = true;
                 }
             }
-            Self::rebuild_peer_cache(&inner, &self.peer_cache);
+            if channel_destroyed {
+                Self::remove_channel_from_cache(&self.peer_cache, ch);
+            } else {
+                Self::update_channel_peers(&inner, &self.peer_cache, ch);
+            }
         }
         Some((info.name, info.channel))
     }
@@ -258,6 +302,7 @@ impl ServerState {
         }
         // Remove pending tokens for this client
         inner.udp_tokens.retain(|_, (addr, _, _)| addr != tcp_addr);
+        let mut channel_destroyed = false;
         if let Some(participants) = inner.channels.get_mut(&channel_id) {
             if let Some(udp) = udp_addr {
                 participants.remove(&udp);
@@ -266,62 +311,115 @@ impl ServerState {
                 inner.channels.remove(&channel_id);
                 inner.channel_keys.remove(&channel_id);
                 inner.channel_created_at.remove(&channel_id);
+                channel_destroyed = true;
             }
         }
-        Self::rebuild_peer_cache(&inner, &self.peer_cache);
+        if channel_destroyed {
+            Self::remove_channel_from_cache(&self.peer_cache, &channel_id);
+        } else {
+            Self::update_channel_peers(&inner, &self.peer_cache, &channel_id);
+        }
         Some((name, channel_id))
     }
 
     /// Register a UDP address using a hello token.
-    /// Returns true if the token was valid and registration succeeded.
+    ///
+    /// The token issued at join is bound to the client's TCP source IP. We require
+    /// the UDP hello to arrive from the same IP — otherwise a third party that
+    /// learned the token (e.g. by sniffing an early frame, or guessing) could
+    /// hijack the voice slot and have packets routed to its address.
+    /// Source ports may differ between TCP and UDP, so only the IP is compared.
+    ///
+    /// Returns true if the token was valid, the source IP matched, and registration
+    /// succeeded. On IP mismatch the token is dropped so it cannot be retried.
     pub async fn register_udp_by_token(&self, token: u64, udp_addr: SocketAddr) -> bool {
         let mut inner = self.inner.write().await;
         let (tcp_addr, channel_id, _) = match inner.udp_tokens.remove(&token) {
             Some(v) => v,
             None => return false,
         };
+        if tcp_addr.ip() != udp_addr.ip() {
+            tracing::warn!(
+                expected = %tcp_addr.ip(),
+                actual = %udp_addr.ip(),
+                "UDP hello rejected: source IP does not match TCP session"
+            );
+            return false;
+        }
         if let Some(client) = inner.clients.get_mut(&tcp_addr) {
             client.udp_addr = Some(udp_addr);
         }
         if let Some(participants) = inner.channels.get_mut(&channel_id) {
             participants.insert(udp_addr);
         }
-        Self::rebuild_peer_cache(&inner, &self.peer_cache);
+        Self::update_channel_peers(&inner, &self.peer_cache, &channel_id);
         true
     }
 
     /// Fill a reusable buffer with channel peers (excluding sender).
     /// Zero-allocation on the hot path when the Vec has enough capacity.
+    /// Wait-free: two atomic loads, no locks.
     pub fn fill_channel_peers(&self, channel_id: &str, exclude: &SocketAddr, out: &mut Vec<SocketAddr>) {
         out.clear();
-        let cache = self.peer_cache.load();
-        if let Some(peers) = cache.get(channel_id) {
+        let outer = self.peer_cache.load();
+        if let Some(entry) = outer.get(channel_id) {
+            let peers = entry.load();
             out.extend(peers.iter().filter(|a| *a != exclude).copied());
         }
     }
 
-    /// Rebuild the peer cache from current channel state.
-    /// Called after join/leave/register_udp — these are rare events.
-    fn rebuild_peer_cache(inner: &Inner, cache: &PeerCache) {
-        let mut new_cache = HashMap::with_capacity(inner.channels.len());
-        for (id, participants) in &inner.channels {
-            if !participants.is_empty() {
-                new_cache.insert(id.clone(), participants.iter().copied().collect());
-            }
+    /// Update the peer list for a single channel.
+    ///
+    /// Hot path for participant join/leave: looks up the channel's inner
+    /// `ArcSwap` and swaps just that entry. The outer map is only rebuilt
+    /// when a brand-new channel needs to be added (a one-time event per channel).
+    fn update_channel_peers(inner: &Inner, cache: &PeerCache, channel_id: &str) {
+        let new_peers: Vec<SocketAddr> = inner
+            .channels
+            .get(channel_id)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default();
+
+        let outer = cache.load();
+        if let Some(entry) = outer.get(channel_id) {
+            // Channel already in cache → wait-free atomic swap of just this entry.
+            entry.store(Arc::new(new_peers));
+            return;
         }
-        cache.store(Arc::new(new_cache));
+
+        // First time we cache this channel: clone the outer map (Arc clones
+        // for all other channels — cheap refcount bumps, no Vec copies)
+        // and add the new entry.
+        let mut next: HashMap<String, ChannelPeers> = (**outer).clone();
+        next.insert(
+            channel_id.to_string(),
+            Arc::new(ArcSwap::from_pointee(new_peers)),
+        );
+        cache.store(Arc::new(next));
     }
 
-    /// Iterate channel members under a single read lock, calling `send_fn` for each.
-    /// Avoids intermediate Vec allocation and extra lock round-trip.
-    pub async fn broadcast_channel<F>(
+    /// Remove a channel from the peer cache (called when the last participant leaves).
+    /// Rare event — pays one outer-map clone with Arc-bump entries.
+    fn remove_channel_from_cache(cache: &PeerCache, channel_id: &str) {
+        let outer = cache.load();
+        if !outer.contains_key(channel_id) {
+            return;
+        }
+        let mut next: HashMap<String, ChannelPeers> = (**outer).clone();
+        next.remove(channel_id);
+        cache.store(Arc::new(next));
+    }
+
+    /// Iterate channel members under a single read lock, calling `send_fn` for each address.
+    /// Caller is responsible for the message payload (e.g. a pre-serialized framed buffer
+    /// shared by reference) so the broadcast does not pay a per-recipient clone cost.
+    pub async fn broadcast_channel_addrs<F>(
         &self,
         channel_id: &str,
         exclude: Option<&SocketAddr>,
-        msg: &tc_shared::ServerMessage,
         mut send_fn: F,
     ) where
-        F: FnMut(&SocketAddr, tc_shared::ServerMessage),
+        F: FnMut(&SocketAddr),
     {
         let inner = self.inner.read().await;
         for (addr, info) in &inner.clients {
@@ -331,7 +429,7 @@ impl ServerState {
             if exclude.is_some_and(|ex| ex == addr) {
                 continue;
             }
-            send_fn(addr, msg.clone());
+            send_fn(addr);
         }
     }
 
@@ -398,7 +496,7 @@ mod tests {
     use super::*;
 
     fn unlimited() -> Limits {
-        Limits { max_channels: 0, max_clients: 0 }
+        Limits::default()
     }
 
     fn addr(port: u16) -> SocketAddr {
@@ -418,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_client_respects_max_clients() {
-        let limits = Limits { max_channels: 0, max_clients: 1 };
+        let limits = Limits { max_clients: 1, ..Limits::default() };
         let state = ServerState::new(limits);
         assert!(state.register_client(addr(1)).await.is_ok());
         assert!(state.register_client(addr(2)).await.is_err());
@@ -468,7 +566,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_channel_respects_max_channels() {
-        let limits = Limits { max_channels: 1, max_clients: 0 };
+        let limits = Limits { max_channels: 1, ..Limits::default() };
         let state = ServerState::new(limits);
         assert!(state.create_channel(None).await.is_ok());
         assert!(state.create_channel(None).await.is_err());
@@ -544,6 +642,23 @@ mod tests {
     async fn register_udp_by_invalid_token() {
         let state = ServerState::new(unlimited());
         assert!(!state.register_udp_by_token(12345, addr(5000)).await);
+    }
+
+    #[tokio::test]
+    async fn register_udp_rejects_ip_mismatch() {
+        use std::net::SocketAddr;
+        let state = ServerState::new(unlimited());
+        let tcp = addr(1); // 127.0.0.1:1
+        state.register_client(tcp).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, token, _) = state.join_channel(&tcp, &ch).await.unwrap();
+
+        // UDP hello arrives from a different IP — must be rejected.
+        let foreign: SocketAddr = "10.0.0.1:5000".parse().unwrap();
+        assert!(!state.register_udp_by_token(token, foreign).await);
+
+        // Token is consumed even on mismatch — replays must fail too.
+        assert!(!state.register_udp_by_token(token, addr(5000)).await);
     }
 
     // ── peer cache ───────────────────────────────────────────────────
@@ -688,7 +803,7 @@ mod tests {
         state.join_channel(&addr(2), &ch).await.unwrap();
 
         let mut received = Vec::new();
-        state.broadcast_channel(&ch, Some(&addr(1)), &tc_shared::ServerMessage::Pong, |a, _| {
+        state.broadcast_channel_addrs(&ch, Some(&addr(1)), |a| {
             received.push(*a);
         }).await;
 

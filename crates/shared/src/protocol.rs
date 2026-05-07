@@ -226,6 +226,12 @@ pub fn encode_tcp_frame<T: Serialize>(msg: &T) -> anyhow::Result<Vec<u8>> {
     Ok(frame)
 }
 
+/// Encode a TCP message as a shareable [`Bytes`] frame.
+/// Cheap to clone (refcount bump) — use for fan-out to many recipients.
+pub fn encode_tcp_frame_bytes<T: Serialize>(msg: &T) -> anyhow::Result<bytes::Bytes> {
+    Ok(bytes::Bytes::from(encode_tcp_frame(msg)?))
+}
+
 /// Try to extract one complete frame from a buffer.
 /// Returns `Ok(Some((message_bytes, consumed)))` if a complete frame is available.
 /// Returns `Err` if the frame exceeds the configured max frame size.
