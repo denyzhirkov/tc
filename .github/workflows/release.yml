@@ -171,10 +171,19 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Stage desktop artifacts
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
         run: |
           mkdir -p desktop-artifacts
-          paths='${{ steps.tauri.outputs.artifactPaths }}'
-          echo "$paths" | python3 -c 'import json,sys,shutil,os; [shutil.copy(p, "desktop-artifacts/") for p in json.load(sys.stdin)]'
+          python3 <<'PY'
+          import json, os, shutil
+          for p in json.loads(os.environ["ARTIFACT_PATHS"]):
+              if os.path.isdir(p):
+                  base = os.path.basename(p.rstrip("/"))
+                  shutil.make_archive(os.path.join("desktop-artifacts", base), "zip", os.path.dirname(p), base)
+              else:
+                  shutil.copy(p, "desktop-artifacts/")
+          PY
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
