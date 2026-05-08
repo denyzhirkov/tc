@@ -223,12 +223,168 @@ impl BatchSender {
     }
 }
 
-// ── Non-Linux: loop with try_send_to ────────────────────────────────
-// Simple per-peer loop. Fine for small channels (< 20 peers).
-// For higher fan-out, consider platform-specific batch APIs
-// (e.g. sendmsg_x on macOS 11+) or io_uring on Linux.
+// ── macOS: batch UDP send via sendmsg_x ─────────────────────────────
+// `sendmsg_x` is a Darwin SPI exported by libsystem_kernel; it accepts an
+// array of msghdr_x and emits each as a separate datagram in one syscall.
+// Used internally by Apple's networking stack. Stable since macOS 11.
+//
+// On any error or partial result we transparently fall back to the
+// per-peer try_send_to loop, so this is purely an optimisation.
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct MsghdrX {
+    msg_name: *mut libc::c_void,
+    msg_namelen: libc::socklen_t,
+    msg_iov: *mut libc::iovec,
+    msg_iovlen: libc::c_int,
+    msg_control: *mut libc::c_void,
+    msg_controllen: libc::socklen_t,
+    msg_flags: libc::c_int,
+    msg_datalen: libc::size_t,
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn sendmsg_x(
+        s: libc::c_int,
+        msgp: *const MsghdrX,
+        cnt: libc::c_uint,
+        flags: libc::c_int,
+    ) -> isize;
+}
+
+#[cfg(target_os = "macos")]
+struct BatchSender {
+    sockaddrs: Vec<libc::sockaddr_storage>,
+    addrlen: Vec<libc::socklen_t>,
+    iov: libc::iovec,
+    msgs: Vec<MsghdrX>,
+    cached_addrs: Vec<SocketAddr>,
+}
+
+// SAFETY: BatchSender is used from a single tokio task. Raw pointers in
+// iovec/MsghdrX are only valid during send_to_all and never escape.
+#[cfg(target_os = "macos")]
+unsafe impl Send for BatchSender {}
+
+#[cfg(target_os = "macos")]
+impl BatchSender {
+    fn new() -> Self {
+        Self {
+            sockaddrs: Vec::with_capacity(16),
+            addrlen: Vec::with_capacity(16),
+            iov: libc::iovec {
+                iov_base: std::ptr::null_mut(),
+                iov_len: 0,
+            },
+            msgs: Vec::with_capacity(16),
+            cached_addrs: Vec::with_capacity(16),
+        }
+    }
+
+    fn send_to_all(&mut self, socket: &UdpSocket, data: &[u8], addrs: &[SocketAddr]) {
+        use std::os::unix::io::AsRawFd;
+
+        if addrs.is_empty() {
+            return;
+        }
+
+        let fd = socket.as_raw_fd();
+        let n = addrs.len();
+
+        self.iov.iov_base = data.as_ptr() as *mut libc::c_void;
+        self.iov.iov_len = data.len();
+
+        if self.cached_addrs.as_slice() != addrs {
+            self.rebuild(addrs, data.len());
+        } else {
+            // datalen depends on current packet size; refresh.
+            for m in &mut self.msgs {
+                m.msg_datalen = data.len();
+            }
+        }
+
+        // SAFETY: msgs/sockaddrs/iov live in self for the whole call;
+        // pointers stored in MsghdrX entries are stable until rebuild().
+        let rc = unsafe { sendmsg_x(fd, self.msgs.as_ptr(), n as libc::c_uint, 0) };
+
+        if rc < 0 {
+            // ENOBUFS / EWOULDBLOCK / unsupported — fall back per-peer.
+            for &addr in addrs {
+                let _ = socket.try_send_to(data, addr);
+            }
+        }
+        // Partial success (rc < n) is treated like sendmmsg: drop the rest,
+        // matching real-time semantics — a stale frame isn't worth retrying.
+    }
+
+    fn rebuild(&mut self, addrs: &[SocketAddr], datalen: usize) {
+        let n = addrs.len();
+        self.sockaddrs.clear();
+        self.sockaddrs.resize(n, unsafe { std::mem::zeroed() });
+        self.addrlen.clear();
+        self.addrlen.resize(n, 0);
+
+        for (i, addr) in addrs.iter().enumerate() {
+            match addr {
+                SocketAddr::V4(v4) => {
+                    let sa = unsafe {
+                        &mut *(&mut self.sockaddrs[i] as *mut libc::sockaddr_storage
+                            as *mut libc::sockaddr_in)
+                    };
+                    sa.sin_family = libc::AF_INET as libc::sa_family_t;
+                    sa.sin_port = v4.port().to_be();
+                    sa.sin_addr = libc::in_addr {
+                        s_addr: u32::from(*v4.ip()).to_be(),
+                    };
+                    self.addrlen[i] =
+                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+                }
+                SocketAddr::V6(v6) => {
+                    let sa = unsafe {
+                        &mut *(&mut self.sockaddrs[i] as *mut libc::sockaddr_storage
+                            as *mut libc::sockaddr_in6)
+                    };
+                    sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                    sa.sin6_port = v6.port().to_be();
+                    sa.sin6_addr = libc::in6_addr {
+                        s6_addr: v6.ip().octets(),
+                    };
+                    sa.sin6_flowinfo = v6.flowinfo();
+                    sa.sin6_scope_id = v6.scope_id();
+                    self.addrlen[i] =
+                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+                }
+            }
+        }
+
+        let iov_ptr = &mut self.iov as *mut libc::iovec;
+        self.msgs.clear();
+        for i in 0..n {
+            self.msgs.push(MsghdrX {
+                msg_name: &mut self.sockaddrs[i] as *mut libc::sockaddr_storage
+                    as *mut libc::c_void,
+                msg_namelen: self.addrlen[i],
+                msg_iov: iov_ptr,
+                msg_iovlen: 1,
+                msg_control: std::ptr::null_mut(),
+                msg_controllen: 0,
+                msg_flags: 0,
+                msg_datalen: datalen,
+            });
+        }
+
+        self.cached_addrs.clear();
+        self.cached_addrs.extend_from_slice(addrs);
+    }
+}
+
+// ── Other platforms: loop with try_send_to ──────────────────────────
+// Fine for small channels (< 20 peers). io_uring on Linux is the obvious
+// next step if linux_throughput stops being enough.
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn send_to_all(socket: &UdpSocket, data: &[u8], addrs: &[SocketAddr]) {
     for &addr in addrs {
         let _ = socket.try_send_to(data, addr);
@@ -326,7 +482,7 @@ async fn relay_loop(
     let mut buf = vec![0u8; config::MAX_UDP_PACKET + 64];
     let mut peers = Vec::<SocketAddr>::with_capacity(16);
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let mut batch = BatchSender::new();
 
     loop {
@@ -379,10 +535,10 @@ async fn relay_loop(
         }
 
         // Relay raw bytes to all other participants in the channel
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         batch.send_to_all(&socket, data, &peers);
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         send_to_all(&socket, data, &peers);
     }
 }
