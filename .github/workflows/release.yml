@@ -165,6 +165,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         with:
           projectPath: apps/desktop
           args: ${{ matrix.args }}
