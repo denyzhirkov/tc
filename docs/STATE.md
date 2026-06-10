@@ -25,6 +25,7 @@
 - Аутентификация и авторизация (`r8td09`)
 - NAT traversal (`9bfq6b`)
 - Видеозвонки 1:1 desktop через WebRTC во webview (`m5ddm4`) — анализ/контракт зафиксирован, реализация не начата; перед стартом Фаза 0 (проба webview-WebRTC на macOS/Linux) + ADR-0003
+- Автообновления (`1aw8jk`) — desktop updater (Tauri, нужен ключ подписи + GH-секреты) + CLI notify-only; контракт зафиксирован, реализация не начата
 
 ## Pointers
 
