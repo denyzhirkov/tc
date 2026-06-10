@@ -6,6 +6,7 @@
 
 ## Recently closed (newest first)
 
+- Кросс-платформенные тесты (`fxwmpb`): CI-матрица [ubuntu/macos/windows] для `cargo test`, dual-stack e2e по `::1`, behavioral `BatchSender` (реально исполняет sendmmsg/sendmsg_x/fallback). Матрица сразу поймала 2 реальных падения (macOS CMake, Windows UDP-readiness). Релиз **v1.9.8**.
 - One-way-audio fix pack (Windows): canonical-IP compare + идемпотентный re-ACK при UDP-регистрации (`36eq37`), UDP target из фактического TCP peer IP (`6l8z9n`), NO-RX статус + фоновый re-hello (`p5az9y`), UDP keepalive в VAD-тишине (`enyns4`); `/show_dev_logs` в desktop (`x46y07`)
 - `120068e` perf: LTO release profile + macOS `sendmsg_x` batched UDP fan-out
 - P8.3 CI matrix mac/win/linux + GitHub Releases
