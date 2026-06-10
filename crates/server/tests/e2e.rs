@@ -101,7 +101,7 @@ struct TestServer {
     _udp_handle: tokio::task::JoinHandle<()>,
 }
 
-async fn start_server() -> TestServer {
+async fn start_server(bind_ip: std::net::IpAddr) -> TestServer {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Generate TLS cert
@@ -118,12 +118,14 @@ async fn start_server() -> TestServer {
         .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
 
-    // Find free ports by binding and immediately releasing
-    let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // Find free ports by binding and immediately releasing. Binding on the
+    // given IP family (127.0.0.1 or ::1) keeps TCP and UDP on the same family,
+    // exactly as the client now does — the mismatch is what caused one-way audio.
+    let tcp_listener = tokio::net::TcpListener::bind((bind_ip, 0)).await.unwrap();
     let tcp_addr = tcp_listener.local_addr().unwrap();
     drop(tcp_listener);
 
-    let udp_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let udp_sock = UdpSocket::bind((bind_ip, 0)).await.unwrap();
     let udp_addr = udp_sock.local_addr().unwrap();
     drop(udp_sock);
 
@@ -196,10 +198,28 @@ async fn connect_client(
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// IPv4 loopback: the original happy path.
 #[tokio::test]
 async fn two_clients_chat_and_voice() {
+    run_two_client_voice("127.0.0.1".parse().unwrap()).await;
+}
+
+/// IPv6 loopback (`::1`): exercises the whole TCP+UDP register+relay path over
+/// IPv6 — the environment where the Windows one-way-audio bug lived. Skipped
+/// gracefully if the host has no usable IPv6 loopback (some CI runners).
+#[tokio::test]
+async fn two_clients_chat_and_voice_ipv6() {
+    let ip: std::net::IpAddr = "::1".parse().unwrap();
+    if tokio::net::TcpListener::bind((ip, 0)).await.is_err() {
+        eprintln!("skipping IPv6 e2e: ::1 loopback unavailable on this host");
+        return;
+    }
+    run_two_client_voice(ip).await;
+}
+
+async fn run_two_client_voice(bind_ip: std::net::IpAddr) {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let server = start_server().await;
+        let server = start_server(bind_ip).await;
 
         // ── Connect client A ──
         let mut client_a = connect_client(server.tcp_addr).await;
@@ -285,11 +305,11 @@ async fn two_clients_chat_and_voice() {
             other => panic!("expected ChatMessage, got {:?}", other),
         }
 
-        // ── UDP: register both clients ──
-        let udp_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        // ── UDP: register both clients (same IP family as the server) ──
+        let udp_a = UdpSocket::bind((bind_ip, 0)).await.unwrap();
         udp_a.connect(server.udp_addr).await.unwrap();
 
-        let udp_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let udp_b = UdpSocket::bind((bind_ip, 0)).await.unwrap();
         udp_b.connect(server.udp_addr).await.unwrap();
 
         // Send UDP hello for A

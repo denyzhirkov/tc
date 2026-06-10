@@ -554,3 +554,92 @@ async fn relay_loop(
         send_to_all(&socket, data, &peers);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Fan a datagram out to every receiver using the exact send path the relay
+    /// uses on this OS — `sendmmsg` (Linux), `sendmsg_x` (macOS) or the
+    /// sequential `try_send_to` fallback (Windows/other) — and assert each peer
+    /// gets the bytes intact. This is the only test that actually executes the
+    /// platform-specific batch syscall, so it must run on every OS in the CI
+    /// matrix; on Linux/macOS the cross-build only type-checks the syscall, it
+    /// never runs it.
+    #[tokio::test]
+    async fn batch_send_fans_out_to_all_peers() {
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut receivers = Vec::new();
+        let mut addrs = Vec::new();
+        for _ in 0..4 {
+            let r = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            addrs.push(r.local_addr().unwrap());
+            receivers.push(r);
+        }
+
+        let payload = b"voice-fanout-probe";
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let mut batch = BatchSender::new();
+            batch.send_to_all(&sender, payload, &addrs);
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            send_to_all(&sender, payload, &addrs);
+        }
+
+        for (i, r) in receivers.iter().enumerate() {
+            let mut buf = [0u8; 64];
+            let n = tokio::time::timeout(Duration::from_secs(2), r.recv(&mut buf))
+                .await
+                .unwrap_or_else(|_| panic!("receiver {i} timed out"))
+                .unwrap();
+            assert_eq!(&buf[..n], payload, "receiver {i} got wrong bytes");
+        }
+    }
+
+    /// A second fan-out to the same peer set reuses the BatchSender's cached
+    /// sockaddr/iovec layout. Sending payloads of different lengths also guards
+    /// that the per-call datalen is refreshed and not stuck at the first size.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn batch_send_reuses_layout_across_calls() {
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut receivers = Vec::new();
+        let mut addrs = Vec::new();
+        for _ in 0..3 {
+            let r = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            addrs.push(r.local_addr().unwrap());
+            receivers.push(r);
+        }
+
+        let mut batch = BatchSender::new();
+
+        batch.send_to_all(&sender, b"first", &addrs); // 5 bytes
+        for r in &receivers {
+            let mut buf = [0u8; 32];
+            tokio::time::timeout(Duration::from_secs(2), r.recv(&mut buf))
+                .await
+                .expect("first round timed out")
+                .unwrap();
+        }
+
+        batch.send_to_all(&sender, b"second-longer", &addrs); // 13 bytes, same peers
+        for (i, r) in receivers.iter().enumerate() {
+            let mut buf = [0u8; 32];
+            let n = tokio::time::timeout(Duration::from_secs(2), r.recv(&mut buf))
+                .await
+                .unwrap_or_else(|_| panic!("receiver {i} timed out on reuse"))
+                .unwrap();
+            assert_eq!(
+                &buf[..n],
+                b"second-longer",
+                "receiver {i} got stale/truncated bytes"
+            );
+        }
+    }
+}

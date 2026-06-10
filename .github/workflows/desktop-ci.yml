@@ -64,3 +64,26 @@ jobs:
 
       - name: cargo test (workspace)
         run: cargo test --workspace
+
+  # Core crates (no Tauri/webkit) on macOS + Windows. Linux core+desktop tests
+  # run in `check` above; here we cover the OS-specific paths that only execute
+  # on their own platform: the UDP batch sender (sendmsg_x on macOS, sequential
+  # fallback on Windows) and connected-UDP / IPv6 behaviour.
+  test-core:
+    name: Core tests (cross-platform)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: core-${{ matrix.os }}
+
+      - name: cargo test (core crates)
+        run: cargo test --workspace --exclude tc-desktop
