@@ -1,10 +1,10 @@
+use arc_swap::ArcSwap;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use arc_swap::ArcSwap;
-use tokio::sync::RwLock;
 use tc_shared::ChannelId;
+use tokio::sync::RwLock;
 
 use crate::metrics::Metrics;
 
@@ -114,7 +114,12 @@ impl ServerState {
 
     /// Read the configured rate-limit multiplier (≥ 0).
     pub async fn rate_limit_multiplier(&self) -> f64 {
-        self.inner.read().await.limits.rate_limit_multiplier.max(0.0001)
+        self.inner
+            .read()
+            .await
+            .limits
+            .rate_limit_multiplier
+            .max(0.0001)
     }
 
     /// Snapshot of server counters for logging.
@@ -154,7 +159,7 @@ impl ServerState {
         let mut inner = self.inner.write().await;
         if let Some(client) = inner.clients.get_mut(tcp_addr) {
             if let Some(old) = client.pubkey.replace(pubkey.clone()) {
-                if &old != &pubkey {
+                if old != pubkey {
                     inner.pubkey_index.remove(&old);
                 }
             }
@@ -168,7 +173,10 @@ impl ServerState {
     }
 
     /// Remove client, returns (name, channel_id) if was in a channel.
-    pub async fn remove_client(&self, tcp_addr: &SocketAddr) -> Option<(String, Option<ChannelId>)> {
+    pub async fn remove_client(
+        &self,
+        tcp_addr: &SocketAddr,
+    ) -> Option<(String, Option<ChannelId>)> {
         let mut inner = self.inner.write().await;
         let info = inner.clients.remove(tcp_addr)?;
         if let Some(ref pk) = info.pubkey {
@@ -274,7 +282,9 @@ impl ServerState {
                 break t;
             }
         };
-        inner.udp_tokens.insert(token, (*tcp_addr, channel_id.clone(), Instant::now()));
+        inner
+            .udp_tokens
+            .insert(token, (*tcp_addr, channel_id.clone(), Instant::now()));
 
         // Gather existing participant names
         let names: Vec<String> = inner
@@ -284,7 +294,11 @@ impl ServerState {
             .map(|c| c.name.clone())
             .collect();
 
-        let voice_key = inner.channel_keys.get(channel_id).cloned().unwrap_or_default();
+        let voice_key = inner
+            .channel_keys
+            .get(channel_id)
+            .cloned()
+            .unwrap_or_default();
         Ok((names, token, voice_key))
     }
 
@@ -326,19 +340,25 @@ impl ServerState {
     ///
     /// The token issued at join is bound to the client's TCP source IP. We require
     /// the UDP hello to arrive from the same IP — otherwise a third party that
-    /// learned the token (e.g. by sniffing an early frame, or guessing) could
-    /// hijack the voice slot and have packets routed to its address.
-    /// Source ports may differ between TCP and UDP, so only the IP is compared.
+    /// learned the token (e.g. by sniffing an early frame) could hijack the voice
+    /// slot and have packets routed to its address. IPs are compared in canonical
+    /// form so a v4-mapped IPv6 TCP address (`::ffff:a.b.c.d` from a dual-stack
+    /// listener) matches a plain IPv4 UDP source. Source ports may differ between
+    /// TCP and UDP, so only the IP is compared.
     ///
-    /// Returns true if the token was valid, the source IP matched, and registration
-    /// succeeded. On IP mismatch the token is dropped so it cannot be retried.
+    /// Registration is idempotent: the token stays valid (TTL refreshed) so a
+    /// retried hello — e.g. after a lost ACK — is re-acknowledged, and a hello
+    /// from a new source port (NAT rebind) replaces the stale address in the
+    /// channel. A mismatch does not consume the token: a 64-bit token cannot be
+    /// guessed, and burning it would let one spoofed packet permanently lock the
+    /// real client out of voice receive.
     pub async fn register_udp_by_token(&self, token: u64, udp_addr: SocketAddr) -> bool {
         let mut inner = self.inner.write().await;
-        let (tcp_addr, channel_id, _) = match inner.udp_tokens.remove(&token) {
-            Some(v) => v,
+        let (tcp_addr, channel_id) = match inner.udp_tokens.get(&token) {
+            Some((tcp, ch, _)) => (*tcp, ch.clone()),
             None => return false,
         };
-        if tcp_addr.ip() != udp_addr.ip() {
+        if tcp_addr.ip().to_canonical() != udp_addr.ip().to_canonical() {
             tracing::warn!(
                 expected = %tcp_addr.ip(),
                 actual = %udp_addr.ip(),
@@ -346,10 +366,19 @@ impl ServerState {
             );
             return false;
         }
-        if let Some(client) = inner.clients.get_mut(&tcp_addr) {
-            client.udp_addr = Some(udp_addr);
+        if let Some((_, _, created)) = inner.udp_tokens.get_mut(&token) {
+            *created = Instant::now();
         }
+        let prev_udp = match inner.clients.get_mut(&tcp_addr) {
+            Some(client) => client.udp_addr.replace(udp_addr),
+            None => return false,
+        };
         if let Some(participants) = inner.channels.get_mut(&channel_id) {
+            if let Some(old) = prev_udp {
+                if old != udp_addr {
+                    participants.remove(&old);
+                }
+            }
             participants.insert(udp_addr);
         }
         Self::update_channel_peers(&inner, &self.peer_cache, &channel_id);
@@ -359,7 +388,12 @@ impl ServerState {
     /// Fill a reusable buffer with channel peers (excluding sender).
     /// Zero-allocation on the hot path when the Vec has enough capacity.
     /// Wait-free: two atomic loads, no locks.
-    pub fn fill_channel_peers(&self, channel_id: &str, exclude: &SocketAddr, out: &mut Vec<SocketAddr>) {
+    pub fn fill_channel_peers(
+        &self,
+        channel_id: &str,
+        exclude: &SocketAddr,
+        out: &mut Vec<SocketAddr>,
+    ) {
         out.clear();
         let outer = self.peer_cache.load();
         if let Some(entry) = outer.get(channel_id) {
@@ -434,7 +468,11 @@ impl ServerState {
     }
 
     /// Rename a client. Returns (old_name, channel_id) if successful.
-    pub async fn rename_client(&self, tcp_addr: &SocketAddr, new_name: String) -> Option<(String, Option<ChannelId>)> {
+    pub async fn rename_client(
+        &self,
+        tcp_addr: &SocketAddr,
+        new_name: String,
+    ) -> Option<(String, Option<ChannelId>)> {
         let mut inner = self.inner.write().await;
         let client = inner.clients.get_mut(tcp_addr)?;
         let old_name = std::mem::replace(&mut client.name, new_name);
@@ -452,9 +490,8 @@ impl ServerState {
     /// Newly created channels get a grace period (2× maintenance interval) before
     /// being eligible for cleanup, so creators have time to join.
     pub async fn cleanup_empty_channels(&self) -> usize {
-        let grace = std::time::Duration::from_secs(
-            tc_shared::config::MAINTENANCE_INTERVAL_SECS * 2,
-        );
+        let grace =
+            std::time::Duration::from_secs(tc_shared::config::MAINTENANCE_INTERVAL_SECS * 2);
         let mut inner = self.inner.write().await;
         // Build set of occupied channel ids in one pass over clients.
         let occupied: HashSet<&str> = inner
@@ -486,7 +523,9 @@ impl ServerState {
         }
         // Expire UDP tokens older than 30 seconds
         let token_ttl = std::time::Duration::from_secs(30);
-        inner.udp_tokens.retain(|_, (_, _, created)| created.elapsed() < token_ttl);
+        inner
+            .udp_tokens
+            .retain(|_, (_, _, created)| created.elapsed() < token_ttl);
         count
     }
 }
@@ -516,7 +555,10 @@ mod tests {
 
     #[tokio::test]
     async fn register_client_respects_max_clients() {
-        let limits = Limits { max_clients: 1, ..Limits::default() };
+        let limits = Limits {
+            max_clients: 1,
+            ..Limits::default()
+        };
         let state = ServerState::new(limits);
         assert!(state.register_client(addr(1)).await.is_ok());
         assert!(state.register_client(addr(2)).await.is_err());
@@ -566,7 +608,10 @@ mod tests {
 
     #[tokio::test]
     async fn create_channel_respects_max_channels() {
-        let limits = Limits { max_channels: 1, ..Limits::default() };
+        let limits = Limits {
+            max_channels: 1,
+            ..Limits::default()
+        };
         let state = ServerState::new(limits);
         assert!(state.create_channel(None).await.is_ok());
         assert!(state.create_channel(None).await.is_err());
@@ -657,8 +702,40 @@ mod tests {
         let foreign: SocketAddr = "10.0.0.1:5000".parse().unwrap();
         assert!(!state.register_udp_by_token(token, foreign).await);
 
-        // Token is consumed even on mismatch — replays must fail too.
-        assert!(!state.register_udp_by_token(token, addr(5000)).await);
+        // A mismatch must not burn the token: the real client (correct IP)
+        // can still register afterwards.
+        assert!(state.register_udp_by_token(token, addr(5000)).await);
+    }
+
+    #[tokio::test]
+    async fn register_udp_accepts_v4_mapped_tcp_ip() {
+        // Dual-stack TCP listener reports the peer as ::ffff:127.0.0.1 while
+        // the UDP hello arrives over plain IPv4 — canonical comparison must match.
+        let state = ServerState::new(unlimited());
+        let tcp: SocketAddr = "[::ffff:127.0.0.1]:1".parse().unwrap();
+        state.register_client(tcp).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, token, _) = state.join_channel(&tcp, &ch).await.unwrap();
+
+        assert!(state.register_udp_by_token(token, addr(5000)).await);
+    }
+
+    #[tokio::test]
+    async fn register_udp_rehello_reacks_and_replaces_stale_addr() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, token, _) = state.join_channel(&addr(1), &ch).await.unwrap();
+
+        // First hello registers; a duplicate (lost ACK) is re-acknowledged.
+        assert!(state.register_udp_by_token(token, addr(5000)).await);
+        assert!(state.register_udp_by_token(token, addr(5000)).await);
+
+        // Hello from a new source port (NAT rebind) replaces the stale address.
+        assert!(state.register_udp_by_token(token, addr(5001)).await);
+        let mut peers = Vec::new();
+        state.fill_channel_peers(&ch, &addr(99), &mut peers);
+        assert_eq!(peers, vec![addr(5001)]);
     }
 
     // ── peer cache ───────────────────────────────────────────────────
@@ -803,9 +880,11 @@ mod tests {
         state.join_channel(&addr(2), &ch).await.unwrap();
 
         let mut received = Vec::new();
-        state.broadcast_channel_addrs(&ch, Some(&addr(1)), |a| {
-            received.push(*a);
-        }).await;
+        state
+            .broadcast_channel_addrs(&ch, Some(&addr(1)), |a| {
+                received.push(*a);
+            })
+            .await;
 
         assert_eq!(received.len(), 1);
         assert_eq!(received[0], addr(2));

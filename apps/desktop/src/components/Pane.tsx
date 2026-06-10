@@ -187,6 +187,8 @@ function SystemLine(props: { line: LogLine }) {
     switch (props.line.kind) {
       case "error":
         return "text-danger";
+      case "devlog":
+        return "text-faint font-mono whitespace-pre-wrap";
       default:
         return "text-muted";
     }

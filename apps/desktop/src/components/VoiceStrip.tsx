@@ -38,10 +38,19 @@ export default function VoiceStrip() {
     <Show when={state.channel}>
       <div class="border-t border-line bg-surface2 px-3 py-3 flex flex-col gap-2.5">
         <div class="flex items-center gap-2">
-          <span class="inline-block w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
+          <span
+            class={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+              state.voice && !state.voice.registered ? "bg-warn" : "bg-ok"
+            }`}
+          />
           <span class="text-[10px] uppercase tracking-wider text-muted">
             {t("voice.connected")}
           </span>
+          <Show when={state.voice && !state.voice.registered}>
+            <span class="text-[10px] uppercase tracking-wider text-warn">
+              {t("voice.no_rx")}
+            </span>
+          </Show>
         </div>
         <div class="flex items-center gap-1.5 text-text">
           <span class="text-faint">

@@ -95,8 +95,7 @@ async fn main() -> Result<()> {
     let directive = format!("tc_loadtest={}", args.log_level);
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(directive.parse()?),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(directive.parse()?),
         )
         .init();
 
@@ -141,8 +140,6 @@ async fn main() -> Result<()> {
         let stats = stats.clone();
         let stop = stop_flag.clone();
         let host = args.host.clone();
-        let tcp_addr = tcp_addr;
-        let udp_addr = udp_addr;
         let pps = args.pps;
         let payload = args.payload;
         let warmup = args.warmup;
@@ -192,17 +189,23 @@ async fn run_client(
     let mut tls = connector.connect(server_name, stream).await?;
 
     // 2. Hello (no pubkey for loadtest)
-    write_msg(&mut tls, &ClientMessage::Hello {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        protocol: config::PROTOCOL_VERSION,
-        pubkey: None,
-    })
+    write_msg(
+        &mut tls,
+        &ClientMessage::Hello {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: config::PROTOCOL_VERSION,
+            pubkey: None,
+        },
+    )
     .await?;
 
     // 3. Join the assigned channel
-    write_msg(&mut tls, &ClientMessage::JoinChannel {
-        channel_id: channel.clone(),
-    })
+    write_msg(
+        &mut tls,
+        &ClientMessage::JoinChannel {
+            channel_id: channel.clone(),
+        },
+    )
     .await?;
 
     // 4. Read frames until JoinedChannel arrives (also drain Welcome etc.)
@@ -241,14 +244,16 @@ async fn run_client(
             if recv_stop.load(Ordering::Relaxed) {
                 return;
             }
-            match tokio::time::timeout(Duration::from_millis(200), udp_recv.recv(&mut buf)).await {
-                Ok(Ok(n)) => {
-                    if Instant::now() >= warmup_until {
-                        recv_stats.udp_recv.fetch_add(1, Ordering::Relaxed);
-                        recv_stats.udp_recv_bytes.fetch_add(n as u64, Ordering::Relaxed);
-                    }
+            // recv errors and timeouts both just mean "retry".
+            if let Ok(Ok(n)) =
+                tokio::time::timeout(Duration::from_millis(200), udp_recv.recv(&mut buf)).await
+            {
+                if Instant::now() >= warmup_until {
+                    recv_stats.udp_recv.fetch_add(1, Ordering::Relaxed);
+                    recv_stats
+                        .udp_recv_bytes
+                        .fetch_add(n as u64, Ordering::Relaxed);
                 }
-                Ok(Err(_)) | Err(_) => {} // retry
             }
         }
     });
@@ -272,7 +277,9 @@ async fn run_client(
             Ok(_) => {
                 if Instant::now() >= warmup_until {
                     stats.udp_sent.fetch_add(1, Ordering::Relaxed);
-                    stats.udp_sent_bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                    stats
+                        .udp_sent_bytes
+                        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
                 }
             }
             Err(e) => {
@@ -301,9 +308,7 @@ async fn write_msg(
 }
 
 /// Drain the TCP stream until we see `JoinedChannel`, returning the udp_token.
-async fn read_until_joined(
-    tls: &mut tokio_rustls::client::TlsStream<TcpStream>,
-) -> Result<u64> {
+async fn read_until_joined(tls: &mut tokio_rustls::client::TlsStream<TcpStream>) -> Result<u64> {
     let mut pending = BytesMut::new();
     let mut buf = vec![0u8; 4096];
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -325,9 +330,7 @@ async fn read_until_joined(
             let msg: ServerMessage = bincode::deserialize(&frame)?;
             match msg {
                 ServerMessage::JoinedChannel { udp_token, .. } => return Ok(udp_token),
-                ServerMessage::Error { message } => {
-                    return Err(anyhow!("server error: {message}"))
-                }
+                ServerMessage::Error { message } => return Err(anyhow!("server error: {message}")),
                 _ => {} // welcome, peer events, etc — ignore
             }
         }
@@ -346,11 +349,14 @@ async fn create_channels(
         ServerName::try_from(args.host.clone()).map_err(|e| anyhow!("invalid SNI: {e}"))?;
     let mut tls = connector.connect(server_name, stream).await?;
 
-    write_msg(&mut tls, &ClientMessage::Hello {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        protocol: config::PROTOCOL_VERSION,
-        pubkey: None,
-    })
+    write_msg(
+        &mut tls,
+        &ClientMessage::Hello {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: config::PROTOCOL_VERSION,
+            pubkey: None,
+        },
+    )
     .await?;
 
     let mut ids = Vec::with_capacity(n);
@@ -415,20 +421,43 @@ fn print_summary(args: &Args, stats: &ClientStats) {
     println!();
     println!("================ tc-loadtest summary ================");
     println!("clients          : {}", args.clients);
-    println!("channels         : {} ({:.1} clients/chan)", args.channels, args.clients as f64 / args.channels as f64);
+    println!(
+        "channels         : {} ({:.1} clients/chan)",
+        args.channels,
+        args.clients as f64 / args.channels as f64
+    );
     println!("target pps/client: {}", args.pps);
-    println!("duration         : {}s (warmup {}s)", args.duration, args.warmup);
+    println!(
+        "duration         : {}s (warmup {}s)",
+        args.duration, args.warmup
+    );
     println!("payload bytes    : {}", args.payload);
     println!("-----------------------------------------------------");
-    println!("UDP sent         : {} pkts ({:.2} MB) ≈ {:.0} pps total", sent, sent_bytes as f64 / 1e6, sent as f64 / dur);
-    println!("UDP recv         : {} pkts ({:.2} MB) ≈ {:.0} pps total", recv, recv_bytes as f64 / 1e6, recv as f64 / dur);
-    println!("expected recv    : {} pkts (per-client {})", expected_recv_total, expected_recv_per_client);
+    println!(
+        "UDP sent         : {} pkts ({:.2} MB) ≈ {:.0} pps total",
+        sent,
+        sent_bytes as f64 / 1e6,
+        sent as f64 / dur
+    );
+    println!(
+        "UDP recv         : {} pkts ({:.2} MB) ≈ {:.0} pps total",
+        recv,
+        recv_bytes as f64 / 1e6,
+        recv as f64 / dur
+    );
+    println!(
+        "expected recv    : {} pkts (per-client {})",
+        expected_recv_total, expected_recv_per_client
+    );
     if expected_recv_total > 0 {
         let pct = recv as f64 / expected_recv_total as f64 * 100.0;
         println!("delivery ratio   : {:.2}%", pct);
     }
     if join_failed > 0 || udp_failed > 0 {
-        println!("failures         : join={} udp_hello={}", join_failed, udp_failed);
+        println!(
+            "failures         : join={} udp_hello={}",
+            join_failed, udp_failed
+        );
     }
     println!("=====================================================");
 }

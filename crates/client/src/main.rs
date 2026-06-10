@@ -67,7 +67,10 @@ async fn main() -> Result<()> {
     let mut app = tui::App::new(muted.clone(), server_addr.clone());
     app.input_device = user_settings.input_device;
     app.output_device = user_settings.output_device;
-    app.name = user_settings.name.map(|n| sanitize_name(&n)).filter(|n| !n.is_empty());
+    app.name = user_settings
+        .name
+        .map(|n| sanitize_name(&n))
+        .filter(|n| !n.is_empty());
     if let Some(level) = user_settings.vad_level {
         let threshold = vad_threshold_from_level(level);
         app.vad_threshold
@@ -110,6 +113,7 @@ async fn main() -> Result<()> {
             handle_tofu_result(&tofu, &mut app);
             app.add_message("connected!".into());
             app.conn_state = ConnectionState::Connected;
+            app.server_ip = Some(c.peer_addr().ip());
             if let Some(name) = app.name.clone() {
                 let _ = c.send(ClientMessage::SetName { name });
             }
@@ -142,6 +146,10 @@ async fn main() -> Result<()> {
                 (loss, tier.to_string())
             });
             app.voice_traffic = voice_handle.as_ref().map(|vh| vh.traffic_info());
+            app.voice_rx_degraded = voice_handle
+                .as_ref()
+                .map(|vh| !vh.is_registered())
+                .unwrap_or(false);
             app.active_speakers = voice_handle
                 .as_ref()
                 .map(|vh| vh.active_speakers())
@@ -225,7 +233,8 @@ async fn main() -> Result<()> {
                 app.dirty = true;
                 match msg {
                     Some(msg) => {
-                        handle_server_message(msg, &mut conn, &mut app, &muted, &mut voice_handle).await;
+                        handle_server_message(msg, &mut conn, &mut app, &muted, &mut voice_handle)
+                            .await;
                     }
                     None => {
                         // Save current channel for auto-rejoin
@@ -240,7 +249,8 @@ async fn main() -> Result<()> {
                         app.add_message("disconnected from server".into());
                         // Start auto-reconnect
                         reconnect_attempt = 0;
-                        next_reconnect = Some(Instant::now() + Duration::from_millis(RECONNECT_BASE_MS));
+                        next_reconnect =
+                            Some(Instant::now() + Duration::from_millis(RECONNECT_BASE_MS));
                         app.conn_state = ConnectionState::Reconnecting { attempt: 1 };
                     }
                 }
@@ -251,13 +261,16 @@ async fn main() -> Result<()> {
         if let Some(deadline) = next_reconnect {
             if Instant::now() >= deadline {
                 reconnect_attempt += 1;
-                app.conn_state = ConnectionState::Reconnecting { attempt: reconnect_attempt };
+                app.conn_state = ConnectionState::Reconnecting {
+                    attempt: reconnect_attempt,
+                };
 
                 match network::connect(&app.server_addr, &tofu, local_pubkey.clone()).await {
                     Ok((c, rx)) => {
                         handle_tofu_result(&tofu, &mut app);
                         app.add_message("reconnected!".into());
                         app.conn_state = ConnectionState::Connected;
+                        app.server_ip = Some(c.peer_addr().ip());
                         if let Some(name) = app.name.clone() {
                             let _ = c.send(ClientMessage::SetName { name });
                         }
@@ -275,9 +288,14 @@ async fn main() -> Result<()> {
                         save_tofu(&tofu, &app);
                     }
                     Err(_) => {
-                        let delay_ms = (RECONNECT_BASE_MS * 2u64.saturating_pow(reconnect_attempt.min(5)))
-                            .min(RECONNECT_MAX_MS);
-                        tracing::debug!("reconnect attempt {} failed, next in {}ms", reconnect_attempt, delay_ms);
+                        let delay_ms = (RECONNECT_BASE_MS
+                            * 2u64.saturating_pow(reconnect_attempt.min(5)))
+                        .min(RECONNECT_MAX_MS);
+                        tracing::debug!(
+                            "reconnect attempt {} failed, next in {}ms",
+                            reconnect_attempt,
+                            delay_ms
+                        );
                         next_reconnect = Some(Instant::now() + Duration::from_millis(delay_ms));
                     }
                 }
@@ -330,13 +348,38 @@ async fn handle_command(
     match parts[0] {
         "/matrix" => return cmd_matrix(app),
         "/trust" => {
-            return cmd_trust(app, tofu, conn, server_rx, reconnect_attempt, next_reconnect).await;
+            return cmd_trust(
+                app,
+                tofu,
+                conn,
+                server_rx,
+                reconnect_attempt,
+                next_reconnect,
+            )
+            .await;
         }
         "/server" | "/s" => {
-            return cmd_server(app, arg, conn, server_rx, reconnect_attempt, next_reconnect, tofu).await;
+            return cmd_server(
+                app,
+                arg,
+                conn,
+                server_rx,
+                reconnect_attempt,
+                next_reconnect,
+                tofu,
+            )
+            .await;
         }
         "/reconnect" | "/r" => {
-            do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
+            do_reconnect(
+                conn,
+                server_rx,
+                app,
+                reconnect_attempt,
+                next_reconnect,
+                tofu,
+            )
+            .await;
             return;
         }
         "/config" | "/cfg" => {
@@ -385,9 +428,20 @@ async fn cmd_trust(
     next_reconnect: &mut Option<Instant>,
 ) {
     tofu.remove_server(&app.server_addr);
-    app.add_message(format!("cleared fingerprint for {}, reconnecting...", app.server_addr));
+    app.add_message(format!(
+        "cleared fingerprint for {}, reconnecting...",
+        app.server_addr
+    ));
     save_tofu(tofu, app);
-    do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
+    do_reconnect(
+        conn,
+        server_rx,
+        app,
+        reconnect_attempt,
+        next_reconnect,
+        tofu,
+    )
+    .await;
 }
 
 async fn cmd_server(
@@ -412,7 +466,15 @@ async fn cmd_server(
     save_settings(app);
     app.add_message(format!("server address set to {}", app.server_addr));
     if app.conn_state.is_disconnected() {
-        do_reconnect(conn, server_rx, app, reconnect_attempt, next_reconnect, tofu).await;
+        do_reconnect(
+            conn,
+            server_rx,
+            app,
+            reconnect_attempt,
+            next_reconnect,
+            tofu,
+        )
+        .await;
     }
 }
 
@@ -422,14 +484,24 @@ fn cmd_name(app: &mut tui::App, arg: Option<&str>, conn: &mut Option<network::Se
         return;
     };
     app.add_message(format!("> /name {}", new_name));
-    send_or_disconnect(conn, app, ClientMessage::SetName { name: new_name.clone() });
+    send_or_disconnect(
+        conn,
+        app,
+        ClientMessage::SetName {
+            name: new_name.clone(),
+        },
+    );
     app.name = Some(new_name);
     save_settings(app);
 }
 
 fn cmd_mute(app: &mut tui::App, muted: &Arc<AtomicBool>) {
     let was_muted = muted.fetch_xor(true, Ordering::Relaxed);
-    app.add_message(if was_muted { "unmuted".into() } else { "muted".into() });
+    app.add_message(if was_muted {
+        "unmuted".into()
+    } else {
+        "muted".into()
+    });
 }
 
 fn cmd_web(
@@ -443,7 +515,11 @@ fn cmd_web(
         app.add_message("usage: /web <port>".into());
         return;
     };
-    tokio::spawn(web::start_web_server(port, web_cmd_tx.clone(), web_state_tx.clone()));
+    tokio::spawn(web::start_web_server(
+        port,
+        web_cmd_tx.clone(),
+        web_state_tx.clone(),
+    ));
     app.add_message(format!("web UI at http://127.0.0.1:{}", port));
 }
 
@@ -487,7 +563,10 @@ fn cmd_create(app: &mut tui::App, arg: Option<&str>, conn: &mut Option<network::
     if name.is_empty() {
         app.add_message("channel name must contain [a-z0-9-]".into());
     } else if name.len() > config::MAX_CHANNEL_NAME_LEN {
-        app.add_message(format!("channel name too long (max {})", config::MAX_CHANNEL_NAME_LEN));
+        app.add_message(format!(
+            "channel name too long (max {})",
+            config::MAX_CHANNEL_NAME_LEN
+        ));
     } else {
         app.add_message(format!("> /create {}", name));
         send_or_disconnect(conn, app, ClientMessage::CreateChannel { name: Some(name) });
@@ -499,14 +578,24 @@ fn cmd_list(app: &mut tui::App, conn: &mut Option<network::ServerConnection>) {
     send_or_disconnect(conn, app, ClientMessage::ListChannels);
 }
 
-fn cmd_connect(app: &mut tui::App, arg: Option<&str>, conn: &mut Option<network::ServerConnection>) {
+fn cmd_connect(
+    app: &mut tui::App,
+    arg: Option<&str>,
+    conn: &mut Option<network::ServerConnection>,
+) {
     let id = arg.map(str::trim).filter(|s| !s.is_empty());
     let Some(id) = id else {
         app.add_message("usage: /connect <channel_id>".into());
         return;
     };
     app.add_message(format!("> /connect {}", id));
-    send_or_disconnect(conn, app, ClientMessage::JoinChannel { channel_id: id.to_string() });
+    send_or_disconnect(
+        conn,
+        app,
+        ClientMessage::JoinChannel {
+            channel_id: id.to_string(),
+        },
+    );
 }
 
 fn cmd_leave(
@@ -536,10 +625,22 @@ fn cmd_default(
             app.add_message("usage: #<channel_id>".into());
         } else {
             app.add_message(format!("> /connect {}", id));
-            send_or_disconnect(conn, app, ClientMessage::JoinChannel { channel_id: id.to_string() });
+            send_or_disconnect(
+                conn,
+                app,
+                ClientMessage::JoinChannel {
+                    channel_id: id.to_string(),
+                },
+            );
         }
     } else if !input.starts_with('/') {
-        send_or_disconnect(conn, app, ClientMessage::ChatMessage { text: input.to_string() });
+        send_or_disconnect(
+            conn,
+            app,
+            ClientMessage::ChatMessage {
+                text: input.to_string(),
+            },
+        );
         app.add_message(format!("you: {}", input));
     } else {
         app.add_message(format!("unknown command: {} (try /help)", head));
@@ -569,12 +670,15 @@ async fn do_reconnect(
     app.conn_state = ConnectionState::Reconnecting { attempt: 1 };
     app.add_message(format!("connecting to {}...", app.server_addr));
 
-    let pk = identity::Identity::load_or_generate().ok().map(|i| i.pubkey().to_vec());
+    let pk = identity::Identity::load_or_generate()
+        .ok()
+        .map(|i| i.pubkey().to_vec());
     match network::connect(&app.server_addr, tofu, pk).await {
         Ok((c, rx)) => {
             handle_tofu_result(tofu, app);
             app.add_message("connected!".into());
             app.conn_state = ConnectionState::Connected;
+            app.server_ip = Some(c.peer_addr().ip());
             if let Some(name) = app.name.clone() {
                 let _ = c.send(ClientMessage::SetName { name });
             }
@@ -622,9 +726,13 @@ async fn handle_server_message(
         }
         ServerMessage::ChannelCreated { channel_id } => {
             app.add_message(format!("channel created: {}, joining...", channel_id));
-            send_or_disconnect(conn, app, ClientMessage::JoinChannel {
-                channel_id: channel_id.to_string(),
-            });
+            send_or_disconnect(
+                conn,
+                app,
+                ClientMessage::JoinChannel {
+                    channel_id: channel_id.to_string(),
+                },
+            );
         }
         ServerMessage::JoinedChannel {
             channel_id,
@@ -649,8 +757,12 @@ async fn handle_server_message(
 
             // Start voice
             let my_name = app.name.clone().unwrap_or_else(|| "user".into());
+            let Some(server_ip) = app.server_ip else {
+                app.add_message("voice error: not connected".into());
+                return;
+            };
             match voice::start_voice(
-                &app.server_addr,
+                server_ip,
                 channel_id,
                 udp_token,
                 muted.clone(),
@@ -701,7 +813,11 @@ async fn handle_server_message(
         ServerMessage::ChatMessage { from, text } => {
             app.add_message(format!("{}: {}", from, text));
         }
-        ServerMessage::DirectMessage { from_pubkey: _, from_name, text } => {
+        ServerMessage::DirectMessage {
+            from_pubkey: _,
+            from_name,
+            text,
+        } => {
             app.add_message(format!("(dm) {}: {}", from_name, text));
         }
         ServerMessage::ChannelList { channels } => {
@@ -710,7 +826,10 @@ async fn handle_server_message(
             } else {
                 app.add_message("── public channels ──".into());
                 for ch in channels {
-                    app.add_message(format!("  {} ({} users)", ch.channel_id, ch.participant_count));
+                    app.add_message(format!(
+                        "  {} ({} users)",
+                        ch.channel_id, ch.participant_count
+                    ));
                 }
             }
         }
@@ -773,9 +892,16 @@ async fn handle_config(
         if threshold == 0.0 {
             app.add_message("  level: off (0)".into());
         } else {
-            app.add_message(format!("  level: {} (threshold {:.4})", vad_level_from_threshold(threshold), threshold));
+            app.add_message(format!(
+                "  level: {} (threshold {:.4})",
+                vad_level_from_threshold(threshold),
+                threshold
+            ));
         }
-        app.add_message(format!("  hangover: {} frames", config::VAD_HANGOVER_FRAMES));
+        app.add_message(format!(
+            "  hangover: {} frames",
+            config::VAD_HANGOVER_FRAMES
+        ));
         return;
     }
 
@@ -885,28 +1011,41 @@ fn handle_config_vad(value: &str, app: &mut tui::App) -> bool {
         if current == 0.0 {
             app.add_message("vad: off (0)".into());
         } else {
-            app.add_message(format!("vad level: {} (threshold {:.4})", vad_level_from_threshold(current), current));
+            app.add_message(format!(
+                "vad level: {} (threshold {:.4})",
+                vad_level_from_threshold(current),
+                current
+            ));
         }
-        app.add_message(format!("  hangover: {} frames", config::VAD_HANGOVER_FRAMES));
+        app.add_message(format!(
+            "  hangover: {} frames",
+            config::VAD_HANGOVER_FRAMES
+        ));
         return false;
     }
 
     if value == "off" {
-        app.vad_threshold.store(0.0_f32.to_bits(), Ordering::Relaxed);
+        app.vad_threshold
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
         app.add_message("vad disabled".into());
         return true;
     }
 
     match value.parse::<u32>() {
         Ok(0) => {
-            app.vad_threshold.store(0.0_f32.to_bits(), Ordering::Relaxed);
+            app.vad_threshold
+                .store(0.0_f32.to_bits(), Ordering::Relaxed);
             app.add_message("vad disabled".into());
             true
         }
         Ok(level @ 1..=100) => {
             let threshold = vad_threshold_from_level(level);
-            app.vad_threshold.store(threshold.to_bits(), Ordering::Relaxed);
-            app.add_message(format!("vad level set to {} (threshold {:.4})", level, threshold));
+            app.vad_threshold
+                .store(threshold.to_bits(), Ordering::Relaxed);
+            app.add_message(format!(
+                "vad level set to {} (threshold {:.4})",
+                level, threshold
+            ));
             true
         }
         _ => {
@@ -916,7 +1055,12 @@ fn handle_config_vad(value: &str, app: &mut tui::App) -> bool {
     }
 }
 
-fn handle_config_vol(value: &str, atomic: &Arc<AtomicU32>, label: &str, app: &mut tui::App) -> bool {
+fn handle_config_vol(
+    value: &str,
+    atomic: &Arc<AtomicU32>,
+    label: &str,
+    app: &mut tui::App,
+) -> bool {
     if value.is_empty() {
         let current = f32::from_bits(atomic.load(Ordering::Relaxed));
         app.add_message(format!("{}: {}%", label, percent_from_vol(current)));
@@ -930,7 +1074,10 @@ fn handle_config_vol(value: &str, atomic: &Arc<AtomicU32>, label: &str, app: &mu
             true
         }
         _ => {
-            app.add_message(format!("usage: /config {} <0-200> (default 100)", label.split_whitespace().next().unwrap_or(label)));
+            app.add_message(format!(
+                "usage: /config {} <0-200> (default 100)",
+                label.split_whitespace().next().unwrap_or(label)
+            ));
             false
         }
     }
@@ -986,7 +1133,11 @@ fn build_settings(app: &tui::App) -> settings::UserSettings {
         } else {
             None
         },
-        input_gain: if gain_pct != 100 { Some(gain_pct) } else { None },
+        input_gain: if gain_pct != 100 {
+            Some(gain_pct)
+        } else {
+            None
+        },
         output_vol: if vol_pct != 100 { Some(vol_pct) } else { None },
         name: app.name.clone(),
         voice_mode: None,
@@ -1009,6 +1160,10 @@ async fn restart_voice(
     let Some(params) = app.voice_join_params.clone() else {
         return;
     };
+    let Some(server_ip) = app.server_ip else {
+        app.add_message("voice restart error: not connected".into());
+        return;
+    };
 
     // Drop old handle
     voice_handle.take();
@@ -1016,7 +1171,7 @@ async fn restart_voice(
 
     let my_name = app.name.clone().unwrap_or_else(|| "user".into());
     match voice::start_voice(
-        &app.server_addr,
+        server_ip,
         params.channel_id,
         params.udp_token,
         muted.clone(),

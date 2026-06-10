@@ -94,7 +94,7 @@ pub fn touch(servers: &mut Vec<ServerEntry>, addr: &str) {
 }
 
 /// Remember the most recent channel joined on `addr`.
-pub fn record_channel(servers: &mut Vec<ServerEntry>, addr: &str, channel: &str) {
+pub fn record_channel(servers: &mut [ServerEntry], addr: &str, channel: &str) {
     if let Some(e) = servers.iter_mut().find(|s| s.addr == addr) {
         e.last_channel = Some(channel.to_string());
     }

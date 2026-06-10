@@ -99,6 +99,8 @@ export const cmd = {
   // backup / restore
   exportSettings: () => invoke<string>("export_settings"),
   importSettings: (json: string) => invoke<void>("import_settings", { json }),
+  // dev logs
+  setDevLogs: (enabled: boolean) => invoke<boolean>("set_dev_logs", { enabled }),
 };
 
 export type DmPeerView = {
@@ -132,11 +134,20 @@ export type VoiceLevelPayload = {
   tx_kbps: number;
   rx_kbps: number;
   muted: boolean;
+  /** false while the server has not confirmed UDP registration (no inbound voice) */
+  registered: boolean;
 };
 
 export type InvitePayload = {
   addr: string;
   channel: string | null;
+};
+
+export type DevLogPayload = {
+  level: string;
+  target: string;
+  message: string;
+  ts_ms: number;
 };
 
 export type EventMap = {
@@ -155,6 +166,7 @@ export type EventMap = {
   log: { text: string };
   muted_changed: { muted: boolean };
   invite: InvitePayload;
+  dev_log: DevLogPayload;
 };
 
 export function on<K extends keyof EventMap>(

@@ -63,6 +63,7 @@ const en: Dict = {
   "voice_mode.vad": "voice activation",
   "voice_mode.ptt": "push to talk",
   "voice.connected": "connected",
+  "voice.no_rx": "no rx — registering\u2026",
   "voice.leave_call": "leave call",
   "voice.toggle_mode": "mode: {mode} (click vad ↔ ptt)",
 
@@ -139,6 +140,7 @@ const ru: Dict = {
   "voice_mode.vad": "голосовая активация",
   "voice_mode.ptt": "нажми и говори",
   "voice.connected": "подключено",
+  "voice.no_rx": "нет приёма — регистрация\u2026",
   "voice.leave_call": "выйти из звонка",
   "voice.toggle_mode": "режим: {mode} (клик: vad ↔ ptt)",
 

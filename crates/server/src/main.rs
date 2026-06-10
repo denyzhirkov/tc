@@ -79,8 +79,16 @@ async fn main() -> Result<()> {
 
     tracing::info!("tc-server starting on TCP:{} UDP:{}", tcp_addr, udp_addr);
     tracing::info!(
-        max_clients = if args.max_clients == 0 { "unlimited".to_string() } else { args.max_clients.to_string() },
-        max_channels = if args.max_channels == 0 { "unlimited".to_string() } else { args.max_channels.to_string() },
+        max_clients = if args.max_clients == 0 {
+            "unlimited".to_string()
+        } else {
+            args.max_clients.to_string()
+        },
+        max_channels = if args.max_channels == 0 {
+            "unlimited".to_string()
+        } else {
+            args.max_channels.to_string()
+        },
         maintenance_interval = args.maintenance_interval,
         "limits"
     );
@@ -196,9 +204,8 @@ async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
     {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to register SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
         tokio::select! {
             _ = ctrl_c => {}
             _ = sigterm.recv() => {}
@@ -240,6 +247,9 @@ async fn run_maintenance(
             udp_relayed = d.udp_voice_relayed,
             udp_fanout = d.udp_fanout_total,
             udp_malformed = d.udp_voice_malformed,
+            udp_hellos_ok = d.udp_hellos_ok,
+            udp_hellos_invalid = d.udp_hellos_invalid,
+            udp_keepalives = d.udp_keepalives,
             udp_bytes_in = d.udp_bytes_in,
             udp_bytes_relayed = d.udp_bytes_relayed,
             tcp_sends = d.tcp_sends,

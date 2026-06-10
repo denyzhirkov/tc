@@ -8,7 +8,7 @@ use tc_client::identity::Identity;
 use tc_client::network::ServerConnection;
 use tc_client::settings::{DmPeer, ServerEntry, UserSettings};
 use tc_client::tls::TofuState;
-use tc_shared::{config, ChannelId};
+use tc_shared::ChannelId;
 
 use crate::voice_actor::VoiceManager;
 
@@ -160,10 +160,6 @@ impl AppCore {
         self.identity.as_ref().map(|i| i.fingerprint())
     }
 
-    pub fn default_server() -> String {
-        format!("127.0.0.1:{}", config::TCP_PORT)
-    }
-
     /// Persist current state into `tc.toml`. Called after any user-visible setting change.
     pub fn save(&self) {
         let s = UserSettings {
@@ -191,7 +187,8 @@ impl AppCore {
     pub fn apply_voice_mode(&mut self, mode: VoiceMode) {
         self.voice_mode = mode;
         let threshold = vad_threshold_for(mode, self.vad_level_pct);
-        self.vad_threshold.store(threshold.to_bits(), Ordering::Relaxed);
+        self.vad_threshold
+            .store(threshold.to_bits(), Ordering::Relaxed);
         self.muted
             .store(matches!(mode, VoiceMode::Ptt), Ordering::Relaxed);
     }
@@ -199,19 +196,24 @@ impl AppCore {
     pub fn apply_vad_level(&mut self, level_pct: u32) {
         self.vad_level_pct = level_pct.clamp(0, 100);
         let threshold = vad_threshold_for(self.voice_mode, self.vad_level_pct);
-        self.vad_threshold.store(threshold.to_bits(), Ordering::Relaxed);
+        self.vad_threshold
+            .store(threshold.to_bits(), Ordering::Relaxed);
     }
 
     pub fn apply_input_gain(&mut self, pct: u32) {
         self.input_gain_pct = pct.clamp(0, 400);
-        self.input_gain
-            .store(pct_to_float(self.input_gain_pct).to_bits(), Ordering::Relaxed);
+        self.input_gain.store(
+            pct_to_float(self.input_gain_pct).to_bits(),
+            Ordering::Relaxed,
+        );
     }
 
     pub fn apply_output_vol(&mut self, pct: u32) {
         self.output_vol_pct = pct.clamp(0, 400);
-        self.output_vol
-            .store(pct_to_float(self.output_vol_pct).to_bits(), Ordering::Relaxed);
+        self.output_vol.store(
+            pct_to_float(self.output_vol_pct).to_bits(),
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -226,7 +228,11 @@ fn vad_threshold_for(mode: VoiceMode, level_pct: u32) -> f32 {
         VoiceMode::Open | VoiceMode::Ptt => 0.0,
         VoiceMode::Vad => {
             let n = level_pct.clamp(0, 100) as f32;
-            if n == 0.0 { 0.0 } else { 0.001 + (n / 100.0) * 0.049 }
+            if n == 0.0 {
+                0.0
+            } else {
+                0.001 + (n / 100.0) * 0.049
+            }
         }
     }
 }

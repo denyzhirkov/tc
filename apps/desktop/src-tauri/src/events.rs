@@ -8,9 +8,14 @@ use tauri::{AppHandle, Emitter};
 pub enum ConnState {
     Disconnected,
     Connecting,
-    Connected { server: String },
+    Connected {
+        server: String,
+    },
     /// Connection dropped; backoff scheduled before next attempt.
-    Reconnecting { attempt: u32, delay_secs: u64 },
+    Reconnecting {
+        attempt: u32,
+        delay_secs: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,12 +54,6 @@ pub struct ChannelListPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct VoiceQualityPayload {
-    pub loss_percent: u8,
-    pub tier: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct SpeakerLevel {
     pub name: String,
     pub level: f32,
@@ -69,6 +68,8 @@ pub struct VoiceLevelPayload {
     pub tx_kbps: f64,
     pub rx_kbps: f64,
     pub muted: bool,
+    /// `false` while the server has not confirmed UDP registration (no inbound voice).
+    pub registered: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

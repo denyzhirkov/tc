@@ -161,7 +161,12 @@ impl BatchSender {
 
         // SAFETY: msg_iov is &mut iov which lives in self for the whole call.
         unsafe {
-            libc::sendmmsg(fd, self.msgs.as_mut_ptr(), n as u32, libc::MSG_DONTWAIT as _);
+            libc::sendmmsg(
+                fd,
+                self.msgs.as_mut_ptr(),
+                n as u32,
+                libc::MSG_DONTWAIT as _,
+            );
         }
     }
 
@@ -184,8 +189,7 @@ impl BatchSender {
                     sa.sin_addr = libc::in_addr {
                         s_addr: u32::from(*v4.ip()).to_be(),
                     };
-                    self.addrlen[i] =
-                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+                    self.addrlen[i] = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
                 }
                 SocketAddr::V6(v6) => {
                     let sa = unsafe {
@@ -199,8 +203,7 @@ impl BatchSender {
                     };
                     sa.sin6_flowinfo = v6.flowinfo();
                     sa.sin6_scope_id = v6.scope_id();
-                    self.addrlen[i] =
-                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+                    self.addrlen[i] = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
                 }
             }
         }
@@ -338,8 +341,7 @@ impl BatchSender {
                     sa.sin_addr = libc::in_addr {
                         s_addr: u32::from(*v4.ip()).to_be(),
                     };
-                    self.addrlen[i] =
-                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+                    self.addrlen[i] = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
                 }
                 SocketAddr::V6(v6) => {
                     let sa = unsafe {
@@ -353,8 +355,7 @@ impl BatchSender {
                     };
                     sa.sin6_flowinfo = v6.flowinfo();
                     sa.sin6_scope_id = v6.scope_id();
-                    self.addrlen[i] =
-                        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+                    self.addrlen[i] = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
                 }
             }
         }
@@ -495,12 +496,20 @@ async fn relay_loop(
         };
 
         metrics.udp_packets_in.fetch_add(1, Ordering::Relaxed);
-        metrics.udp_bytes_in.fetch_add(len as u64, Ordering::Relaxed);
+        metrics
+            .udp_bytes_in
+            .fetch_add(len as u64, Ordering::Relaxed);
 
         let data = &buf[..len];
 
         // Check for hello packet (token-based UDP registration)
         if let Some(token) = decode_udp_hello(data) {
+            // Token 0 is a keepalive from an idle client — refreshes NAT/firewall
+            // mappings on the way here. Count it, never register or forward.
+            if token == 0 {
+                metrics.udp_keepalives.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             if state.register_udp_by_token(token, src_addr).await {
                 metrics.udp_hellos_ok.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(%src_addr, worker_id, "UDP hello registered via token");
@@ -528,10 +537,13 @@ async fn relay_loop(
 
         if !peers.is_empty() {
             metrics.udp_voice_relayed.fetch_add(1, Ordering::Relaxed);
-            metrics.udp_fanout_total.fetch_add(peers.len() as u64, Ordering::Relaxed);
             metrics
-                .udp_bytes_relayed
-                .fetch_add((data.len() as u64) * (peers.len() as u64), Ordering::Relaxed);
+                .udp_fanout_total
+                .fetch_add(peers.len() as u64, Ordering::Relaxed);
+            metrics.udp_bytes_relayed.fetch_add(
+                (data.len() as u64) * (peers.len() as u64),
+                Ordering::Relaxed,
+            );
         }
 
         // Relay raw bytes to all other participants in the channel

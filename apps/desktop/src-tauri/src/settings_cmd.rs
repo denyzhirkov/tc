@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::Mutex;
 
@@ -25,11 +25,7 @@ pub async fn set_autostart(
     enabled: bool,
 ) -> Result<(), String> {
     let mgr = app.autolaunch();
-    let res = if enabled {
-        mgr.enable()
-    } else {
-        mgr.disable()
-    };
+    let res = if enabled { mgr.enable() } else { mgr.disable() };
     res.map_err(|e| format!("autostart: {}", e))?;
     let mut c = state.lock().await;
     c.autostart = enabled;

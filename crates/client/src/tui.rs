@@ -33,6 +33,12 @@ pub struct MatrixState {
     tick: u64,
 }
 
+impl Default for MatrixState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MatrixState {
     pub fn new() -> Self {
         Self {
@@ -119,7 +125,10 @@ fn draw_matrix(frame: &mut Frame, state: &MatrixState) {
                 Color::Rgb(0, g.max(40), 0)
             };
 
-            buf[(stream.x, y as u16)].set_char(ch).set_fg(color).set_bg(bg);
+            buf[(stream.x, y as u16)]
+                .set_char(ch)
+                .set_fg(color)
+                .set_bg(bg);
         }
     }
 }
@@ -182,10 +191,16 @@ pub struct App {
     pub participants: Vec<String>,
     /// Whether voice is active.
     pub voice_active: bool,
+    /// Voice is up but the server has not confirmed our UDP registration —
+    /// we can send but receive nothing (shown as NO RX in the status bar).
+    pub voice_rx_degraded: bool,
     /// Muted state.
     pub muted: Arc<AtomicBool>,
-    /// Server address.
+    /// Server address as entered by the user (host[:port]).
     pub server_addr: String,
+    /// Resolved IP of the live TCP connection — the UDP voice target.
+    /// `None` while disconnected.
+    pub server_ip: Option<std::net::IpAddr>,
     /// Voice quality: (loss_percent, tier_name).
     pub voice_quality: Option<(u8, String)>,
     /// Voice traffic: (tx_kbps, rx_kbps, total_bytes).
@@ -258,8 +273,10 @@ impl App {
             channel: None,
             participants: Vec::new(),
             voice_active: false,
+            voice_rx_degraded: false,
             muted,
             server_addr,
+            server_ip: None,
             voice_quality: None,
             voice_traffic: None,
             conn_state: ConnectionState::Disconnected,
@@ -303,9 +320,10 @@ impl App {
         self.messages.push(msg);
         self.dirty = true;
         self.scroll_offset = 0; // snap to bottom on new message
-        // Keep last N messages
+                                // Keep last N messages
         if self.messages.len() > config::MAX_MESSAGE_HISTORY {
-            self.messages.drain(..self.messages.len() - config::MAX_MESSAGE_HISTORY);
+            self.messages
+                .drain(..self.messages.len() - config::MAX_MESSAGE_HISTORY);
         }
     }
 }
@@ -469,7 +487,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // status bar
-            Constraint::Min(5),   // messages
+            Constraint::Min(5),    // messages
             Constraint::Length(3), // input
         ])
         .split(frame.area());
@@ -519,7 +537,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let muted = app.muted.load(Ordering::Relaxed);
 
     let status_parts = vec![
-        Span::styled(" tc ", Style::default().fg(Color::Black).bg(Color::Cyan).bold()),
+        Span::styled(
+            " tc ",
+            Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
+        ),
         Span::raw("  "),
         match &app.conn_state {
             ConnectionState::Disconnected => Span::styled(
@@ -546,8 +567,19 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             if muted {
                 Span::styled(" MUTED ", Style::default().fg(Color::Black).bg(Color::Red))
             } else {
-                Span::styled(" VOICE ON ", Style::default().fg(Color::Black).bg(Color::Green))
+                Span::styled(
+                    " VOICE ON ",
+                    Style::default().fg(Color::Black).bg(Color::Green),
+                )
             }
+        } else {
+            Span::raw("")
+        },
+        if app.voice_active && app.voice_rx_degraded {
+            Span::styled(
+                " NO RX (registering…) ",
+                Style::default().fg(Color::Black).bg(Color::Yellow).bold(),
+            )
         } else {
             Span::raw("")
         },
@@ -594,8 +626,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         },
     ];
 
-    let status = Paragraph::new(Line::from(status_parts))
-        .block(Block::default().borders(Borders::BOTTOM));
+    let status =
+        Paragraph::new(Line::from(status_parts)).block(Block::default().borders(Borders::BOTTOM));
 
     frame.render_widget(status, area);
 }

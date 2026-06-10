@@ -183,6 +183,23 @@ export async function runCommand(raw: string) {
     case "/set":
       update.showSettings(!state.showSettings);
       return;
+    case "/show_dev_logs":
+    case "/devlogs": {
+      const next = !state.devLogs;
+      try {
+        await cmd.setDevLogs(next);
+        update.devLogs(next);
+        pushLog(
+          next
+            ? "dev logs on — streaming DEBUG+ into this feed (/show_dev_logs to stop)"
+            : "dev logs off",
+          "system",
+        );
+      } catch (e) {
+        pushLog(`error: ${e}`, "error");
+      }
+      return;
+    }
     case "/backup":
       try {
         const json = await cmd.exportSettings();
@@ -467,6 +484,7 @@ function printHelp() {
     "  /autostart <on|off>  launch tc_ on system login",
     "  /tray <on|off>       hide to tray on close (instead of quit)",
     "  /settings (/set)     toggle settings panel (also click ⚙)",
+    "  /show_dev_logs       toggle DEBUG+ log stream in this feed (alias /devlogs)",
     "  /backup              copy all settings + saved servers to clipboard as JSON",
     "  /restore [json]      apply a backup (clipboard if no arg). private key stays untouched",
     "  /help (/h)           this help",

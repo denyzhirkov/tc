@@ -10,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::State;
 use tokio::sync::Mutex;
 
 use crate::state::AppCore;
@@ -46,8 +45,7 @@ fn append_inner(server: &str, channel: &str, line: &ChatLine) -> std::io::Result
         std::fs::create_dir_all(parent)?;
     }
     let mut f = OpenOptions::new().create(true).append(true).open(path)?;
-    let mut s = serde_json::to_string(line)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let mut s = serde_json::to_string(line).map_err(std::io::Error::other)?;
     s.push('\n');
     f.write_all(s.as_bytes())?;
     Ok(())
@@ -105,7 +103,11 @@ fn path_for(server: &str, channel: &str) -> PathBuf {
     hasher.update(b"|");
     hasher.update(channel.as_bytes());
     let digest = hasher.finalize();
-    let key: String = digest.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+    let key: String = digest
+        .iter()
+        .take(8)
+        .map(|b| format!("{:02x}", b))
+        .collect();
     tc_client::settings::config_dir()
         .join("history")
         .join(format!("{}.jsonl", key))

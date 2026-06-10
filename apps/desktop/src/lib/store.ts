@@ -8,7 +8,7 @@ import type { AppStatus, ChannelListEntry, VoiceLevelPayload } from "./tauri";
 export type LogLine = {
   id: number;
   text: string;
-  kind?: "info" | "chat" | "dm" | "system" | "error";
+  kind?: "info" | "chat" | "dm" | "system" | "error" | "devlog";
   /// Unix seconds. Set for chat/dm lines; absent for system/info.
   ts?: number;
 };
@@ -30,6 +30,8 @@ export type AppState = {
   dm: { pubkey_hex: string; name: string } | null;
   /// Lines for the active DM thread. Cleared each time `dm` changes.
   dmLog: LogLine[];
+  /// /show_dev_logs toggle — stream DEBUG+ tracing into the main feed.
+  devLogs: boolean;
 };
 
 let nextId = 1;
@@ -47,6 +49,7 @@ const [state, setState] = createStore<AppState>({
   showSettings: false,
   dm: null,
   dmLog: [],
+  devLogs: false,
 });
 
 export { state };
@@ -103,6 +106,7 @@ export const update = {
   },
   speakers: (m: Record<string, number>) => setState("speakers", m),
   showSettings: (v: boolean) => setState("showSettings", v),
+  devLogs: (v: boolean) => setState("devLogs", v),
   openDm: (pubkey_hex: string, name: string) => {
     setState("dm", { pubkey_hex, name });
     setState("dmLog", []);

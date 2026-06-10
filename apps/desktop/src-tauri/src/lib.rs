@@ -3,6 +3,7 @@
 mod audio_cmd;
 mod commands;
 mod deeplink;
+mod dev_log;
 mod dm;
 mod drain;
 mod events;
@@ -25,12 +26,20 @@ use crate::state::AppCore;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("tc=info,tc_desktop=info")),
-        )
-        .init();
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::Layer;
+
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("tc=info,tc_desktop=info"));
+        // Console output keeps the env filter; the dev-log layer sees DEBUG+
+        // so /show_dev_logs can stream details without restarting with RUST_LOG.
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+            .with(dev_log::DevLogLayer.with_filter(tracing_subscriber::filter::LevelFilter::DEBUG))
+            .init();
+    }
 
     // Required for the rustls-based TLS stack used by `tc-client`.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -55,6 +64,8 @@ pub fn run() {
                     }
                 });
             }
+
+            dev_log::set_app(app.handle().clone());
 
             let core = Arc::new(Mutex::new(AppCore::new()));
             app.manage(core.clone());
@@ -131,6 +142,7 @@ pub fn run() {
             dm::resolve_peer,
             commands::export_settings,
             commands::import_settings,
+            dev_log::set_dev_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

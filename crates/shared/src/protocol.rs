@@ -62,10 +62,7 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerMessage {
     /// First message after connect — announces server version.
-    Welcome {
-        version: String,
-        protocol: u16,
-    },
+    Welcome { version: String, protocol: u16 },
     /// Channel created successfully.
     ChannelCreated { channel_id: ChannelId },
     /// Joined channel successfully.
@@ -86,7 +83,11 @@ pub enum ServerMessage {
     /// Incoming text chat from a peer.
     ChatMessage { from: String, text: String },
     /// Incoming direct message from a peer (identified by pubkey).
-    DirectMessage { from_pubkey: Vec<u8>, from_name: String, text: String },
+    DirectMessage {
+        from_pubkey: Vec<u8>,
+        from_name: String,
+        text: String,
+    },
     /// Name was changed.
     NameChanged { old_name: String, new_name: String },
     /// List of public channels.
@@ -116,6 +117,21 @@ pub fn encode_udp_hello(token: u64) -> Vec<u8> {
     let mut buf = vec![0u8; UDP_HELLO_SIZE];
     buf[4..12].copy_from_slice(&token.to_be_bytes());
     buf
+}
+
+/// Encode a UDP keepalive packet: a hello with token 0.
+///
+/// Join tokens are never 0, so the relay can tell the two apart. Sent by idle
+/// clients (VAD silence) so NAT mappings and stateful firewalls keep the
+/// inbound voice path open. Non-breaking: old servers count it as an invalid
+/// hello and drop it.
+pub fn encode_udp_keepalive() -> Vec<u8> {
+    encode_udp_hello(0)
+}
+
+/// Whether the packet is a UDP keepalive (hello with token 0).
+pub fn is_udp_keepalive(data: &[u8]) -> bool {
+    decode_udp_hello(data) == Some(0)
 }
 
 /// Try to decode a UDP hello packet. Returns the token if valid.
@@ -314,6 +330,16 @@ mod tests {
     }
 
     #[test]
+    fn udp_keepalive_is_hello_with_zero_token() {
+        let ka = encode_udp_keepalive();
+        assert!(is_udp_keepalive(&ka));
+        assert_eq!(decode_udp_hello(&ka), Some(0));
+        // A real hello is not a keepalive, nor is a voice-shaped packet.
+        assert!(!is_udp_keepalive(&encode_udp_hello(42)));
+        assert!(!is_udp_keepalive(&[0u8; 13]));
+    }
+
+    #[test]
     fn voice_packet_roundtrip() {
         let pkt = VoicePacket {
             sequence: 42,
@@ -388,7 +414,10 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(&len.to_be_bytes());
         buf.extend_from_slice(&[0u8; 4]);
-        assert!(matches!(try_decode_frame(&buf), Err(FrameError::TooLarge(_))));
+        assert!(matches!(
+            try_decode_frame(&buf),
+            Err(FrameError::TooLarge(_))
+        ));
     }
 
     #[test]
@@ -450,12 +479,16 @@ mod tests {
     #[test]
     fn client_message_serde_create_channel() {
         roundtrip_client(&ClientMessage::CreateChannel { name: None });
-        roundtrip_client(&ClientMessage::CreateChannel { name: Some("lobby".into()) });
+        roundtrip_client(&ClientMessage::CreateChannel {
+            name: Some("lobby".into()),
+        });
     }
 
     #[test]
     fn client_message_serde_join_channel() {
-        roundtrip_client(&ClientMessage::JoinChannel { channel_id: "abc12".into() });
+        roundtrip_client(&ClientMessage::JoinChannel {
+            channel_id: "abc12".into(),
+        });
     }
 
     #[test]
@@ -470,12 +503,16 @@ mod tests {
 
     #[test]
     fn client_message_serde_chat() {
-        roundtrip_client(&ClientMessage::ChatMessage { text: "hello".into() });
+        roundtrip_client(&ClientMessage::ChatMessage {
+            text: "hello".into(),
+        });
     }
 
     #[test]
     fn client_message_serde_set_name() {
-        roundtrip_client(&ClientMessage::SetName { name: "alice".into() });
+        roundtrip_client(&ClientMessage::SetName {
+            name: "alice".into(),
+        });
     }
 
     #[test]
@@ -493,7 +530,9 @@ mod tests {
 
     #[test]
     fn server_message_serde_channel_created() {
-        roundtrip_server(&ServerMessage::ChannelCreated { channel_id: "abc".into() });
+        roundtrip_server(&ServerMessage::ChannelCreated {
+            channel_id: "abc".into(),
+        });
     }
 
     #[test]
@@ -508,12 +547,16 @@ mod tests {
 
     #[test]
     fn server_message_serde_peer_joined() {
-        roundtrip_server(&ServerMessage::PeerJoined { peer_name: "alice".into() });
+        roundtrip_server(&ServerMessage::PeerJoined {
+            peer_name: "alice".into(),
+        });
     }
 
     #[test]
     fn server_message_serde_peer_left() {
-        roundtrip_server(&ServerMessage::PeerLeft { peer_name: "bob".into() });
+        roundtrip_server(&ServerMessage::PeerLeft {
+            peer_name: "bob".into(),
+        });
     }
 
     #[test]
@@ -541,15 +584,23 @@ mod tests {
     fn server_message_serde_channel_list() {
         roundtrip_server(&ServerMessage::ChannelList {
             channels: vec![
-                ChannelInfo { channel_id: "pub-a".into(), participant_count: 3 },
-                ChannelInfo { channel_id: "pub-b".into(), participant_count: 0 },
+                ChannelInfo {
+                    channel_id: "pub-a".into(),
+                    participant_count: 3,
+                },
+                ChannelInfo {
+                    channel_id: "pub-b".into(),
+                    participant_count: 0,
+                },
             ],
         });
     }
 
     #[test]
     fn server_message_serde_error() {
-        roundtrip_server(&ServerMessage::Error { message: "oops".into() });
+        roundtrip_server(&ServerMessage::Error {
+            message: "oops".into(),
+        });
     }
 
     #[test]
@@ -559,7 +610,10 @@ mod tests {
 
     #[test]
     fn channel_info_serde() {
-        let info = ChannelInfo { channel_id: "test".into(), participant_count: 5 };
+        let info = ChannelInfo {
+            channel_id: "test".into(),
+            participant_count: 5,
+        };
         let bytes = bincode::serialize(&info).unwrap();
         let back: ChannelInfo = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back.channel_id, "test");

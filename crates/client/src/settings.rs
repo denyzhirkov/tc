@@ -77,8 +77,12 @@ pub struct ServerEntry {
     pub last_used_unix: u64,
 }
 
-fn is_false(b: &bool) -> bool { !*b }
-fn is_zero(n: &u64) -> bool { *n == 0 }
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
 
 pub fn config_dir() -> PathBuf {
     // XDG: ~/.config/tc/ (Linux/macOS) or %APPDATA%/tc/ (Windows).
@@ -91,9 +95,7 @@ pub fn config_dir() -> PathBuf {
     } else {
         std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs_next().join(".config")
-            })
+            .unwrap_or_else(|_| dirs_next().join(".config"))
     };
     let new_dir = base.join("tc");
     let legacy_dir = base.join("termicall");
@@ -155,16 +157,16 @@ fn settings_path() -> PathBuf {
             let new_path = new_dir.join(FILE_NAME);
             if !new_path.exists() {
                 // Migrate: copy legacy config to XDG path
-                if std::fs::create_dir_all(&new_dir).is_ok() {
-                    if std::fs::copy(legacy_path, &new_path).is_ok() {
-                        let _ = std::fs::remove_file(legacy_path);
-                        tracing::info!(
-                            "migrated config from {} to {}",
-                            legacy_path.display(),
-                            new_path.display()
-                        );
-                        return new_path;
-                    }
+                if std::fs::create_dir_all(&new_dir).is_ok()
+                    && std::fs::copy(legacy_path, &new_path).is_ok()
+                {
+                    let _ = std::fs::remove_file(legacy_path);
+                    tracing::info!(
+                        "migrated config from {} to {}",
+                        legacy_path.display(),
+                        new_path.display()
+                    );
+                    return new_path;
                 }
             }
             // If new path already exists, prefer it (ignore legacy)
@@ -224,12 +226,14 @@ mod tests {
 
     #[test]
     fn settings_toml_roundtrip() {
-        let mut s = UserSettings::default();
-        s.server = Some("example.com:7100".into());
-        s.name = Some("alice".into());
-        s.vad_level = Some(15);
-        s.input_gain = Some(120);
-        s.output_vol = Some(80);
+        let mut s = UserSettings {
+            server: Some("example.com:7100".into()),
+            name: Some("alice".into()),
+            vad_level: Some(15),
+            input_gain: Some(120),
+            output_vol: Some(80),
+            ..UserSettings::default()
+        };
         s.trusted_servers.insert("srv".into(), "sha256:abc".into());
 
         let toml_str = toml::to_string_pretty(&s).unwrap();

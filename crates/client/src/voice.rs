@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,9 @@ use tokio::net::UdpSocket;
 
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePacket};
+use tc_shared::{
+    config, decode_udp_hello, encode_udp_hello, encode_udp_keepalive, ChannelId, VoicePacket,
+};
 
 use crate::audio;
 use crate::codec::{OpusDecoder, OpusEncoder};
@@ -128,7 +130,8 @@ impl NetworkStats {
         if total >= config::STATS_WINDOW_PACKETS {
             let loss = ((lost as f32 / total as f32) * 100.0) as u8;
             self.loss_percent.store(loss, Ordering::Relaxed);
-            self.current_tier.store(QualityTier::from_loss(loss).to_u8(), Ordering::Relaxed);
+            self.current_tier
+                .store(QualityTier::from_loss(loss).to_u8(), Ordering::Relaxed);
             self.received.store(0, Ordering::Relaxed);
             self.lost.store(0, Ordering::Relaxed);
         }
@@ -251,7 +254,9 @@ impl JitterBuffer {
         if new_size != self.max_size {
             tracing::debug!(
                 "jitter buffer adapted: {} → {} packets (jitter={:.1}ms)",
-                self.max_size, new_size, self.jitter_ms,
+                self.max_size,
+                new_size,
+                self.jitter_ms,
             );
             self.max_size = new_size;
         }
@@ -341,7 +346,7 @@ enum PopResult {
 /// Returns a handle that keeps the pipeline alive.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_voice(
-    server_addr: &str,
+    server_ip: std::net::IpAddr,
     channel_id: ChannelId,
     udp_token: u64,
     muted: Arc<AtomicBool>,
@@ -353,12 +358,23 @@ pub async fn start_voice(
     output_vol: Arc<AtomicU32>,
     sender_name: String,
 ) -> Result<VoiceHandle> {
-    let socket = Arc::new(udp_connect_and_handshake(server_addr, udp_token).await?);
+    let (socket, acked) = udp_connect_and_handshake(server_ip, udp_token).await?;
+    let socket = Arc::new(socket);
 
     let stats = Arc::new(NetworkStats::new());
     let bytes_tx = Arc::new(AtomicU64::new(0));
     let bytes_rx = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
+    let registered = Arc::new(AtomicBool::new(acked));
+    if !acked {
+        // Exits on its own via the `registered`/`stop` flags.
+        drop(spawn_rehello_task(
+            socket.clone(),
+            udp_token,
+            registered.clone(),
+            stop.clone(),
+        ));
+    }
     let speaking: Arc<Mutex<HashMap<String, SpeakerStat>>> = Arc::new(Mutex::new(HashMap::new()));
     let playback_cap = Arc::new(AtomicU32::new(config::MAX_PLAYBACK_BUF as u32));
     let input_peak = Arc::new(AtomicU32::new(0));
@@ -401,6 +417,8 @@ pub async fn start_voice(
         playback_cap: playback_cap.clone(),
         speaking: speaking.clone(),
         playback_prod,
+        registered: registered.clone(),
+        udp_token,
     });
 
     Ok(VoiceHandle {
@@ -409,6 +427,7 @@ pub async fn start_voice(
         recv_handle,
         stats,
         stop,
+        registered,
         bytes_tx,
         bytes_rx,
         speaking,
@@ -423,15 +442,29 @@ pub async fn start_voice(
     })
 }
 
-async fn udp_connect_and_handshake(server_addr: &str, udp_token: u64) -> Result<UdpSocket> {
-    let udp_addr = if server_addr.contains(':') {
-        let parts: Vec<&str> = server_addr.rsplitn(2, ':').collect();
-        format!("{}:{}", parts[1], config::UDP_PORT)
+/// Connect the UDP voice socket to the server.
+///
+/// `server_ip` is the resolved IP of the live TCP connection — never re-resolved
+/// from the server string. The server requires the UDP hello to arrive from the
+/// same IP as the TCP session, so both transports must leave through the same
+/// address family (a hostname resolving to IPv6 for TCP while UDP went IPv4
+/// caused a permanent registration reject → one-way audio).
+/// Returns the connected socket and whether the hello was ACK'd. `false` means
+/// registration is unconfirmed — the caller must keep re-helloing in the
+/// background, or inbound voice will silently never arrive (one-way audio).
+async fn udp_connect_and_handshake(
+    server_ip: std::net::IpAddr,
+    udp_token: u64,
+) -> Result<(UdpSocket, bool)> {
+    let server_ip = server_ip.to_canonical();
+    let udp_addr = std::net::SocketAddr::new(server_ip, config::UDP_PORT);
+    let bind_addr: std::net::SocketAddr = if server_ip.is_ipv6() {
+        "[::]:0".parse().unwrap()
     } else {
-        format!("{}:{}", server_addr, config::UDP_PORT)
+        "0.0.0.0:0".parse().unwrap()
     };
 
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = UdpSocket::bind(bind_addr).await?;
     socket.connect(&udp_addr).await?;
     tracing::info!("UDP voice connected to {}", udp_addr);
 
@@ -447,15 +480,45 @@ async fn udp_connect_and_handshake(server_addr: &str, udp_token: u64) -> Result<
         {
             Ok(Ok(len)) if decode_udp_hello(&ack_buf[..len]) == Some(udp_token) => {
                 tracing::debug!("UDP hello ACK received on attempt {}", attempt + 1);
-                return Ok(socket);
+                return Ok((socket, true));
             }
             _ => {
                 tracing::trace!("UDP hello attempt {} — no ACK, retrying", attempt + 1);
             }
         }
     }
-    tracing::warn!("UDP hello: no ACK after {} attempts, proceeding anyway", config::UDP_HELLO_RETRIES);
-    Ok(socket)
+    tracing::warn!(
+        "UDP hello: no ACK after {} attempts — voice rx unconfirmed, re-helloing in background",
+        config::UDP_HELLO_RETRIES
+    );
+    Ok((socket, false))
+}
+
+/// Keep sending UDP hellos with backoff until registration is confirmed
+/// (ACK or first inbound voice packet flips `registered`) or the pipeline stops.
+fn spawn_rehello_task(
+    socket: Arc<UdpSocket>,
+    udp_token: u64,
+    registered: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let hello_pkt = encode_udp_hello(udp_token);
+        let mut delay = config::UDP_REHELLO_BASE_MS;
+        loop {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            if registered.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Err(e) = socket.send(&hello_pkt).await {
+                tracing::debug!("re-hello send failed: {}", e);
+            }
+            delay = (delay * 2).min(config::UDP_REHELLO_MAX_MS);
+        }
+        if registered.load(Ordering::Relaxed) {
+            tracing::info!("UDP voice registration confirmed");
+        }
+    })
 }
 
 struct CaptureCfg {
@@ -474,7 +537,13 @@ struct CaptureCfg {
 
 fn spawn_capture_thread(mut cfg: CaptureCfg) {
     // Truncate sender name to fit in a u8 length prefix
-    let name_bytes: Vec<u8> = cfg.sender_name.as_bytes().iter().take(255).copied().collect();
+    let name_bytes: Vec<u8> = cfg
+        .sender_name
+        .as_bytes()
+        .iter()
+        .take(255)
+        .copied()
+        .collect();
     std::thread::spawn(move || {
         use ringbuf::traits::{Consumer, Observer};
 
@@ -514,9 +583,8 @@ fn spawn_capture_thread(mut cfg: CaptureCfg) {
             }
 
             // Publish RMS for UI level meter.
-            let rms = (pcm_frame.iter().map(|s| s * s).sum::<f32>()
-                / pcm_frame.len() as f32)
-                .sqrt();
+            let rms =
+                (pcm_frame.iter().map(|s| s * s).sum::<f32>() / pcm_frame.len() as f32).sqrt();
             cfg.input_peak.store(rms.to_bits(), Ordering::Relaxed);
 
             frames_since_check += 1;
@@ -537,7 +605,14 @@ fn spawn_capture_thread(mut cfg: CaptureCfg) {
                 }
             };
 
-            if !build_packet(&mut packet_buf, sequence, &cfg.channel_id, &name_bytes, opus_data, &cfg.cipher) {
+            if !build_packet(
+                &mut packet_buf,
+                sequence,
+                &cfg.channel_id,
+                &name_bytes,
+                opus_data,
+                &cfg.cipher,
+            ) {
                 continue;
             }
 
@@ -550,7 +625,11 @@ fn spawn_capture_thread(mut cfg: CaptureCfg) {
     });
 }
 
-fn maybe_adapt_encoder(encoder: &mut OpusEncoder, stats: &NetworkStats, current_tier: &mut QualityTier) {
+fn maybe_adapt_encoder(
+    encoder: &mut OpusEncoder,
+    stats: &NetworkStats,
+    current_tier: &mut QualityTier,
+) {
     let new_tier = stats.current_tier();
     if new_tier == *current_tier {
         return;
@@ -635,14 +714,29 @@ fn spawn_udp_send_task(
     bytes_tx: Arc<AtomicU64>,
 ) {
     tokio::spawn(async move {
-        while let Some(bytes) = encoded_rx.recv().await {
-            let bytes_len = bytes.len();
-            match socket.send(&bytes).await {
-                Ok(_) => {
-                    bytes_tx.fetch_add(bytes_len as u64, Ordering::Relaxed);
+        // During VAD silence no voice packets flow, and NAT mappings /
+        // stateful-firewall entries for the UDP flow expire — killing the
+        // inbound path. A periodic keepalive keeps the flow alive.
+        let keepalive = encode_udp_keepalive();
+        let idle = Duration::from_secs(config::UDP_KEEPALIVE_INTERVAL_SECS);
+        loop {
+            match tokio::time::timeout(idle, encoded_rx.recv()).await {
+                Ok(Some(bytes)) => {
+                    let bytes_len = bytes.len();
+                    match socket.send(&bytes).await {
+                        Ok(_) => {
+                            bytes_tx.fetch_add(bytes_len as u64, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            tracing::trace!("UDP send error: {}", e);
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::trace!("UDP send error: {}", e);
+                Ok(None) => break, // pipeline stopped
+                Err(_) => {
+                    if let Err(e) = socket.send(&keepalive).await {
+                        tracing::trace!("UDP keepalive send error: {}", e);
+                    }
                 }
             }
         }
@@ -657,6 +751,9 @@ struct RecvCfg {
     playback_cap: Arc<AtomicU32>,
     speaking: Arc<Mutex<HashMap<String, SpeakerStat>>>,
     playback_prod: audio::AudioProducer,
+    /// Confirmed-inbound flag shared with the re-hello task and the UI.
+    registered: Arc<AtomicBool>,
+    udp_token: u64,
 }
 
 fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
@@ -687,20 +784,34 @@ fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
             };
             cfg.bytes_rx.fetch_add(len as u64, Ordering::Relaxed);
 
+            // Late hello ACK (initial handshake timed out, re-hello task running).
+            if !cfg.registered.load(Ordering::Relaxed)
+                && decode_udp_hello(&buf[..len]) == Some(cfg.udp_token)
+            {
+                cfg.registered.store(true, Ordering::Relaxed);
+                continue;
+            }
+
             let Some((sequence, encrypted)) = VoicePacket::parse_voice_data(&buf[..len]) else {
                 continue;
             };
+            // Any inbound voice proves the relay knows our address.
+            if !cfg.registered.load(Ordering::Relaxed) {
+                cfg.registered.store(true, Ordering::Relaxed);
+            }
             if !decrypt_packet(&cfg.cipher, encrypted, &mut decrypt_buf) {
                 continue;
             }
-            let Some((opus_offset, name_len)) = parse_decrypted_name(&decrypt_buf, &cfg.speaking) else {
+            let Some((opus_offset, name_len)) = parse_decrypted_name(&decrypt_buf, &cfg.speaking)
+            else {
                 continue;
             };
             jitter.push(sequence, &decrypt_buf[opus_offset..]);
             let _ = name_len;
 
             // Sync playback buffer cap with jitter estimate
-            let jitter_cap = ((jitter.jitter_ms() * 2.0 / jitter.expected_interval_ms).ceil() as usize)
+            let jitter_cap = ((jitter.jitter_ms() * 2.0 / jitter.expected_interval_ms).ceil()
+                as usize)
                 .clamp(config::JITTER_BUF_MIN, config::JITTER_BUF_MAX);
             let cap_samples = (jitter_cap * config::FRAME_SIZE) as u32;
             cfg.playback_cap.store(
@@ -708,7 +819,13 @@ fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
                 Ordering::Relaxed,
             );
 
-            drain_jitter_to_playback(&mut jitter, &mut decoder, &mut opus_swap, &cfg.stats, &mut cfg.playback_prod);
+            drain_jitter_to_playback(
+                &mut jitter,
+                &mut decoder,
+                &mut opus_swap,
+                &cfg.stats,
+                &mut cfg.playback_prod,
+            );
         }
     })
 }
@@ -821,6 +938,7 @@ pub struct VoiceHandle {
     recv_handle: tokio::task::JoinHandle<()>,
     stats: Arc<NetworkStats>,
     stop: Arc<AtomicBool>,
+    registered: Arc<AtomicBool>,
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     speaking: Arc<Mutex<HashMap<String, SpeakerStat>>>,
@@ -832,7 +950,16 @@ pub struct VoiceHandle {
 impl VoiceHandle {
     /// Returns `(loss_percent, tier_name)` for display in the TUI.
     pub fn quality_info(&self) -> (u8, &'static str) {
-        (self.stats.loss_percent(), self.stats.current_tier().as_str())
+        (
+            self.stats.loss_percent(),
+            self.stats.current_tier().as_str(),
+        )
+    }
+
+    /// Whether the server confirmed our UDP registration (hello ACK or any
+    /// inbound voice). `false` means we can send but will not hear anyone.
+    pub fn is_registered(&self) -> bool {
+        self.registered.load(Ordering::Relaxed)
     }
 
     /// Returns names of speakers active within the last 300ms.
@@ -878,7 +1005,11 @@ impl VoiceHandle {
                 snap.bytes_rx = cur_rx;
                 snap.instant = Instant::now();
             }
-            (snap.tx_rate / 1024.0, snap.rx_rate / 1024.0, cur_tx + cur_rx)
+            (
+                snap.tx_rate / 1024.0,
+                snap.rx_rate / 1024.0,
+                cur_tx + cur_rx,
+            )
         } else {
             (0.0, 0.0, cur_tx + cur_rx)
         }
@@ -896,6 +1027,50 @@ impl Drop for VoiceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── re-hello ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rehello_resends_until_registered_then_exits() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(server_addr).await.unwrap();
+
+        let registered = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = spawn_rehello_task(Arc::new(client), 42, registered.clone(), stop.clone());
+
+        // The loop must keep sending hellos while unregistered.
+        let mut buf = [0u8; 16];
+        let (len, _) = tokio::time::timeout(Duration::from_secs(5), server.recv_from(&mut buf))
+            .await
+            .expect("no re-hello arrived")
+            .unwrap();
+        assert_eq!(decode_udp_hello(&buf[..len]), Some(42));
+
+        // Once registration is confirmed the task exits on its own.
+        registered.store(true, Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(15), handle)
+            .await
+            .expect("re-hello task did not exit after registration")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rehello_exits_on_stop() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(server.local_addr().unwrap()).await.unwrap();
+
+        let registered = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(true));
+        let handle = spawn_rehello_task(Arc::new(client), 7, registered, stop);
+        tokio::time::timeout(Duration::from_secs(15), handle)
+            .await
+            .expect("re-hello task did not exit on stop")
+            .unwrap();
+    }
 
     // ── seq_before ───────────────────────────────────────────────────
 
@@ -932,7 +1107,12 @@ mod tests {
 
     #[test]
     fn quality_tier_u8_roundtrip() {
-        for tier in [QualityTier::High, QualityTier::Medium, QualityTier::Low, QualityTier::Minimum] {
+        for tier in [
+            QualityTier::High,
+            QualityTier::Medium,
+            QualityTier::Low,
+            QualityTier::Minimum,
+        ] {
             assert_eq!(QualityTier::from_u8(tier.to_u8()), tier);
         }
     }
@@ -1019,7 +1199,7 @@ mod tests {
         // Window should be reset — not enough data to finalize again
         stats.record_received();
         stats.maybe_finalize_window(); // should not change since total < window
-        // Still reports previous window's result
+                                       // Still reports previous window's result
         assert_eq!(stats.loss_percent(), 0);
     }
 

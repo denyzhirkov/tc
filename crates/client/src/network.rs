@@ -20,6 +20,7 @@ const MSG_QUEUE_CAPACITY: usize = 256;
 #[derive(Clone)]
 pub struct ServerConnection {
     tx: mpsc::Sender<ClientMessage>,
+    peer_addr: std::net::SocketAddr,
 }
 
 impl ServerConnection {
@@ -27,6 +28,13 @@ impl ServerConnection {
         self.tx
             .try_send(msg)
             .map_err(|_| anyhow::anyhow!("connection closed"))
+    }
+
+    /// Actual resolved address of the TCP connection. The UDP voice target is
+    /// derived from this IP (not from re-resolving the server string) so both
+    /// transports always use the same address family and host.
+    pub fn peer_addr(&self) -> std::net::SocketAddr {
+        self.peer_addr
     }
 }
 
@@ -45,6 +53,7 @@ pub async fn connect(
     let stream = TcpStream::connect(&addr)
         .await
         .with_context(|| format!("failed to connect to {}", addr))?;
+    let peer_addr = stream.peer_addr()?;
 
     tofu.set_current_server(&addr);
     let connector = tls::tls_connector(tofu);
@@ -93,13 +102,16 @@ pub async fn connect(
         }
     });
 
-    Ok((ServerConnection { tx: cmd_tx }, msg_rx))
+    Ok((
+        ServerConnection {
+            tx: cmd_tx,
+            peer_addr,
+        },
+        msg_rx,
+    ))
 }
 
-async fn writer_task<W: AsyncWrite + Unpin>(
-    mut writer: W,
-    mut rx: mpsc::Receiver<ClientMessage>,
-) {
+async fn writer_task<W: AsyncWrite + Unpin>(mut writer: W, mut rx: mpsc::Receiver<ClientMessage>) {
     while let Some(msg) = rx.recv().await {
         if let Err(e) = write_tcp_frame(&mut writer, &msg).await {
             tracing::debug!("writer stopped: {}", e);
@@ -108,10 +120,7 @@ async fn writer_task<W: AsyncWrite + Unpin>(
     }
 }
 
-async fn reader_task<R: AsyncRead + Unpin>(
-    mut reader: R,
-    tx: mpsc::Sender<Option<ServerMessage>>,
-) {
+async fn reader_task<R: AsyncRead + Unpin>(mut reader: R, tx: mpsc::Sender<Option<ServerMessage>>) {
     let mut buf = vec![0u8; config::TCP_READ_BUF];
     let mut pending = BytesMut::new();
 
@@ -128,7 +137,10 @@ async fn reader_task<R: AsyncRead + Unpin>(
         pending.extend_from_slice(&buf[..n]);
 
         if pending.len() > config::MAX_PENDING_BUF {
-            tracing::warn!("pending buffer overflow ({} bytes), disconnecting", pending.len());
+            tracing::warn!(
+                "pending buffer overflow ({} bytes), disconnecting",
+                pending.len()
+            );
             let _ = tx.try_send(None);
             return;
         }
@@ -255,7 +267,10 @@ mod tests {
     fn server_connection_send_closed_channel() {
         let (tx, rx) = mpsc::channel::<ClientMessage>(1);
         drop(rx);
-        let conn = ServerConnection { tx };
+        let conn = ServerConnection {
+            tx,
+            peer_addr: "127.0.0.1:7100".parse().unwrap(),
+        };
         let result = conn.send(ClientMessage::Ping);
         assert!(result.is_err());
     }

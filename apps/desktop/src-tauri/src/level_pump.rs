@@ -49,6 +49,7 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
                     tx_kbps: snap.tx_rate / 1024.0,
                     rx_kbps: snap.rx_rate / 1024.0,
                     muted,
+                    registered: snap.registered,
                 },
             );
         }

@@ -100,6 +100,18 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
       if (state.status) state.status.muted = p.muted;
     }),
     on("log", (p) => pushLog(p.text, "system")),
+    on("dev_log", (p) => {
+      if (!state.devLogs) return;
+      const d = new Date(p.ts_ms);
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      const ms = String(d.getMilliseconds()).padStart(3, "0");
+      pushLog(
+        `${hh}:${mm}:${ss}.${ms} ${p.level.padEnd(5)} ${p.target} — ${p.message}`,
+        "devlog",
+      );
+    }),
     on("quick_join", () => pushLog("hotkey: quick_join (no target set)", "system")),
     on("invite", async (p) => {
       pushLog(`invite: ${p.addr}${p.channel ? " #" + p.channel : ""}`, "system");

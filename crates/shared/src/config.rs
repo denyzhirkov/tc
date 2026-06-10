@@ -22,6 +22,13 @@ pub const MAX_UDP_PACKET: usize = 1500;
 pub const UDP_HELLO_RETRIES: u32 = 3;
 /// Interval between UDP hello retries (milliseconds).
 pub const UDP_HELLO_INTERVAL_MS: u64 = 200;
+/// Initial delay of the background re-hello loop after a failed handshake (milliseconds).
+pub const UDP_REHELLO_BASE_MS: u64 = 1000;
+/// Cap for the re-hello backoff (milliseconds).
+pub const UDP_REHELLO_MAX_MS: u64 = 5000;
+/// Send a UDP keepalive after this much voice-send silence (seconds).
+/// Must stay below typical NAT/stateful-firewall UDP timeouts (~30–60 s).
+pub const UDP_KEEPALIVE_INTERVAL_SECS: u64 = 20;
 /// Max accumulated unparsed TCP data per client (bytes). Disconnect on overflow.
 pub const MAX_PENDING_BUF: usize = 2 * MAX_FRAME_SIZE;
 /// Interval between TCP heartbeat pings (seconds).

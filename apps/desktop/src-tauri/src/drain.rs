@@ -126,7 +126,10 @@ async fn reconnect_loop(
         emit(
             app,
             "connection_state",
-            ConnState::Reconnecting { attempt, delay_secs },
+            ConnState::Reconnecting {
+                attempt,
+                delay_secs,
+            },
         );
         tokio::time::sleep(Duration::from_secs(delay_secs)).await;
 
@@ -180,7 +183,9 @@ async fn handle(
             emit(
                 app,
                 "connection_state",
-                ConnState::Connected { server: server_addr.to_string() },
+                ConnState::Connected {
+                    server: server_addr.to_string(),
+                },
             );
         }
         ServerMessage::ChannelCreated { channel_id } => {
@@ -235,10 +240,13 @@ async fn handle(
             emit(
                 app,
                 "joined_channel",
-                JoinedPayload { channel_id: channel_id.clone(), participants },
+                JoinedPayload {
+                    channel_id: channel_id.clone(),
+                    participants,
+                },
             );
 
-            spawn_voice(app.clone(), core.clone(), server_addr.to_string()).await;
+            spawn_voice(app.clone(), core.clone()).await;
         }
         ServerMessage::PeerJoined { peer_name } => {
             maybe_notify(app, core, "tc_", &format!("{} joined", peer_name)).await;
@@ -275,7 +283,11 @@ async fn handle(
             maybe_notify(app, core, &from, &text).await;
             emit(app, "chat_message", ChatPayload { from, text });
         }
-        ServerMessage::DirectMessage { from_pubkey, from_name, text } => {
+        ServerMessage::DirectMessage {
+            from_pubkey,
+            from_name,
+            text,
+        } => {
             let pk_hex = hex::encode(&from_pubkey);
             {
                 let mut c = core.lock().await;
@@ -332,12 +344,20 @@ async fn handle(
 }
 
 /// Forward a `StartParams` to the voice actor using params stashed in `pending_join`.
-async fn spawn_voice(app: AppHandle, core: Arc<Mutex<AppCore>>, server_addr: String) {
+async fn spawn_voice(app: AppHandle, core: Arc<Mutex<AppCore>>) {
     let (params, voice) = {
         let mut c = core.lock().await;
-        let Some(p) = c.pending_join.take() else { return };
+        let Some(p) = c.pending_join.take() else {
+            return;
+        };
+        // UDP must target the same IP the TCP session uses, or the server
+        // rejects the hello (source-IP check) and inbound voice never starts.
+        let Some(server_ip) = c.conn.as_ref().map(|conn| conn.peer_addr().ip()) else {
+            tracing::warn!("voice start skipped: no live connection");
+            return;
+        };
         let params = StartParams {
-            server_addr,
+            server_ip,
             channel_id: p.channel_id.clone(),
             udp_token: p.udp_token,
             voice_key: p.voice_key,
@@ -357,7 +377,9 @@ async fn spawn_voice(app: AppHandle, core: Arc<Mutex<AppCore>>, server_addr: Str
         emit(
             &app,
             "error",
-            ErrorPayload { message: format!("voice failed: {}", e) },
+            ErrorPayload {
+                message: format!("voice failed: {}", e),
+            },
         );
     }
 }

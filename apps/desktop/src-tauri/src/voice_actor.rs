@@ -13,7 +13,8 @@ use tc_shared::ChannelId;
 use tokio::sync::{mpsc, oneshot};
 
 pub struct StartParams {
-    pub server_addr: String,
+    /// Resolved IP of the live TCP connection — the UDP voice target.
+    pub server_ip: std::net::IpAddr,
     pub channel_id: ChannelId,
     pub udp_token: u64,
     pub voice_key: Vec<u8>,
@@ -35,9 +36,10 @@ pub struct VoiceSnapshot {
     pub speaker_levels: Vec<(String, f32)>,
     pub tx_rate: f64,
     pub rx_rate: f64,
-    pub bytes_total: u64,
     /// 0.0–1.0 RMS of the most recent input frame.
     pub input_peak: f32,
+    /// Server confirmed our UDP registration; `false` = sending but deaf.
+    pub registered: bool,
 }
 
 impl VoiceSnapshot {
@@ -49,8 +51,8 @@ impl VoiceSnapshot {
             speaker_levels: Vec::new(),
             tx_rate: 0.0,
             rx_rate: 0.0,
-            bytes_total: 0,
             input_peak: 0.0,
+            registered: true,
         }
     }
 }
@@ -88,7 +90,9 @@ impl VoiceManager {
             .send(Cmd::Start(params, reply_tx))
             .await
             .map_err(|_| "voice actor gone".to_string())?;
-        reply_rx.await.map_err(|_| "voice actor dropped reply".to_string())?
+        reply_rx
+            .await
+            .map_err(|_| "voice actor dropped reply".to_string())?
     }
 
     pub async fn stop(&self) {
@@ -112,7 +116,7 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                 // Drop any prior handle first.
                 handle = None;
                 let res = voice::start_voice(
-                    &p.server_addr,
+                    p.server_ip,
                     p.channel_id,
                     p.udp_token,
                     p.muted,
@@ -142,7 +146,7 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                 let snap = match handle.as_ref() {
                     Some(h) => {
                         let (loss, tier) = h.quality_info();
-                        let (tx_rate, rx_rate, bytes_total) = h.traffic_info();
+                        let (tx_rate, rx_rate, _bytes_total) = h.traffic_info();
                         VoiceSnapshot {
                             active: true,
                             loss_percent: loss,
@@ -150,8 +154,8 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                             speaker_levels: h.speaker_levels(),
                             tx_rate,
                             rx_rate,
-                            bytes_total,
                             input_peak: h.input_peak(),
+                            registered: h.is_registered(),
                         }
                     }
                     None => VoiceSnapshot::idle(),

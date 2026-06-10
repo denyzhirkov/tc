@@ -118,7 +118,9 @@ impl IpRateLimiter {
         before - map.len()
     }
 
+    /// Test-only inspection hook; no `is_empty` needed.
     #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.map.lock().unwrap().len()
     }
@@ -186,7 +188,7 @@ mod tests {
         let ip: IpAddr = "127.0.0.1".parse().unwrap();
         l.track(ip);
         l.track(ip); // simulate 2 conns from same IP
-        // Across both conns, only 3 cmds allowed before lockout.
+                     // Across both conns, only 3 cmds allowed before lockout.
         assert!(l.check(ip));
         assert!(l.check(ip));
         assert!(l.check(ip));

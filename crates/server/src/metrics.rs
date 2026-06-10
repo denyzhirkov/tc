@@ -19,6 +19,8 @@ pub struct Metrics {
     pub udp_hellos_ok: AtomicU64,
     /// UDP hellos with invalid/expired tokens.
     pub udp_hellos_invalid: AtomicU64,
+    /// Keepalive packets from idle clients (hello with token 0).
+    pub udp_keepalives: AtomicU64,
     /// Voice packets parsed and forwarded (counted once per inbound packet, not per recipient).
     pub udp_voice_relayed: AtomicU64,
     /// Voice packets dropped due to malformed framing.
@@ -52,6 +54,7 @@ impl Metrics {
             udp_bytes_in: self.udp_bytes_in.load(Ordering::Relaxed),
             udp_hellos_ok: self.udp_hellos_ok.load(Ordering::Relaxed),
             udp_hellos_invalid: self.udp_hellos_invalid.load(Ordering::Relaxed),
+            udp_keepalives: self.udp_keepalives.load(Ordering::Relaxed),
             udp_voice_relayed: self.udp_voice_relayed.load(Ordering::Relaxed),
             udp_voice_malformed: self.udp_voice_malformed.load(Ordering::Relaxed),
             udp_bytes_relayed: self.udp_bytes_relayed.load(Ordering::Relaxed),
@@ -70,6 +73,7 @@ pub struct Snapshot {
     pub udp_bytes_in: u64,
     pub udp_hellos_ok: u64,
     pub udp_hellos_invalid: u64,
+    pub udp_keepalives: u64,
     pub udp_voice_relayed: u64,
     pub udp_voice_malformed: u64,
     pub udp_bytes_relayed: u64,
@@ -87,14 +91,27 @@ impl Snapshot {
             udp_packets_in: self.udp_packets_in.saturating_sub(prev.udp_packets_in),
             udp_bytes_in: self.udp_bytes_in.saturating_sub(prev.udp_bytes_in),
             udp_hellos_ok: self.udp_hellos_ok.saturating_sub(prev.udp_hellos_ok),
-            udp_hellos_invalid: self.udp_hellos_invalid.saturating_sub(prev.udp_hellos_invalid),
-            udp_voice_relayed: self.udp_voice_relayed.saturating_sub(prev.udp_voice_relayed),
-            udp_voice_malformed: self.udp_voice_malformed.saturating_sub(prev.udp_voice_malformed),
-            udp_bytes_relayed: self.udp_bytes_relayed.saturating_sub(prev.udp_bytes_relayed),
+            udp_hellos_invalid: self
+                .udp_hellos_invalid
+                .saturating_sub(prev.udp_hellos_invalid),
+            udp_keepalives: self.udp_keepalives.saturating_sub(prev.udp_keepalives),
+            udp_voice_relayed: self
+                .udp_voice_relayed
+                .saturating_sub(prev.udp_voice_relayed),
+            udp_voice_malformed: self
+                .udp_voice_malformed
+                .saturating_sub(prev.udp_voice_malformed),
+            udp_bytes_relayed: self
+                .udp_bytes_relayed
+                .saturating_sub(prev.udp_bytes_relayed),
             udp_fanout_total: self.udp_fanout_total.saturating_sub(prev.udp_fanout_total),
             tcp_sends: self.tcp_sends.saturating_sub(prev.tcp_sends),
-            tcp_broadcast_sends: self.tcp_broadcast_sends.saturating_sub(prev.tcp_broadcast_sends),
-            tcp_drops_queue_full: self.tcp_drops_queue_full.saturating_sub(prev.tcp_drops_queue_full),
+            tcp_broadcast_sends: self
+                .tcp_broadcast_sends
+                .saturating_sub(prev.tcp_broadcast_sends),
+            tcp_drops_queue_full: self
+                .tcp_drops_queue_full
+                .saturating_sub(prev.tcp_drops_queue_full),
             tcp_rate_limited: self.tcp_rate_limited.saturating_sub(prev.tcp_rate_limited),
         }
     }
