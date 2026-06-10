@@ -581,6 +581,12 @@ mod tests {
 
         let payload = b"voice-fanout-probe";
 
+        // Wait for write-readiness first. The relay's recv socket is always
+        // ready by the time it sends; a freshly bound socket is not, and on
+        // Windows the sequential fallback's non-blocking `try_send_to` would
+        // hit WouldBlock and silently drop the packet, making the test flaky.
+        sender.writable().await.unwrap();
+
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let mut batch = BatchSender::new();
