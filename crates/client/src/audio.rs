@@ -8,7 +8,9 @@ use cpal::Stream;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use tc_shared::config;
 
 /// SPSC ring buffer halves for lock-free audio transport.
@@ -111,14 +113,21 @@ impl SincResampler {
             .map_err(|e| anyhow::anyhow!("resampler init: {}", e))?;
         let input_buf = inner.input_buffer_allocate(true);
         let output_buf = inner.output_buffer_allocate(true);
-        Ok(Self { inner, input_buf, output_buf })
+        Ok(Self {
+            inner,
+            input_buf,
+            output_buf,
+        })
     }
 
     /// Resample a chunk. Returns a slice into the internal output buffer.
     fn process(&mut self, input: &[f32]) -> &[f32] {
         let n = input.len().min(self.input_buf[0].len());
         self.input_buf[0][..n].copy_from_slice(&input[..n]);
-        match self.inner.process_into_buffer(&self.input_buf, &mut self.output_buf, None) {
+        match self
+            .inner
+            .process_into_buffer(&self.input_buf, &mut self.output_buf, None)
+        {
             Ok((_, out_len)) => &self.output_buf[0][..out_len],
             Err(_) => {
                 // Fallback: return empty on error (caller pads with zeros)
@@ -196,8 +205,10 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, AudioConsumer
     let params = resolve_stream_params(&device, true)?;
     tracing::info!(
         "input: {}ch {}Hz (need {}ch {}Hz)",
-        params.channels, params.sample_rate,
-        config::AUDIO_CHANNELS, config::SAMPLE_RATE
+        params.channels,
+        params.sample_rate,
+        config::AUDIO_CHANNELS,
+        config::SAMPLE_RATE
     );
 
     let device_channels = params.channels;
@@ -221,7 +232,11 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, AudioConsumer
     let mut sinc_resampler = if need_resample {
         match SincResampler::new(device_rate, config::SAMPLE_RATE, device_frame_size) {
             Ok(r) => {
-                tracing::info!("using sinc resampler for capture ({}→{}Hz)", device_rate, config::SAMPLE_RATE);
+                tracing::info!(
+                    "using sinc resampler for capture ({}→{}Hz)",
+                    device_rate,
+                    config::SAMPLE_RATE
+                );
                 Some(r)
             }
             Err(e) => {
@@ -312,8 +327,10 @@ pub fn start_playback(
     let params = resolve_stream_params(&device, false)?;
     tracing::info!(
         "output: {}ch {}Hz (need {}ch {}Hz)",
-        params.channels, params.sample_rate,
-        config::AUDIO_CHANNELS, config::SAMPLE_RATE
+        params.channels,
+        params.sample_rate,
+        config::AUDIO_CHANNELS,
+        config::SAMPLE_RATE
     );
 
     let device_channels = params.channels;
@@ -350,7 +367,12 @@ pub fn start_playback(
                     }
                 }
                 if need_resample {
-                    resample_into(&temp_frame[..n], config::SAMPLE_RATE, device_rate, &mut resample_out);
+                    resample_into(
+                        &temp_frame[..n],
+                        config::SAMPLE_RATE,
+                        device_rate,
+                        &mut resample_out,
+                    );
                     playback_buf.extend(resample_out.iter().copied());
                 } else {
                     playback_buf.extend(temp_frame[..n].iter().copied());

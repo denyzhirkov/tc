@@ -71,7 +71,11 @@ impl TofuState {
 
     /// Trust a specific server with a new fingerprint (for /trust command).
     pub fn trust_server(&self, addr: &str, fingerprint: &str) {
-        self.inner.lock().unwrap().trusted.insert(addr.to_string(), fingerprint.to_string());
+        self.inner
+            .lock()
+            .unwrap()
+            .trusted
+            .insert(addr.to_string(), fingerprint.to_string());
     }
 
     /// Remove a trusted server (for /trust reset).
@@ -201,7 +205,10 @@ mod tests {
 
     #[test]
     fn fingerprint_different_certs() {
-        assert_ne!(cert_fingerprint(&dummy_cert()), cert_fingerprint(&another_cert()));
+        assert_ne!(
+            cert_fingerprint(&dummy_cert()),
+            cert_fingerprint(&another_cert())
+        );
     }
 
     // ── TofuState API ────────────────────────────────────────────────

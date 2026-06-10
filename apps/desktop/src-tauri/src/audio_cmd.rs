@@ -20,7 +20,10 @@ pub struct DeviceInfo {
 
 impl From<audio::DeviceInfo> for DeviceInfo {
     fn from(d: audio::DeviceInfo) -> Self {
-        Self { index: d.index, name: d.name }
+        Self {
+            index: d.index,
+            name: d.name,
+        }
     }
 }
 
@@ -131,7 +134,9 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
                 for frame in data.chunks_mut(channels) {
                     let s = (phase * two_pi).sin() * amp;
                     phase = (phase + freq / sample_rate) % 1.0;
-                    for ch in frame { *ch = s; }
+                    for ch in frame {
+                        *ch = s;
+                    }
                 }
             },
             |e| tracing::warn!("test stream error: {}", e),
@@ -143,7 +148,9 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
                 for frame in data.chunks_mut(channels) {
                     let s = ((phase * two_pi).sin() * amp * i16::MAX as f32) as i16;
                     phase = (phase + freq / sample_rate) % 1.0;
-                    for ch in frame { *ch = s; }
+                    for ch in frame {
+                        *ch = s;
+                    }
                 }
             },
             |e| tracing::warn!("test stream error: {}", e),
@@ -156,7 +163,9 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
                     let s = ((phase * two_pi).sin() * amp * i16::MAX as f32) as i16;
                     let u = (s as i32 + i16::MAX as i32 + 1) as u16;
                     phase = (phase + freq / sample_rate) % 1.0;
-                    for ch in frame { *ch = u; }
+                    for ch in frame {
+                        *ch = u;
+                    }
                 }
             },
             |e| tracing::warn!("test stream error: {}", e),

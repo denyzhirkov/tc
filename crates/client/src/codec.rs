@@ -28,8 +28,7 @@ impl OpusEncoder {
         fec: bool,
         loss_percent: u8,
     ) -> Result<()> {
-        self.encoder
-            .set_bitrate(Bitrate::BitsPerSecond(bitrate))?;
+        self.encoder.set_bitrate(Bitrate::BitsPerSecond(bitrate))?;
         self.encoder.set_complexity(complexity)?;
         self.encoder.set_inband_fec(fec)?;
         self.encoder.set_packet_loss_perc(loss_percent)?;
@@ -130,7 +129,10 @@ mod tests {
         assert_eq!(decoded.len(), config::FRAME_SIZE);
         // Lossy codec — check that the signal is roughly the same shape
         let correlation: f32 = pcm.iter().zip(decoded.iter()).map(|(a, b)| a * b).sum();
-        assert!(correlation > 0.0, "decoded signal should correlate with input");
+        assert!(
+            correlation > 0.0,
+            "decoded signal should correlate with input"
+        );
     }
 
     #[test]

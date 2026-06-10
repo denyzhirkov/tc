@@ -29,7 +29,8 @@ impl Identity {
             return Self::load_from(&path);
         }
         let id = Self::generate();
-        id.save_to(&path).with_context(|| format!("write {}", path.display()))?;
+        id.save_to(&path)
+            .with_context(|| format!("write {}", path.display()))?;
         tracing::info!(path = %path.display(), "generated new identity");
         Ok(id)
     }
@@ -40,12 +41,17 @@ impl Identity {
     }
 
     fn load_from(path: &PathBuf) -> Result<Self> {
-        let mut file = fs::File::open(path)
-            .with_context(|| format!("open {}", path.display()))?;
+        let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
         let mut buf = [0u8; 32];
-        file.read_exact(&mut buf)
-            .with_context(|| format!("identity file must be exactly 32 bytes ({})", path.display()))?;
-        Ok(Self { signing: SigningKey::from_bytes(&buf) })
+        file.read_exact(&mut buf).with_context(|| {
+            format!(
+                "identity file must be exactly 32 bytes ({})",
+                path.display()
+            )
+        })?;
+        Ok(Self {
+            signing: SigningKey::from_bytes(&buf),
+        })
     }
 
     fn save_to(&self, path: &PathBuf) -> Result<()> {

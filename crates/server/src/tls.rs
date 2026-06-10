@@ -26,8 +26,8 @@ pub fn load_or_generate_tls_config() -> Result<Arc<ServerConfig>> {
         tracing::info!("loading TLS cert from {}", cert_path.display());
         let cert_pem = std::fs::read(&cert_path)
             .with_context(|| format!("reading {}", cert_path.display()))?;
-        let key_pem = std::fs::read(&key_path)
-            .with_context(|| format!("reading {}", key_path.display()))?;
+        let key_pem =
+            std::fs::read(&key_path).with_context(|| format!("reading {}", key_path.display()))?;
         (cert_pem, key_pem)
     } else {
         tracing::info!("generating self-signed TLS certificate");

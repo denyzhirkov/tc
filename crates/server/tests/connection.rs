@@ -3,9 +3,7 @@ use std::sync::Arc;
 use bytes::{Buf, BytesMut};
 use tokio::io::AsyncReadExt;
 
-use tc_shared::{
-    extract_frames, try_decode_frame, write_tcp_frame, ClientMessage, ServerMessage,
-};
+use tc_shared::{extract_frames, try_decode_frame, write_tcp_frame, ClientMessage, ServerMessage};
 
 /// Accept-all TLS certificate verifier for testing.
 #[derive(Debug)]
@@ -77,8 +75,7 @@ async fn tls_handshake_and_protocol_exchange() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         // Generate self-signed cert
-        let certified =
-            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let cert_der = certified.cert.der().clone();
         let key_der = certified.key_pair.serialize_der();
 

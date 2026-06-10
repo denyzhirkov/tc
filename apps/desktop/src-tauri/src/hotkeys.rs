@@ -85,7 +85,8 @@ pub async fn set_hotkey(
     action: String,
     accel: String,
 ) -> Result<(), String> {
-    let parsed = HotkeyAction::parse(&action).ok_or_else(|| format!("unknown action: {}", action))?;
+    let parsed =
+        HotkeyAction::parse(&action).ok_or_else(|| format!("unknown action: {}", action))?;
 
     // Unregister whatever this action was previously bound to, so a rebind
     // (or retry after a register failure) can claim the same key.
@@ -112,10 +113,13 @@ pub async fn unset_hotkey(
     state: CoreState<'_>,
     action: String,
 ) -> Result<(), String> {
-    let parsed = HotkeyAction::parse(&action).ok_or_else(|| format!("unknown action: {}", action))?;
+    let parsed =
+        HotkeyAction::parse(&action).ok_or_else(|| format!("unknown action: {}", action))?;
     let mut c = state.lock().await;
     if let Some(accel) = c.hotkeys.remove(parsed.as_str()) {
-        let shortcut: Shortcut = accel.parse().map_err(|e| format!("invalid accelerator: {}", e))?;
+        let shortcut: Shortcut = accel
+            .parse()
+            .map_err(|e| format!("invalid accelerator: {}", e))?;
         let _ = app.global_shortcut().unregister(shortcut);
     }
     c.save();
@@ -125,7 +129,10 @@ pub async fn unset_hotkey(
 #[tauri::command]
 pub async fn list_hotkeys(state: CoreState<'_>) -> Result<Vec<(String, String)>, String> {
     let c = state.lock().await;
-    Ok(c.hotkeys.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+    Ok(c.hotkeys
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect())
 }
 
 /// Register a single hotkey synchronously (no AppCore mutation).

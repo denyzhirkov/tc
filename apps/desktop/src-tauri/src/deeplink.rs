@@ -28,7 +28,11 @@ pub fn parse_invite(raw: &str) -> Option<Invite> {
 
     // Path looks like "/lobby" — strip the leading slash and any trailing one.
     let trimmed = url.path().trim_matches('/').to_string();
-    let channel = if trimmed.is_empty() { None } else { Some(trimmed) };
+    let channel = if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    };
 
     Some(Invite { addr, channel })
 }
@@ -58,7 +62,10 @@ mod tests {
     #[test]
     fn parses_host_only() {
         let i = parse_invite("tc://example.com").unwrap();
-        assert_eq!(i.addr, format!("example.com:{}", tc_shared::config::TCP_PORT));
+        assert_eq!(
+            i.addr,
+            format!("example.com:{}", tc_shared::config::TCP_PORT)
+        );
         assert_eq!(i.channel, None);
     }
 
@@ -78,7 +85,10 @@ mod tests {
     #[test]
     fn parses_host_channel() {
         let i = parse_invite("tc://example.com/pub-room").unwrap();
-        assert_eq!(i.addr, format!("example.com:{}", tc_shared::config::TCP_PORT));
+        assert_eq!(
+            i.addr,
+            format!("example.com:{}", tc_shared::config::TCP_PORT)
+        );
         assert_eq!(i.channel.as_deref(), Some("pub-room"));
     }
 

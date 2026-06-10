@@ -150,7 +150,8 @@ async fn start_server() -> TestServer {
     let udp_state = state.clone();
     let udp_metrics = state.metrics().clone();
     let udp_handle = tokio::spawn(async move {
-        let _ = tc_server::udp::run_udp_relay(udp_state, udp_metrics, udp_addr.to_string(), 1).await;
+        let _ =
+            tc_server::udp::run_udp_relay(udp_state, udp_metrics, udp_addr.to_string(), 1).await;
     });
 
     // Wait for TCP server to be ready (retry connect)
@@ -295,25 +296,19 @@ async fn two_clients_chat_and_voice() {
         let hello_a = encode_udp_hello(token_a);
         udp_a.send(&hello_a).await.unwrap();
         let mut ack_buf = [0u8; 64];
-        let n = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            udp_a.recv(&mut ack_buf),
-        )
-        .await
-        .expect("UDP hello ACK timed out for A")
-        .unwrap();
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), udp_a.recv(&mut ack_buf))
+            .await
+            .expect("UDP hello ACK timed out for A")
+            .unwrap();
         assert_eq!(n, hello_a.len(), "ACK should echo the hello packet");
 
         // Send UDP hello for B
         let hello_b = encode_udp_hello(token_b);
         udp_b.send(&hello_b).await.unwrap();
-        let n = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            udp_b.recv(&mut ack_buf),
-        )
-        .await
-        .expect("UDP hello ACK timed out for B")
-        .unwrap();
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), udp_b.recv(&mut ack_buf))
+            .await
+            .expect("UDP hello ACK timed out for B")
+            .unwrap();
         assert_eq!(n, hello_b.len(), "ACK should echo the hello packet");
 
         // ── Voice: A sends voice packet, B receives it via relay ──
