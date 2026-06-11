@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.13] — 2026-06-11
+
+### Fixed
+- Jitter buffer wedged permanently after a forward sequence gap longer than
+  the ring (a ~300 ms loss burst, e.g. the deaf window while UDP registration
+  re-heals): every later packet was dropped as "too far ahead", playback went
+  silent forever while the speaking indicator kept animating. The buffer now
+  resyncs onto the new stream position after `JITTER_RESYNC_AFTER` consecutive
+  out-of-window packets; a single stray packet still cannot reset a healthy
+  stream. Client-only fix.
+
 ## [1.9.12] — 2026-06-11
 
 ### Fixed

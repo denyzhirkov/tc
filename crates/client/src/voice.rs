@@ -162,6 +162,8 @@ struct JitterBuffer {
     expected_interval_ms: f64,
     /// Counter for periodic adaptation.
     packets_since_adapt: u32,
+    /// Consecutive packets that landed beyond the ring (forward gap).
+    out_of_window: u32,
 }
 
 impl JitterBuffer {
@@ -180,6 +182,7 @@ impl JitterBuffer {
             last_arrival: None,
             expected_interval_ms: (config::FRAME_SIZE as f64 / config::SAMPLE_RATE as f64) * 1000.0, // 20ms
             packets_since_adapt: 0,
+            out_of_window: 0,
         }
     }
 
@@ -208,10 +211,29 @@ impl JitterBuffer {
             }
         }
 
-        // Drop packets too far ahead (would alias in the ring)
+        // Packets too far ahead would alias in the ring. One stray packet is
+        // dropped, but a sustained forward gap (loss burst / deaf window
+        // longer than the ring, e.g. while UDP registration was re-healing)
+        // means the stream has moved on and next_seq can never catch up —
+        // without a resync every later packet is dropped forever while the
+        // speaking indicator (updated before push) keeps animating.
         let ahead = seq.wrapping_sub(self.next_seq) as usize;
         if ahead >= self.capacity {
-            return;
+            self.out_of_window += 1;
+            if self.out_of_window >= config::JITTER_RESYNC_AFTER {
+                tracing::debug!(
+                    "jitter buffer: forward gap resync (seq={}, next_seq={}, ahead={})",
+                    seq,
+                    self.next_seq,
+                    ahead
+                );
+                self.reset_to(seq);
+                // fall through and store this packet at the new position
+            } else {
+                return;
+            }
+        } else {
+            self.out_of_window = 0;
         }
 
         // Track inter-arrival jitter (RFC 3550 style)
@@ -317,7 +339,8 @@ impl JitterBuffer {
     }
 
     /// Reset the buffer to accept a new stream starting at the given sequence.
-    /// Called when a large backward sequence jump is detected (peer rejoined).
+    /// Called on a large backward jump (peer rejoined) or a sustained forward
+    /// gap (loss burst longer than the ring).
     fn reset_to(&mut self, seq: u32) {
         self.next_seq = seq;
         for slot in &mut self.slots {
@@ -326,6 +349,7 @@ impl JitterBuffer {
         self.jitter_ms = 0.0;
         self.last_arrival = None;
         self.packets_since_adapt = 0;
+        self.out_of_window = 0;
     }
 
     /// Current jitter estimate in milliseconds.
@@ -1527,6 +1551,51 @@ mod tests {
         // Buffer should have auto-reset
         assert!(matches!(jb.pop(&mut out), PopResult::Packet));
         assert_eq!(out, vec![99]);
+    }
+
+    /// A sustained forward gap (loss burst / deaf window longer than the ring)
+    /// must resync the buffer onto the new stream position — previously the
+    /// buffer dropped every packet forever and playback went permanently
+    /// silent while the speaking indicator stayed alive.
+    #[test]
+    fn jitter_buffer_resyncs_after_sustained_forward_gap() {
+        let mut jb = JitterBuffer::new();
+        let mut out = Vec::new();
+
+        jb.push(1, &[1]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+
+        // Stream resumes far ahead (e.g. after 20s of loss): the first
+        // JITTER_RESYNC_AFTER - 1 packets are dropped, the next one resyncs.
+        let base = 5000u32;
+        for i in 0..config::JITTER_RESYNC_AFTER {
+            jb.push(base + i, &[i as u8]);
+        }
+        // Resync happened on the last push; it must be buffered and playable.
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![(config::JITTER_RESYNC_AFTER - 1) as u8]);
+
+        // And the stream continues normally from there.
+        jb.push(base + config::JITTER_RESYNC_AFTER, &[42]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![42]);
+    }
+
+    /// One stray far-ahead packet (reordered/bogus) must NOT reset a healthy
+    /// stream — only a sustained run of out-of-window packets does.
+    #[test]
+    fn jitter_buffer_single_stray_far_ahead_does_not_resync() {
+        let mut jb = JitterBuffer::new();
+        let mut out = Vec::new();
+
+        jb.push(1, &[1]);
+        jb.push(900_000, &[99]); // stray
+        jb.push(2, &[2]); // healthy stream continues
+
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![1]);
+        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
+        assert_eq!(out, vec![2]);
     }
 
     #[test]

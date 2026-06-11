@@ -73,6 +73,10 @@ pub const JITTER_BUF_MAX: usize = 15;
 pub const JITTER_BUF_INITIAL: usize = 4;
 /// How often to recalculate adaptive jitter buffer size (packets).
 pub const JITTER_ADAPT_INTERVAL: u32 = 50;
+/// Consecutive packets beyond the jitter ring (forward seq gap) before the
+/// buffer resyncs onto the new position. >1 so a single stray/reordered
+/// packet cannot reset a healthy stream.
+pub const JITTER_RESYNC_AFTER: u32 = 3;
 /// Max concurrent per-sender receive streams (each owns a jitter buffer +
 /// Opus decoder). Packets from further senders are dropped until one goes stale.
 pub const MAX_SENDER_STREAMS: usize = 16;
