@@ -24,6 +24,7 @@ Project scaffold, workspace, and the shared protocol/types. Server TCP control c
 - **EPIC 4 — Auto-reconnect.** Exponential backoff, auto-rejoin last channel, `reconnecting` status in the TUI.
 - **EPIC 16 — Graceful shutdown.** SIGTERM/SIGINT via `tokio::signal`, broadcast "server shutting down" before exit.
 - **EPIC 17 — Bounded client channels.** Replaced unbounded channels (outgoing commands + incoming `ServerMessage`) with bounded + backpressure.
+- Concurrent-speakers fix (`oyvhmx`, v1.9.10): receive path moved to per-sender streams — `HashMap<name, SenderStream{JitterBuffer, OpusDecoder}>` with PCM mixing (one frame per sender per round, clamp when >1 contributor). Previously a single shared jitter buffer served all senders: independent seq counters of two senders looked like endless "stream restarts" → reset on every packet → two concurrent speakers silenced the whole channel. Plus an echo guard: a packet carrying our own name is dropped before the speaking map and playback (guards against a loopback through a peer's input device). Cap `MAX_SENDER_STREAMS`, TTL `SENDER_STREAM_TTL_SECS` — both in `config.rs`.
 
 ## Performance arc (zero-alloc voice + server throughput)
 

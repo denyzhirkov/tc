@@ -395,7 +395,7 @@ pub async fn start_voice(
 
     spawn_capture_thread(CaptureCfg {
         channel_id: channel_id.clone(),
-        sender_name,
+        sender_name: sender_name.clone(),
         cipher: cipher.clone(),
         capture_cons,
         encoded_tx,
@@ -419,6 +419,7 @@ pub async fn start_voice(
         playback_prod,
         registered: registered.clone(),
         udp_token,
+        own_name: sender_name,
     });
 
     Ok(VoiceHandle {
@@ -754,22 +755,30 @@ struct RecvCfg {
     /// Confirmed-inbound flag shared with the re-hello task and the UI.
     registered: Arc<AtomicBool>,
     udp_token: u64,
+    /// Our own display name — inbound packets carrying it are echoes and dropped.
+    own_name: String,
+}
+
+/// Per-sender receive state. Sequence counters of different senders are
+/// independent (each starts at 1), so sharing one jitter buffer across
+/// senders would make every interleaved packet look like a stream restart
+/// and constantly reset the buffer — concurrent speakers require one
+/// buffer + decoder per sender, mixed into playback per frame.
+struct SenderStream {
+    jitter: JitterBuffer,
+    decoder: OpusDecoder,
+    last_packet: Instant,
 }
 
 fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut decoder = match OpusDecoder::new() {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("failed to create decoder: {}", e);
-                return;
-            }
-        };
-
-        let mut jitter = JitterBuffer::new();
+        let mut streams: HashMap<String, SenderStream> = HashMap::new();
         let mut buf = vec![0u8; config::MAX_UDP_PACKET + 64];
         let mut decrypt_buf: Vec<u8> = Vec::with_capacity(config::MAX_UDP_PACKET);
         let mut opus_swap: Vec<u8> = Vec::with_capacity(256);
+        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
+        let stale_ttl = Duration::from_secs(config::SENDER_STREAM_TTL_SECS);
+        let mut packets_since_prune: u32 = 0;
 
         loop {
             let len = match cfg.socket.recv(&mut buf).await {
@@ -802,14 +811,53 @@ fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
             if !decrypt_packet(&cfg.cipher, encrypted, &mut decrypt_buf) {
                 continue;
             }
-            let Some((opus_offset, name_len)) = parse_decrypted_name(&decrypt_buf, &cfg.speaking)
-            else {
+            let Some((name, opus_offset)) = parse_packet_name(&decrypt_buf) else {
                 continue;
             };
-            jitter.push(sequence, &decrypt_buf[opus_offset..]);
-            let _ = name_len;
+            // Echo guard: a relayed copy of our own stream (server-side echo,
+            // loopback on a peer) must never reach the speaking map or playback.
+            if name == cfg.own_name {
+                tracing::trace!("dropping echoed own packet");
+                continue;
+            }
+            record_speaker(&cfg.speaking, name, decrypt_buf.len() - opus_offset);
 
-            // Sync playback buffer cap with jitter estimate
+            packets_since_prune += 1;
+            if packets_since_prune >= config::STATS_WINDOW_PACKETS {
+                packets_since_prune = 0;
+                streams.retain(|_, s| s.last_packet.elapsed() < stale_ttl);
+            }
+
+            if !streams.contains_key(name) {
+                if streams.len() >= config::MAX_SENDER_STREAMS {
+                    streams.retain(|_, s| s.last_packet.elapsed() < stale_ttl);
+                }
+                if streams.len() >= config::MAX_SENDER_STREAMS {
+                    tracing::warn!("sender stream limit reached, dropping packet");
+                    continue;
+                }
+                let decoder = match OpusDecoder::new() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::error!("failed to create decoder: {}", e);
+                        continue;
+                    }
+                };
+                streams.insert(
+                    name.to_string(),
+                    SenderStream {
+                        jitter: JitterBuffer::new(),
+                        decoder,
+                        last_packet: Instant::now(),
+                    },
+                );
+            }
+            let stream = streams.get_mut(name).expect("stream just ensured");
+            stream.last_packet = Instant::now();
+            stream.jitter.push(sequence, &decrypt_buf[opus_offset..]);
+
+            // Sync playback buffer cap with this sender's jitter estimate
+            let jitter = &stream.jitter;
             let jitter_cap = ((jitter.jitter_ms() * 2.0 / jitter.expected_interval_ms).ceil()
                 as usize)
                 .clamp(config::JITTER_BUF_MIN, config::JITTER_BUF_MAX);
@@ -819,10 +867,10 @@ fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
                 Ordering::Relaxed,
             );
 
-            drain_jitter_to_playback(
-                &mut jitter,
-                &mut decoder,
+            drain_streams_to_playback(
+                &mut streams,
                 &mut opus_swap,
+                &mut mix_buf,
                 &cfg.stats,
                 &mut cfg.playback_prod,
             );
@@ -845,16 +893,8 @@ fn decrypt_packet(cipher: &XChaCha20Poly1305, encrypted: &[u8], out: &mut Vec<u8
     true
 }
 
-/// Parse [name_len:1][name:M][opus_data], record the speaker with a level proxy,
-/// return (opus_offset, name_len).
-///
-/// Level proxy: opus_data length normalised against ~200 bytes (a typical
-/// high-bitrate frame). It's not RMS — but it tracks talker loudness well
-/// enough for a UI meter and is free to compute (no second decode).
-fn parse_decrypted_name(
-    buf: &[u8],
-    speaking: &Arc<Mutex<HashMap<String, SpeakerStat>>>,
-) -> Option<(usize, usize)> {
+/// Parse [name_len:1][name:M][opus_data], return (sender name, opus_offset).
+fn parse_packet_name(buf: &[u8]) -> Option<(&str, usize)> {
     if buf.is_empty() {
         return None;
     }
@@ -862,56 +902,105 @@ fn parse_decrypted_name(
     if buf.len() < 1 + name_len {
         return None;
     }
-    let opus_len = buf.len().saturating_sub(1 + name_len);
-    let level = (opus_len as f32 / 200.0).clamp(0.0, 1.0);
-    if name_len > 0 {
-        if let Ok(name) = std::str::from_utf8(&buf[1..1 + name_len]) {
-            if let Ok(mut sp) = speaking.lock() {
-                let entry = sp.entry(name.to_string()).or_insert(SpeakerStat {
-                    last_seen: Instant::now(),
-                    level: 0.0,
-                });
-                entry.last_seen = Instant::now();
-                // EMA smoothing so the bar doesn't flicker per-frame.
-                entry.level = entry.level * 0.5 + level * 0.5;
-            }
-        }
-    }
-    Some((1 + name_len, name_len))
+    let name = std::str::from_utf8(&buf[1..1 + name_len]).ok()?;
+    Some((name, 1 + name_len))
 }
 
-fn drain_jitter_to_playback(
-    jitter: &mut JitterBuffer,
-    decoder: &mut OpusDecoder,
+/// Record voice activity for the UI meter.
+///
+/// Level proxy: opus_data length normalised against ~200 bytes (a typical
+/// high-bitrate frame). It's not RMS — but it tracks talker loudness well
+/// enough for a UI meter and is free to compute (no second decode).
+fn record_speaker(
+    speaking: &Arc<Mutex<HashMap<String, SpeakerStat>>>,
+    name: &str,
+    opus_len: usize,
+) {
+    if name.is_empty() {
+        return;
+    }
+    let level = (opus_len as f32 / 200.0).clamp(0.0, 1.0);
+    if let Ok(mut sp) = speaking.lock() {
+        // get_mut first: no String allocation on the per-packet path.
+        if let Some(entry) = sp.get_mut(name) {
+            entry.last_seen = Instant::now();
+            // EMA smoothing so the bar doesn't flicker per-frame.
+            entry.level = entry.level * 0.5 + level * 0.5;
+        } else {
+            sp.insert(
+                name.to_string(),
+                SpeakerStat {
+                    last_seen: Instant::now(),
+                    level,
+                },
+            );
+        }
+    }
+}
+
+/// Pop one frame per sender per round, mix into `mix_buf`, push to playback.
+/// Rounds repeat until every sender's jitter buffer is empty. Single-talker
+/// rounds skip the clamp pass and behave exactly like the pre-mixing path.
+fn drain_streams_to_playback(
+    streams: &mut HashMap<String, SenderStream>,
     opus_swap: &mut Vec<u8>,
+    mix_buf: &mut [f32],
     stats: &NetworkStats,
     playback_prod: &mut audio::AudioProducer,
 ) {
     use ringbuf::traits::Producer;
     loop {
-        match jitter.pop(opus_swap) {
-            PopResult::Packet => {
-                stats.record_received();
-                stats.maybe_finalize_window();
-                match decoder.decode(opus_swap) {
-                    Ok(pcm) => {
-                        playback_prod.push_slice(pcm);
+        let mut contributors = 0usize;
+        let mut mixed_len = 0usize;
+        for stream in streams.values_mut() {
+            let pcm = match stream.jitter.pop(opus_swap) {
+                PopResult::Packet => {
+                    stats.record_received();
+                    stats.maybe_finalize_window();
+                    match stream.decoder.decode(opus_swap) {
+                        Ok(pcm) => pcm,
+                        Err(e) => {
+                            tracing::trace!("decode error: {}", e);
+                            continue;
+                        }
                     }
-                    Err(e) => tracing::trace!("decode error: {}", e),
+                }
+                PopResult::Missing => {
+                    stats.record_lost();
+                    stats.maybe_finalize_window();
+                    match stream.decoder.decode_plc() {
+                        Ok(pcm) => pcm,
+                        Err(e) => {
+                            tracing::trace!("PLC error: {}", e);
+                            continue;
+                        }
+                    }
+                }
+                PopResult::Empty => continue,
+            };
+            let n = pcm.len().min(mix_buf.len());
+            if contributors == 0 {
+                mix_buf[..n].copy_from_slice(&pcm[..n]);
+            } else {
+                if n > mixed_len {
+                    mix_buf[mixed_len..n].fill(0.0);
+                }
+                for (m, s) in mix_buf[..n].iter_mut().zip(pcm) {
+                    *m += *s;
                 }
             }
-            PopResult::Missing => {
-                stats.record_lost();
-                stats.maybe_finalize_window();
-                match decoder.decode_plc() {
-                    Ok(pcm) => {
-                        playback_prod.push_slice(pcm);
-                    }
-                    Err(e) => tracing::trace!("PLC error: {}", e),
-                }
-            }
-            PopResult::Empty => break,
+            mixed_len = mixed_len.max(n);
+            contributors += 1;
         }
+        if contributors == 0 {
+            break;
+        }
+        if contributors > 1 {
+            for m in &mut mix_buf[..mixed_len] {
+                *m = m.clamp(-1.0, 1.0);
+            }
+        }
+        playback_prod.push_slice(&mix_buf[..mixed_len]);
     }
 }
 
@@ -1027,6 +1116,115 @@ impl Drop for VoiceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── per-sender streams & mixing ──────────────────────────────────
+
+    fn encoded_frame(encoder: &mut OpusEncoder, value: f32) -> Vec<u8> {
+        let pcm = vec![value; config::FRAME_SIZE];
+        encoder.encode(&pcm).unwrap().to_vec()
+    }
+
+    fn sender_stream() -> SenderStream {
+        SenderStream {
+            jitter: JitterBuffer::new(),
+            decoder: OpusDecoder::new().unwrap(),
+            last_packet: Instant::now(),
+        }
+    }
+
+    /// Two senders with independent sequence counters (each starts near its own
+    /// base) must both decode and mix — the old shared jitter buffer treated the
+    /// interleaving as endless stream restarts and produced almost nothing.
+    #[test]
+    fn drain_mixes_two_concurrent_sender_streams() {
+        use ringbuf::traits::{Consumer, Observer, Split};
+
+        let mut enc_a = OpusEncoder::new().unwrap();
+        let mut enc_b = OpusEncoder::new().unwrap();
+
+        let mut streams: HashMap<String, SenderStream> = HashMap::new();
+        streams.insert("alice".into(), sender_stream());
+        streams.insert("bob".into(), sender_stream());
+
+        // Interleaved arrival, disjoint sequence spaces (bob "joined earlier").
+        const FRAMES: u32 = 5;
+        for i in 0..FRAMES {
+            let pkt_a = encoded_frame(&mut enc_a, 0.0);
+            let pkt_b = encoded_frame(&mut enc_b, 0.0);
+            streams.get_mut("alice").unwrap().jitter.push(1 + i, &pkt_a);
+            streams
+                .get_mut("bob")
+                .unwrap()
+                .jitter
+                .push(100_000 + i, &pkt_b);
+        }
+
+        let rb = ringbuf::HeapRb::<f32>::new(config::FRAME_SIZE * 16);
+        let (mut prod, mut cons) = rb.split();
+        let stats = NetworkStats::new();
+        let mut opus_swap = Vec::new();
+        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
+
+        drain_streams_to_playback(
+            &mut streams,
+            &mut opus_swap,
+            &mut mix_buf,
+            &stats,
+            &mut prod,
+        );
+
+        // Mixed output: one frame per round, not one per packet.
+        assert_eq!(cons.occupied_len(), config::FRAME_SIZE * FRAMES as usize);
+        // Every packet from both senders was consumed as received, none "lost".
+        assert_eq!(stats.received.load(Ordering::Relaxed), FRAMES * 2);
+        assert_eq!(stats.lost.load(Ordering::Relaxed), 0);
+        let mut sink = vec![0.0f32; config::FRAME_SIZE * FRAMES as usize];
+        cons.pop_slice(&mut sink);
+    }
+
+    #[test]
+    fn drain_single_sender_passthrough() {
+        use ringbuf::traits::{Observer, Split};
+
+        let mut enc = OpusEncoder::new().unwrap();
+        let mut streams: HashMap<String, SenderStream> = HashMap::new();
+        streams.insert("alice".into(), sender_stream());
+        for i in 0..3u32 {
+            let pkt = encoded_frame(&mut enc, 0.0);
+            streams.get_mut("alice").unwrap().jitter.push(1 + i, &pkt);
+        }
+
+        let rb = ringbuf::HeapRb::<f32>::new(config::FRAME_SIZE * 8);
+        let (mut prod, cons) = rb.split();
+        let stats = NetworkStats::new();
+        let mut opus_swap = Vec::new();
+        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
+
+        drain_streams_to_playback(
+            &mut streams,
+            &mut opus_swap,
+            &mut mix_buf,
+            &stats,
+            &mut prod,
+        );
+
+        assert_eq!(cons.occupied_len(), config::FRAME_SIZE * 3);
+        assert_eq!(stats.lost.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn parse_packet_name_extracts_name_and_offset() {
+        let mut buf = vec![5u8];
+        buf.extend_from_slice(b"alice");
+        buf.extend_from_slice(&[1, 2, 3]);
+        let (name, offset) = parse_packet_name(&buf).unwrap();
+        assert_eq!(name, "alice");
+        assert_eq!(offset, 6);
+        assert_eq!(&buf[offset..], &[1, 2, 3]);
+
+        assert!(parse_packet_name(&[]).is_none());
+        assert!(parse_packet_name(&[10, b'x']).is_none()); // name_len beyond buf
+    }
 
     // ── re-hello ─────────────────────────────────────────────────────
 

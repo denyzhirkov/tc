@@ -6,6 +6,7 @@
 
 ## Recently closed (newest first)
 
+- Concurrent-speakers fix (`oyvhmx`, **v1.9.10**): per-sender jitter buffer + Opus decoder (`HashMap<name, SenderStream>` in `client/voice.rs`) with PCM mixing into playback; the old shared buffer reset on every interleaved packet → two people speaking at once = silence for everyone. Plus an echo guard: inbound packets carrying our own name are dropped (a loopback through a peer no longer plays your voice back to you).
 - tc:// invite pack (`nmhah9`…`go7i87`): single-instance forwarding (Win/Linux), буферизация invite при холодном старте (`deeplink::Gate` + `take_pending_invite`), `register_all()` для dev/AppImage, `/invite` в обоих клиентах (`tc_shared::invite_url`), join без setTimeout, confirm-диалог для серверов вне registry (анти drive-by).
 - Кросс-платформенные тесты (`fxwmpb`): CI-матрица [ubuntu/macos/windows] для `cargo test`, dual-stack e2e по `::1`, behavioral `BatchSender` (реально исполняет sendmmsg/sendmsg_x/fallback). Матрица сразу поймала 2 реальных падения (macOS CMake, Windows UDP-readiness). Релиз **v1.9.8**.
 - One-way-audio fix pack (Windows): canonical-IP compare + идемпотентный re-ACK при UDP-регистрации (`36eq37`), UDP target из фактического TCP peer IP (`6l8z9n`), NO-RX статус + фоновый re-hello (`p5az9y`), UDP keepalive в VAD-тишине (`enyns4`); `/show_dev_logs` в desktop (`x46y07`)

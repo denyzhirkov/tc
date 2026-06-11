@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.10] — 2026-06-11
+
+### Fixed
+- Voice receive path: one jitter buffer + Opus decoder **per sender** with PCM
+  mixing into playback. The old shared buffer treated interleaved sequence
+  streams from different senders as endless stream restarts and reset itself
+  on nearly every packet — two people speaking at once silenced the channel
+  for everyone.
+- Echo guard: inbound voice packets carrying the client's own sender name are
+  dropped before the speaking indicator and playback (stops feedback loops via
+  a peer's loopback input device, e.g. "Stereo Mix").
+
 ## [1.8.0] — 2026-05-06
 
 ### Changed

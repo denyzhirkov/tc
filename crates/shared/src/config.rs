@@ -73,6 +73,11 @@ pub const JITTER_BUF_MAX: usize = 15;
 pub const JITTER_BUF_INITIAL: usize = 4;
 /// How often to recalculate adaptive jitter buffer size (packets).
 pub const JITTER_ADAPT_INTERVAL: u32 = 50;
+/// Max concurrent per-sender receive streams (each owns a jitter buffer +
+/// Opus decoder). Packets from further senders are dropped until one goes stale.
+pub const MAX_SENDER_STREAMS: usize = 16;
+/// Drop a sender's receive stream after this long without a packet from them.
+pub const SENDER_STREAM_TTL_SECS: u64 = 10;
 
 // ── VAD ──────────────────────────────────────────────────────────────────
 
