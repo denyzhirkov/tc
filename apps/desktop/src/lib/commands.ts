@@ -243,6 +243,20 @@ export async function runCommand(raw: string) {
       }
       return;
     }
+    case "/invite":
+    case "/i":
+      try {
+        const link = await cmd.inviteLink();
+        try {
+          await navigator.clipboard.writeText(link);
+          pushLog(`${link} — copied to clipboard`, "system");
+        } catch {
+          pushLog(link, "system");
+        }
+      } catch (e) {
+        pushLog(`error: ${e}`, "error");
+      }
+      return;
     case "/help":
     case "/h":
       return printHelp();
@@ -479,6 +493,7 @@ function printHelp() {
     "  /servers (/srv) [q]  list known servers (★ = favourite)",
     "  /fav <addr> [on|off] mark server as favourite",
     "  /forget <addr>       drop a server from the registry",
+    "  /invite (/i)         tc:// link to current server/channel (copies to clipboard)",
     "  /history [clear]     re-print channel history (or wipe for current channel)",
     "  /notify <on|off>     OS notifications on chat/peer-join when window unfocused",
     "  /autostart <on|off>  launch tc_ on system login",

@@ -1,6 +1,6 @@
 // Subscribe to backend events and push them into the Solid store.
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { cmd, on } from "./tauri";
+import { cmd, on, type InvitePayload } from "./tauri";
 import { pushLog, state, update } from "./store";
 import { t } from "./i18n";
 
@@ -113,21 +113,50 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
       );
     }),
     on("quick_join", () => pushLog("hotkey: quick_join (no target set)", "system")),
-    on("invite", async (p) => {
-      pushLog(`invite: ${p.addr}${p.channel ? " #" + p.channel : ""}`, "system");
-      try {
-        await cmd.connect(p.addr);
-        if (p.channel) {
-          // Wait briefly for the connection to settle, then join.
-          setTimeout(() => {
-            cmd.joinChannel(p.channel!).catch(() => {});
-          }, 400);
-        }
-      } catch (e) {
-        pushLog(t("log.invite_failed", { error: String(e) }), "error");
-      }
-    }),
+    on("invite", handleInvite),
   ]);
+}
+
+async function handleInvite(p: InvitePayload) {
+  pushLog(`invite: ${p.addr}${p.channel ? " #" + p.channel : ""}`, "system");
+  // A link can point anywhere — connecting reveals our IP and pubkey and
+  // TOFU-pins the server's cert, so an unknown server needs explicit consent.
+  let known = false;
+  try {
+    known = (await cmd.listServers()).some((s) => s.addr === p.addr);
+  } catch {}
+  if (!known) {
+    update.invitePrompt(p);
+    return false;
+  }
+  await acceptInvite(p);
+  return true;
+}
+
+/// Connect + join for an invite the user trusts (known server, or confirmed
+/// via the invite prompt).
+export async function acceptInvite(p: InvitePayload) {
+  try {
+    // connect() resolves only once the TLS session is up, so the join is
+    // ordered behind it on the same stream — no settling delay needed.
+    await cmd.connect(p.addr);
+    if (p.channel) await cmd.joinChannel(p.channel);
+  } catch (e) {
+    pushLog(t("log.invite_failed", { error: String(e) }), "error");
+  }
+}
+
+/// Drain the invite buffered before the event listeners were up (the app was
+/// launched by clicking a tc:// link). Call once after `subscribeAll`.
+/// Returns true if the invite connected immediately — the caller should then
+/// skip auto-connect. A prompt awaiting confirmation returns false so the
+/// usual auto-connect still happens underneath it.
+export async function drainPendingInvite(): Promise<boolean> {
+  try {
+    const p = await cmd.takePendingInvite();
+    if (p) return await handleInvite(p);
+  } catch {}
+  return false;
 }
 
 /// Pull the current backend snapshot — call once after `subscribeAll`.

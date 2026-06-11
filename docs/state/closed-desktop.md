@@ -65,3 +65,14 @@ History of the desktop arc (`apps/desktop`). The desktop is a Tauri 2 + SolidJS 
 - **`p5az9y`** client: провал handshake больше не молчит — `VoiceHandle::is_registered`, статус `NO RX (registering…)` в TUI status bar / VoiceStrip, фоновый re-hello с backoff (1s→5s, `UDP_REHELLO_*`); первый входящий пакет тоже подтверждает регистрацию.
 - **`enyns4`**: UDP keepalive (hello с токеном 0) раз в 20 с при VAD-тишине (`UDP_KEEPALIVE_INTERVAL_SECS`) — NAT/Windows-Firewall flow не протухает; сервер считает их в `udp_keepalives`, не форвардит. Не ломает старые сервера (для них это invalid hello).
 - **`x46y07`** desktop: `/show_dev_logs` (alias `/devlogs`) — toggle-стрим DEBUG+ событий `tracing` (только `tc*`-таргеты, throttle 25/с) в основную ленту через слой `dev_log::DevLogLayer` + Tauri-событие `dev_log`.
+
+## tc:// invite pack (2026-06-11)
+
+P6.2 оставил deeplink в состоянии «работает на macOS при тёплом старте». Доведено до продуктового состояния (`nmhah9`…`go7i87`):
+
+- **`nmhah9`** single-instance: `tauri-plugin-single-instance` (feature `deep-link`) первым плагином — на Windows/Linux клик по ссылке при запущенном приложении больше не спавнит второй процесс; колбэк показывает/фокусирует окно, URL из argv re-триггерит `on_open_url`.
+- **`ts4fuh`** холодный старт: `deeplink::Gate` буферизует invite до готовности фронта; команда `take_pending_invite` (take-семантика + флаг ready), `drainPendingInvite()` в `App.tsx` — invite имеет приоритет над auto-connect.
+- **`y7tuy0`** `register_all()` в setup под `cfg(linux | (debug, windows))` — dev-режим и AppImage.
+- **`uko25t`** `/invite` (`/i`) в обоих клиентах: `tc_shared::invite_url` (дефолтный порт опускается), desktop копирует в clipboard, TUI печатает; help-тексты обновлены.
+- **`ziitag`** убран `setTimeout(400)` перед join — `connect` резолвится после установления TLS, join упорядочен в том же потоке.
+- **`go7i87`** confirm-диалог (`InviteConfirm.tsx`) для серверов вне registry — защита от drive-by connect (утечка IP/pubkey + TOFU-pin чужого серта); известные сервера коннектятся без трения. i18n en/ru.

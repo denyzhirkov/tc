@@ -408,6 +408,7 @@ async fn handle_command(
         "/list" | "/ls" => cmd_list(app, conn),
         "/connect" | "/join" | "/j" => cmd_connect(app, arg, conn),
         "/leave" | "/l" => cmd_leave(app, conn, voice_handle),
+        "/invite" | "/i" => cmd_invite(app),
         _ => cmd_default(app, input, conn, parts[0]),
     }
 }
@@ -537,6 +538,7 @@ fn cmd_help(app: &mut tui::App) {
         "  /list (/ls)        list public channels",
         "  /connect (/j) <id> join a channel (or just #<id>)",
         "  /leave (/l)        leave current channel",
+        "  /invite (/i)       tc:// link to current server/channel",
         "  /mute (/m)         toggle mute",
         "  /name (/n) <name>  set your display name",
         "  /server (/s) <ip>  set server address",
@@ -571,6 +573,11 @@ fn cmd_create(app: &mut tui::App, arg: Option<&str>, conn: &mut Option<network::
         app.add_message(format!("> /create {}", name));
         send_or_disconnect(conn, app, ClientMessage::CreateChannel { name: Some(name) });
     }
+}
+
+fn cmd_invite(app: &mut tui::App) {
+    let link = tc_shared::invite_url(&app.server_addr, app.channel.as_deref());
+    app.add_message(format!("invite: {}", link));
 }
 
 fn cmd_list(app: &mut tui::App, conn: &mut Option<network::ServerConnection>) {

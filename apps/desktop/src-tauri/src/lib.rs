@@ -45,6 +45,16 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     tauri::Builder::default()
+        // Must be the first plugin: on Windows/Linux a tc:// click spawns a
+        // second process; this forwards it here (the deep-link feature already
+        // re-triggers on_open_url from argv) and we just surface the window.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(hotkeys::build_plugin())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
@@ -54,8 +64,10 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             // Wire up tc:// deep-link handler. Forwards parsed invites as a
-            // Tauri event the frontend listens for.
+            // Tauri event the frontend listens for; until the frontend is
+            // ready they are buffered in the Gate (cold-start links).
             {
+                app.manage(deeplink::Gate::default());
                 use tauri_plugin_deep_link::DeepLinkExt;
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
@@ -63,6 +75,13 @@ pub fn run() {
                         deeplink::forward(&handle, url.as_str());
                     }
                 });
+
+                // Installers register the scheme on macOS/Windows; in dev and
+                // for Linux AppImages it must be (re-)registered at runtime.
+                #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+                if let Err(e) = app.deep_link().register_all() {
+                    tracing::warn!("tc:// scheme registration failed: {}", e);
+                }
             }
 
             dev_log::set_app(app.handle().clone());
@@ -140,6 +159,8 @@ pub fn run() {
             dm::get_dm_history,
             dm::send_dm_to,
             dm::resolve_peer,
+            deeplink::take_pending_invite,
+            commands::invite_link,
             commands::export_settings,
             commands::import_settings,
             dev_log::set_dev_logs,

@@ -3,7 +3,12 @@
 // backend (`AppCore` in Rust) is the source of truth for everything else.
 
 import { createStore } from "solid-js/store";
-import type { AppStatus, ChannelListEntry, VoiceLevelPayload } from "./tauri";
+import type {
+  AppStatus,
+  ChannelListEntry,
+  InvitePayload,
+  VoiceLevelPayload,
+} from "./tauri";
 
 export type LogLine = {
   id: number;
@@ -32,6 +37,8 @@ export type AppState = {
   dmLog: LogLine[];
   /// /show_dev_logs toggle — stream DEBUG+ tracing into the main feed.
   devLogs: boolean;
+  /// tc:// invite to a server not in the registry, awaiting user confirmation.
+  invitePrompt: InvitePayload | null;
 };
 
 let nextId = 1;
@@ -50,6 +57,7 @@ const [state, setState] = createStore<AppState>({
   dm: null,
   dmLog: [],
   devLogs: false,
+  invitePrompt: null,
 });
 
 export { state };
@@ -107,6 +115,7 @@ export const update = {
   speakers: (m: Record<string, number>) => setState("speakers", m),
   showSettings: (v: boolean) => setState("showSettings", v),
   devLogs: (v: boolean) => setState("devLogs", v),
+  invitePrompt: (p: InvitePayload | null) => setState("invitePrompt", p),
   openDm: (pubkey_hex: string, name: string) => {
     setState("dm", { pubkey_hex, name });
     setState("dmLog", []);

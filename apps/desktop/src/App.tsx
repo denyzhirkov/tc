@@ -5,7 +5,8 @@ import Pane from "./components/Pane";
 import Peers from "./components/Peers";
 import Settings from "./components/Settings";
 import Palette from "./components/Palette";
-import { fetchInitialStatus, subscribeAll } from "./lib/wire";
+import InviteConfirm from "./components/InviteConfirm";
+import { drainPendingInvite, fetchInitialStatus, subscribeAll } from "./lib/wire";
 import { pushLog, state } from "./lib/store";
 import { cmd } from "./lib/tauri";
 import { installTheme } from "./lib/theme";
@@ -19,7 +20,9 @@ export default function App() {
     const unlisten = await subscribeAll();
     onCleanup(() => unlisten.forEach((u) => u()));
     await fetchInitialStatus();
-    if (state.conn === "disconnected") {
+    // A cold-start tc:// invite takes priority over auto-connect.
+    const invited = await drainPendingInvite();
+    if (!invited && state.conn === "disconnected") {
       try {
         await cmd.connect(state.serverAddr);
       } catch (e) {
@@ -46,6 +49,7 @@ export default function App() {
         <Settings />
       </Show>
       <Palette />
+      <InviteConfirm />
     </div>
   );
 }

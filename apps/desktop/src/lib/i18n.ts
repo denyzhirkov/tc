@@ -56,7 +56,15 @@ const en: Dict = {
   "log.name_changed": "* {old} → {new}",
   "log.dm_from": "(dm from {name}) {text}",
   "log.invite_failed": "invite failed: {error}",
+  "log.invite_declined": "invite declined",
   "log.error": "error: {message}",
+
+  // tc:// invite confirmation
+  "invite.title": "connect to unknown server?",
+  "invite.body":
+    "this link points to a server you haven't connected to before. connecting reveals your IP address and public key to it.",
+  "invite.connect": "connect",
+  "invite.cancel": "cancel",
 
   // Voice mode names
   "voice_mode.open": "open mic",
@@ -134,7 +142,14 @@ const ru: Dict = {
   "log.name_changed": "* {old} → {new}",
   "log.dm_from": "(лс от {name}) {text}",
   "log.invite_failed": "ошибка приглашения: {error}",
+  "log.invite_declined": "приглашение отклонено",
   "log.error": "ошибка: {message}",
+
+  "invite.title": "подключиться к неизвестному серверу?",
+  "invite.body":
+    "эта ссылка ведёт на сервер, к которому вы ещё не подключались. при подключении он узнает ваш IP-адрес и публичный ключ.",
+  "invite.connect": "подключиться",
+  "invite.cancel": "отмена",
 
   "voice_mode.open": "открытый микрофон",
   "voice_mode.vad": "голосовая активация",

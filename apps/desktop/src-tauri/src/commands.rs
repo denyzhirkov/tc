@@ -63,6 +63,17 @@ pub async fn app_status(state: CoreState<'_>) -> Result<AppStatus, String> {
     })
 }
 
+/// Build a tc:// invite for the current server (+ channel, if joined).
+#[tauri::command]
+pub async fn invite_link(state: CoreState<'_>) -> Result<String, String> {
+    let c = state.lock().await;
+    if c.conn.is_none() {
+        return Err("not connected — /server <addr> first".into());
+    }
+    let addr = c.server_addr.as_deref().ok_or("not connected")?;
+    Ok(tc_shared::invite_url(addr, c.channel.as_deref()))
+}
+
 #[tauri::command]
 pub async fn connect(app: AppHandle, state: CoreState<'_>, addr: String) -> Result<(), String> {
     let addr = if addr.contains(':') {

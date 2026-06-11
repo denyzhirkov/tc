@@ -2,10 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.9.7**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.9.9**, protocol **3**.
 
 ## Recently closed (newest first)
 
+- tc:// invite pack (`nmhah9`…`go7i87`): single-instance forwarding (Win/Linux), буферизация invite при холодном старте (`deeplink::Gate` + `take_pending_invite`), `register_all()` для dev/AppImage, `/invite` в обоих клиентах (`tc_shared::invite_url`), join без setTimeout, confirm-диалог для серверов вне registry (анти drive-by).
 - Кросс-платформенные тесты (`fxwmpb`): CI-матрица [ubuntu/macos/windows] для `cargo test`, dual-stack e2e по `::1`, behavioral `BatchSender` (реально исполняет sendmmsg/sendmsg_x/fallback). Матрица сразу поймала 2 реальных падения (macOS CMake, Windows UDP-readiness). Релиз **v1.9.8**.
 - One-way-audio fix pack (Windows): canonical-IP compare + идемпотентный re-ACK при UDP-регистрации (`36eq37`), UDP target из фактического TCP peer IP (`6l8z9n`), NO-RX статус + фоновый re-hello (`p5az9y`), UDP keepalive в VAD-тишине (`enyns4`); `/show_dev_logs` в desktop (`x46y07`)
 - `120068e` perf: LTO release profile + macOS `sendmsg_x` batched UDP fan-out
@@ -38,4 +39,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-06-10 (one-way-audio fix pack + /show_dev_logs)._
+_Last updated: 2026-06-11 (tc:// invite pack)._
