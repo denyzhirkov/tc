@@ -573,6 +573,9 @@ fn spawn_capture_thread(mut cfg: CaptureCfg) {
             }
             cfg.capture_cons.pop_slice(&mut pcm_frame);
             if cfg.muted.load(Ordering::Relaxed) {
+                // Zero the published level — otherwise the UI meter freezes at
+                // the last pre-mute RMS and waves forever.
+                cfg.input_peak.store(0, Ordering::Relaxed);
                 continue;
             }
 

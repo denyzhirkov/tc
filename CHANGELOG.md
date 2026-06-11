@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.11] — 2026-06-11
+
+### Fixed
+- Desktop: phantom speaking indicator — the frontend was never told when the
+  voice pipeline stopped, so the last speaker levels kept animating forever
+  ("constant incoming stream" from a silent peer). The level pump now emits
+  `voice_stopped` on the active→inactive transition, `left_channel` clears
+  voice state, and a 1s frontend watchdog zeroes the meters if `voice_level`
+  events stall.
+- Input level meter froze at the last pre-mute RMS while muted; it now drops
+  to zero.
+- Desktop: the settings test tone now silences itself inside the audio
+  callback after the requested duration — a wedged stream teardown can no
+  longer leave an endless beep.
+
 ## [1.9.10] — 2026-06-11
 
 ### Fixed

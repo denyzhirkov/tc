@@ -126,14 +126,28 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
     let freq = 440.0_f32;
     let amp = 0.15_f32;
 
+    // Hard stop inside the callback: after `duration` worth of frames the tone
+    // generator yields pure silence, so the beep ends on time even if the
+    // stream drop below ever stalls (CoreAudio dispose can wedge).
+    let max_frames = (sample_rate * duration.as_secs_f32()) as u64;
+    let mut frames_done: u64 = 0;
+    let mut next_sample = move || -> f32 {
+        if frames_done >= max_frames {
+            return 0.0;
+        }
+        frames_done += 1;
+        let s = (phase * two_pi).sin() * amp;
+        phase = (phase + freq / sample_rate) % 1.0;
+        s
+    };
+
     // Branch on sample format (cpal exposes I16, U16, F32, etc.).
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_output_stream(
             &config.into(),
             move |data: &mut [f32], _| {
                 for frame in data.chunks_mut(channels) {
-                    let s = (phase * two_pi).sin() * amp;
-                    phase = (phase + freq / sample_rate) % 1.0;
+                    let s = next_sample();
                     for ch in frame {
                         *ch = s;
                     }
@@ -146,8 +160,7 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
             &config.into(),
             move |data: &mut [i16], _| {
                 for frame in data.chunks_mut(channels) {
-                    let s = ((phase * two_pi).sin() * amp * i16::MAX as f32) as i16;
-                    phase = (phase + freq / sample_rate) % 1.0;
+                    let s = (next_sample() * i16::MAX as f32) as i16;
                     for ch in frame {
                         *ch = s;
                     }
@@ -160,9 +173,8 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
             &config.into(),
             move |data: &mut [u16], _| {
                 for frame in data.chunks_mut(channels) {
-                    let s = ((phase * two_pi).sin() * amp * i16::MAX as f32) as i16;
+                    let s = (next_sample() * i16::MAX as f32) as i16;
                     let u = (s as i32 + i16::MAX as i32 + 1) as u16;
-                    phase = (phase + freq / sample_rate) % 1.0;
                     for ch in frame {
                         *ch = u;
                     }
@@ -175,7 +187,9 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
     };
 
     stream.play()?;
-    std::thread::sleep(duration);
+    // Small pad so the device drains the final frames; the generator above is
+    // already silent past `duration`.
+    std::thread::sleep(duration + Duration::from_millis(150));
     drop(stream);
     Ok(())
 }

@@ -16,6 +16,7 @@ const TICK: Duration = Duration::from_millis(200);
 pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
     tauri::async_runtime::spawn(async move {
         let mut last_muted: Option<bool> = None;
+        let mut was_active = false;
         loop {
             tokio::time::sleep(TICK).await;
             let (voice, muted) = {
@@ -32,8 +33,15 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
 
             let snap = voice.snapshot().await;
             if !snap.active {
+                // The frontend must learn that voice stopped, or it keeps
+                // animating the last speaker levels forever (phantom waves).
+                if was_active {
+                    was_active = false;
+                    emit(&app, "voice_stopped", serde_json::json!({}));
+                }
                 continue;
             }
+            was_active = true;
             emit(
                 &app,
                 "voice_level",

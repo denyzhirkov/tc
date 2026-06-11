@@ -4,7 +4,18 @@ import { cmd, on, type InvitePayload } from "./tauri";
 import { pushLog, state, update } from "./store";
 import { t } from "./i18n";
 
+/// Timestamp of the last `voice_level` event. The watchdog below zeroes the
+/// voice UI if the stream of events stalls (backend pump stuck or dead) so
+/// speaker waves never animate forever from a frozen snapshot.
+let lastVoiceLevelAt = 0;
+const VOICE_LEVEL_STALL_MS = 1000;
+
 export async function subscribeAll(): Promise<UnlistenFn[]> {
+  setInterval(() => {
+    if (state.voice && Date.now() - lastVoiceLevelAt > VOICE_LEVEL_STALL_MS) {
+      update.voice(null);
+    }
+  }, 500);
   return await Promise.all([
     on("connection_state", (s) => {
       if (s.state === "connecting") {
@@ -61,6 +72,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
     }),
     on("left_channel", () => {
       update.channel(null);
+      update.voice(null);
       pushLog(t("log.left_channel"), "system");
     }),
     on("peer_joined", (p) => {
@@ -93,8 +105,12 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
       update.renameParticipant(p.old_name, p.new_name);
     }),
     on("voice_level", (v) => {
+      lastVoiceLevelAt = Date.now();
       update.voice(v);
       if (state.status) state.status.muted = v.muted;
+    }),
+    on("voice_stopped", () => {
+      update.voice(null);
     }),
     on("muted_changed", (p) => {
       if (state.status) state.status.muted = p.muted;

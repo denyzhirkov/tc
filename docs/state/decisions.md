@@ -6,6 +6,7 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 
 - **The server is a dumb encrypted relay.** It parses only `channel_id` from a voice packet (zero-copy) and forwards raw bytes to the other participants. It never holds the voice key, never decrypts, never persists content. This is a privacy guarantee, not an optimization — don't move content handling server-side.
 - **One core, three processes.** `tc-client` is `[lib]` + `[bin]`; the desktop (`tc-desktop`) is a Tauri/Solid frontend over the same library, not a second implementation. Keep the core headless-usable — no TUI assumptions in voice/network logic. (ADR-0001.)
+- **The terminal client stays — deliberately** (decided 2026-06-11, removal was considered and rejected). Voice chat over SSH/headless is the product's unique niche and the TUI doubles as a lightweight second client for reproducing bugs. Cost is low because the core is shared; only UX features need doing twice — new UX may ship desktop-first without a TUI counterpart, but the TUI binary keeps building, shipping, and working.
 - **Two transports, two failure modes.** Control = TLS/TCP (reliable, ordered); voice = UDP (lossy, latency-first). Don't couple them; a control hiccup must not stall audio and vice versa.
 - **Stateless / no DB.** Server state is in-memory (`server/state.rs`). User identity/settings/history live on the user's disk (`~/.config/tc/`). There is intentionally no account system.
 
@@ -51,6 +52,12 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 - **`cargo test` runs on ubuntu + macOS + windows**, not just Linux. The UDP batch sender has three `#[cfg]` send paths (`sendmmsg`/`sendmsg_x`/sequential `try_send_to`) and only the OS-matching one compiles per platform — a Linux-only test job would never *execute* the macOS/Windows paths. The behavioral `BatchSender` test in `server/udp.rs` and the IPv6 (`::1`) e2e are the regression guards; they only have teeth because the matrix runs them on real runners.
 - **`CMAKE_POLICY_VERSION_MINIMUM=3.5` is required on any job that compiles `tc-client`/`tc-server` on macOS/Windows** (Opus → `audiopus_sys` vendors an old-CMake build). The build/release jobs already set it; test jobs must too or they fail at compile before running a single test.
 - **Don't assert delivery from a freshly-bound tokio `UdpSocket` without `writable().await` first.** On Windows the non-blocking `try_send_to` fallback returns `WouldBlock` until the socket is registered writable and silently drops the datagram (fine for lossy voice in production, flaky for a test). The relay's recv socket is always ready by send time, so production is unaffected.
+
+## Desktop voice UI state (phantom-indicator class)
+
+- **The frontend voice state is event-driven and must be told about every transition, including "stopped".** `level_pump` emits `voice_level` only while the voice handle is active; it must emit `voice_stopped` on the active→inactive flip (and `left_channel` clears voice state too) — otherwise the Solid store freezes at the last snapshot and speaker waves animate forever ("constant stream from a peer" that no packet sniffer can see). A 1s frontend watchdog additionally zeroes the voice UI if `voice_level` events stall (backend pump stuck/dead).
+- **Published atomics must be reset on the path that stops publishing them.** The capture thread skips frames while muted — it has to store `input_peak = 0` first, or the self/sidebar level meter freezes at the last pre-mute RMS.
+- **The settings test tone silences itself inside the audio callback** after the requested duration (frame countdown → zeros); the `sleep + drop(stream)` remains, but a wedged CoreAudio dispose can no longer leave an infinite beep.
 
 ## tc:// deeplink hardening (invite pack)
 

@@ -164,6 +164,7 @@ export type EventMap = {
   name_changed: { old_name: string; new_name: string };
   error: ErrorPayload;
   voice_level: VoiceLevelPayload;
+  voice_stopped: Record<string, never>;
   quick_join: Record<string, never>;
   log: { text: string };
   muted_changed: { muted: boolean };
