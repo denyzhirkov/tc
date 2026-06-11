@@ -9,9 +9,7 @@ use tokio::net::UdpSocket;
 
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use tc_shared::{
-    config, decode_udp_hello, encode_udp_hello, encode_udp_keepalive, ChannelId, VoicePacket,
-};
+use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePacket};
 
 use crate::audio;
 use crate::codec::{OpusDecoder, OpusEncoder};
@@ -407,7 +405,13 @@ pub async fn start_voice(
         stop: stop.clone(),
     });
 
-    spawn_udp_send_task(socket.clone(), encoded_rx, bytes_tx.clone());
+    spawn_udp_send_task(
+        socket.clone(),
+        encoded_rx,
+        bytes_tx.clone(),
+        udp_token,
+        Duration::from_secs(config::UDP_KEEPALIVE_INTERVAL_SECS),
+    );
 
     let recv_handle = spawn_recv_task(RecvCfg {
         socket: socket.clone(),
@@ -716,13 +720,18 @@ fn spawn_udp_send_task(
     socket: Arc<UdpSocket>,
     mut encoded_rx: tokio::sync::mpsc::Receiver<bytes::Bytes>,
     bytes_tx: Arc<AtomicU64>,
+    udp_token: u64,
+    idle: Duration,
 ) {
     tokio::spawn(async move {
         // During VAD silence no voice packets flow, and NAT mappings /
         // stateful-firewall entries for the UDP flow expire — killing the
-        // inbound path. A periodic keepalive keeps the flow alive.
-        let keepalive = encode_udp_keepalive();
-        let idle = Duration::from_secs(config::UDP_KEEPALIVE_INTERVAL_SECS);
+        // inbound path. The keepalive is a *re-hello with the real token*:
+        // it refreshes the NAT mapping AND re-registers our current source
+        // address on the relay, so a NAT rebind self-heals within one
+        // interval instead of leaving the client permanently deaf (the
+        // server relays voice to the address recorded at registration).
+        let keepalive = encode_udp_hello(udp_token);
         loop {
             match tokio::time::timeout(idle, encoded_rx.recv()).await {
                 Ok(Some(bytes)) => {
@@ -1227,6 +1236,33 @@ mod tests {
 
         assert!(parse_packet_name(&[]).is_none());
         assert!(parse_packet_name(&[10, b'x']).is_none()); // name_len beyond buf
+    }
+
+    /// The idle keepalive must be a re-hello carrying the real token, so the
+    /// relay refreshes the client's registered address (NAT-rebind self-heal),
+    /// not the inert token-0 keepalive.
+    #[tokio::test]
+    async fn send_task_keepalive_rehellos_with_real_token() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(server_addr).await.unwrap();
+
+        let (_tx, rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(4);
+        spawn_udp_send_task(
+            Arc::new(client),
+            rx,
+            Arc::new(AtomicU64::new(0)),
+            777,
+            Duration::from_millis(50),
+        );
+
+        let mut buf = [0u8; 16];
+        let (len, _) = tokio::time::timeout(Duration::from_secs(5), server.recv_from(&mut buf))
+            .await
+            .expect("no keepalive arrived")
+            .unwrap();
+        assert_eq!(decode_udp_hello(&buf[..len]), Some(777));
     }
 
     // ── re-hello ─────────────────────────────────────────────────────

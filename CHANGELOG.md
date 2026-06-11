@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.12] — 2026-06-11
+
+### Fixed
+- Self-healing UDP voice registration. The idle keepalive now re-hellos with
+  the real session token instead of the inert token-0 packet, so the relay
+  refreshes the client's registered address after a NAT rebind — previously
+  the server kept relaying voice to the stale external port and the client
+  went permanently deaf while everything else looked healthy.
+- Server: tokens of live in-channel sessions are no longer expired by the
+  30-second cleanup (only orphaned tokens age out), otherwise the re-hello
+  self-healing above would stop working 30 seconds after joining.
+- Requires updating both the server and the clients to take effect.
+
 ## [1.9.11] — 2026-06-11
 
 ### Fixed

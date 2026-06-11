@@ -521,11 +521,24 @@ impl ServerState {
             // Also remove any stale tokens for this channel
             inner.udp_tokens.retain(|_, (_, ch, _)| ch != &id);
         }
-        // Expire UDP tokens older than 30 seconds
+        // Expire UDP tokens older than 30 seconds — but never for a live
+        // session that is still in the token's channel. The client's idle
+        // keepalive is a re-hello with this token (refreshing its registered
+        // address after NAT rebinds); expiring it would permanently lock the
+        // client out of voice receive after the first 30 silent-but-talking
+        // seconds (no keepalives flow while voice is streaming).
         let token_ttl = std::time::Duration::from_secs(30);
-        inner
-            .udp_tokens
-            .retain(|_, (_, _, created)| created.elapsed() < token_ttl);
+        let Inner {
+            udp_tokens,
+            clients,
+            ..
+        } = &mut *inner;
+        udp_tokens.retain(|_, (tcp, ch, created)| {
+            let live = clients
+                .get(tcp)
+                .is_some_and(|c| c.channel.as_deref() == Some(ch.as_str()));
+            live || created.elapsed() < token_ttl
+        });
         count
     }
 }
@@ -849,6 +862,48 @@ mod tests {
 
         let removed = state.cleanup_empty_channels().await;
         assert_eq!(removed, 0);
+    }
+
+    /// A token of a connected client that is still in the token's channel must
+    /// survive cleanup indefinitely — the client's idle keepalive re-hellos
+    /// with it to refresh its registered address after NAT rebinds.
+    #[tokio::test]
+    async fn cleanup_keeps_tokens_of_live_in_channel_sessions() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, token, _) = state.join_channel(&addr(1), &ch).await.unwrap();
+        state.register_udp_by_token(token, addr(5001)).await;
+
+        // Age the token far past the 30s TTL.
+        {
+            let mut inner = state.inner.write().await;
+            inner.udp_tokens.get_mut(&token).unwrap().2 =
+                Instant::now() - std::time::Duration::from_secs(600);
+        }
+        state.cleanup_empty_channels().await;
+
+        // Re-hello from a new source port (NAT rebind) must still register.
+        assert!(state.register_udp_by_token(token, addr(5002)).await);
+    }
+
+    #[tokio::test]
+    async fn cleanup_expires_aged_tokens_of_sessions_out_of_channel() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        let (_, token, _) = state.join_channel(&addr(1), &ch).await.unwrap();
+
+        // Simulate a stale token whose session is no longer in that channel.
+        {
+            let mut inner = state.inner.write().await;
+            inner.clients.get_mut(&addr(1)).unwrap().channel = None;
+            inner.udp_tokens.get_mut(&token).unwrap().2 =
+                Instant::now() - std::time::Duration::from_secs(600);
+        }
+        state.cleanup_empty_channels().await;
+
+        assert!(!state.register_udp_by_token(token, addr(5001)).await);
     }
 
     // ── stats ────────────────────────────────────────────────────────
