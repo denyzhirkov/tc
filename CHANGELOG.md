@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.14] — 2026-06-12
+
+### Fixed
+- macOS: the bundled app could never access the microphone — the bundle was
+  missing `NSMicrophoneUsageDescription`, so macOS silently delivered zeros
+  and never showed the permission prompt (dev builds worked because the
+  terminal's permission applied). Added `src-tauri/Info.plist` and an
+  `Entitlements.plist` (audio-input) for future hardened-runtime signing.
+  On first join the app now prompts for microphone access.
+- Audio device lifecycle: a died stream (e.g. unplugging a headset) is now
+  detected via stream error callbacks plus a capture starvation watchdog,
+  and the desktop voice pipeline rebuilds itself automatically (throttled),
+  falling back to the system default device when the saved one is gone.
+  A failed pipeline start is retried, so voice recovers as soon as a device
+  appears. A note is posted to the feed when a rebuild happens.
+- A stale saved device name no longer fails the whole join — it falls back
+  to the system default with a warning.
+
 ## [1.9.13] — 2026-06-11
 
 ### Fixed

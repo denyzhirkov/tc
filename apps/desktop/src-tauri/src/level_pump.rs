@@ -17,6 +17,7 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
     tauri::async_runtime::spawn(async move {
         let mut last_muted: Option<bool> = None;
         let mut was_active = false;
+        let mut last_restarts: u32 = 0;
         loop {
             tokio::time::sleep(TICK).await;
             let (voice, muted) = {
@@ -42,6 +43,16 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
                 continue;
             }
             was_active = true;
+            if snap.device_restarts != last_restarts {
+                last_restarts = snap.device_restarts;
+                emit(
+                    &app,
+                    "log",
+                    serde_json::json!({
+                        "text": "audio device lost — voice pipeline rebuilt automatically"
+                    }),
+                );
+            }
             emit(
                 &app,
                 "voice_level",

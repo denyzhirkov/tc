@@ -77,6 +77,13 @@ pub const JITTER_ADAPT_INTERVAL: u32 = 50;
 /// buffer resyncs onto the new position. >1 so a single stray/reordered
 /// packet cannot reset a healthy stream.
 pub const JITTER_RESYNC_AFTER: u32 = 3;
+/// Capture starvation watchdog: if the input stream delivers no frames for
+/// this long, the device is considered dead (unplugged / lost) and the voice
+/// pipeline is flagged unhealthy so a supervisor can rebuild it.
+pub const AUDIO_STARVATION_SECS: u64 = 3;
+/// Minimum interval between automatic voice-pipeline restarts after a device
+/// failure (avoids a tight rebuild loop while no device is available).
+pub const VOICE_RESTART_MIN_INTERVAL_MS: u64 = 2000;
 /// Max concurrent per-sender receive streams (each owns a jitter buffer +
 /// Opus decoder). Packets from further senders are dropped until one goes stale.
 pub const MAX_SENDER_STREAMS: usize = 16;

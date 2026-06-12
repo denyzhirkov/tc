@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -188,17 +188,48 @@ pub fn list_output_devices() -> Result<Vec<DeviceInfo>> {
 /// Start capturing audio from an input device.
 /// Returns a stream handle (must be kept alive) and a lock-free ring buffer consumer
 /// delivering 48 kHz mono PCM samples. Zero allocation on the audio callback thread.
-pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, AudioConsumer)> {
-    let host = cpal::default_host();
-    let device = if let Some(name) = device_name {
-        host.input_devices()
-            .context("failed to enumerate input devices")?
-            .find(|d| d.name().ok().as_deref() == Some(name))
-            .with_context(|| format!("input device '{}' not found", name))?
-    } else {
+/// Resolve a device by saved name, falling back to the system default when the
+/// name no longer matches anything (device unplugged/renamed). A stale saved
+/// name must degrade the call to the default device, not fail the whole join.
+fn resolve_device(
+    host: &cpal::Host,
+    device_name: Option<&str>,
+    is_input: bool,
+) -> Result<cpal::Device> {
+    if let Some(name) = device_name {
+        let found = if is_input {
+            host.input_devices()
+                .context("failed to enumerate input devices")?
+                .find(|d| d.name().ok().as_deref() == Some(name))
+        } else {
+            host.output_devices()
+                .context("failed to enumerate output devices")?
+                .find(|d| d.name().ok().as_deref() == Some(name))
+        };
+        match found {
+            Some(d) => return Ok(d),
+            None => tracing::warn!(
+                "{} device '{}' not found, falling back to system default",
+                if is_input { "input" } else { "output" },
+                name
+            ),
+        }
+    }
+    if is_input {
         host.default_input_device()
-            .context("no input device available")?
-    };
+            .context("no input device available")
+    } else {
+        host.default_output_device()
+            .context("no output device available")
+    }
+}
+
+pub fn start_capture(
+    device_name: Option<&str>,
+    failed: Arc<AtomicBool>,
+) -> Result<(Stream, AudioConsumer)> {
+    let host = cpal::default_host();
+    let device = resolve_device(&host, device_name, true)?;
 
     tracing::info!("input device: {}", device.name().unwrap_or_default());
 
@@ -293,8 +324,11 @@ pub fn start_capture(device_name: Option<&str>) -> Result<(Stream, AudioConsumer
                 }
             }
         },
-        |err| {
+        move |err| {
+            // Device unplugged / format change: the stream is dead. Flag it so
+            // the pipeline supervisor can rebuild on a working device.
             tracing::error!("input stream error: {}", err);
+            failed.store(true, Ordering::Relaxed);
         },
         None,
     )?;
@@ -310,17 +344,10 @@ pub fn start_playback(
     device_name: Option<&str>,
     playback_cap: Arc<AtomicU32>,
     output_vol: Arc<AtomicU32>,
+    failed: Arc<AtomicBool>,
 ) -> Result<(Stream, AudioProducer)> {
     let host = cpal::default_host();
-    let device = if let Some(name) = device_name {
-        host.output_devices()
-            .context("failed to enumerate output devices")?
-            .find(|d| d.name().ok().as_deref() == Some(name))
-            .with_context(|| format!("output device '{}' not found", name))?
-    } else {
-        host.default_output_device()
-            .context("no output device available")?
-    };
+    let device = resolve_device(&host, device_name, false)?;
 
     tracing::info!("output device: {}", device.name().unwrap_or_default());
 
@@ -415,8 +442,9 @@ pub fn start_playback(
                 }
             }
         },
-        |err| {
+        move |err| {
             tracing::error!("output stream error: {}", err);
+            failed.store(true, Ordering::Relaxed);
         },
         None,
     )?;

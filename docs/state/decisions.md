@@ -55,6 +55,13 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 - **`CMAKE_POLICY_VERSION_MINIMUM=3.5` is required on any job that compiles `tc-client`/`tc-server` on macOS/Windows** (Opus → `audiopus_sys` vendors an old-CMake build). The build/release jobs already set it; test jobs must too or they fail at compile before running a single test.
 - **Don't assert delivery from a freshly-bound tokio `UdpSocket` without `writable().await` first.** On Windows the non-blocking `try_send_to` fallback returns `WouldBlock` until the socket is registered writable and silently drops the datagram (fine for lossy voice in production, flaky for a test). The relay's recv socket is always ready by send time, so production is unaffected.
 
+## Audio device lifecycle (resilience class)
+
+- **macOS microphone access requires `NSMicrophoneUsageDescription` in the bundle's Info.plist** (`src-tauri/Info.plist`, auto-merged by Tauri) plus the `com.apple.security.device.audio-input` entitlement (`Entitlements.plist`, referenced in `tauri.conf.json`). Without the key, the bundled app gets **silent zeros from the mic and no permission prompt is ever shown** — while `tauri dev` works because TCC attributes the terminal's permission. This asymmetry (dev works, bundle silently deaf) cost days; never remove these files.
+- **cpal streams die with their device and never recover on their own.** Both stream error callbacks and a capture starvation watchdog (`AUDIO_STARVATION_SECS` without frames — covers deaths that fire no error callback, e.g. unplugged headset mic) flip a shared `stream_failed` flag; `VoiceHandle::is_healthy()` exposes it.
+- **The desktop voice actor is the pipeline supervisor.** On every snapshot tick (~5/s) it rebuilds an unhealthy pipeline from the saved `StartParams` (token stays valid server-side), throttled by `VOICE_RESTART_MIN_INTERVAL_MS`; a failed start is retried on the same cadence so voice comes alive when a device appears. The TUI client has no supervisor (desktop-first decision).
+- **A stale saved device name falls back to the system default** (`resolve_device` in `audio.rs`) instead of failing the whole join.
+
 ## Desktop voice UI state (phantom-indicator class)
 
 - **The frontend voice state is event-driven and must be told about every transition, including "stopped".** `level_pump` emits `voice_level` only while the voice handle is active; it must emit `voice_stopped` on the active→inactive flip (and `left_channel` clears voice state too) — otherwise the Solid store freezes at the last snapshot and speaker waves animate forever ("constant stream from a peer" that no packet sniffer can see). A 1s frontend watchdog additionally zeroes the voice UI if `voice_level` events stall (backend pump stuck/dead).

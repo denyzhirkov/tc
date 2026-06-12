@@ -12,6 +12,7 @@ use tc_client::voice::{self, VoiceHandle};
 use tc_shared::ChannelId;
 use tokio::sync::{mpsc, oneshot};
 
+#[derive(Clone)]
 pub struct StartParams {
     /// Resolved IP of the live TCP connection — the UDP voice target.
     pub server_ip: std::net::IpAddr,
@@ -40,6 +41,8 @@ pub struct VoiceSnapshot {
     pub input_peak: f32,
     /// Server confirmed our UDP registration; `false` = sending but deaf.
     pub registered: bool,
+    /// Number of automatic pipeline rebuilds after device failures this call.
+    pub device_restarts: u32,
 }
 
 impl VoiceSnapshot {
@@ -53,6 +56,7 @@ impl VoiceSnapshot {
             rx_rate: 0.0,
             input_peak: 0.0,
             registered: true,
+            device_restarts: 0,
         }
     }
 }
@@ -108,27 +112,42 @@ impl VoiceManager {
     }
 }
 
+async fn start_from(p: &StartParams) -> anyhow::Result<VoiceHandle> {
+    voice::start_voice(
+        p.server_ip,
+        p.channel_id.clone(),
+        p.udp_token,
+        p.muted.clone(),
+        p.voice_key.clone(),
+        p.input_device.clone(),
+        p.output_device.clone(),
+        p.vad_threshold.clone(),
+        p.input_gain.clone(),
+        p.output_vol.clone(),
+        p.sender_name.clone(),
+    )
+    .await
+}
+
 async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
     let mut handle: Option<VoiceHandle> = None;
+    // Kept while in a call so the pipeline can be rebuilt after an audio
+    // device failure (unplugged headset, default-device switch, …).
+    let mut last_params: Option<StartParams> = None;
+    let mut last_restart: Option<std::time::Instant> = None;
+    let mut device_restarts: u32 = 0;
+    let restart_interval =
+        std::time::Duration::from_millis(tc_shared::config::VOICE_RESTART_MIN_INTERVAL_MS);
+
     while let Some(cmd) = rx.recv().await {
         match cmd {
             Cmd::Start(p, reply) => {
                 // Drop any prior handle first.
                 handle = None;
-                let res = voice::start_voice(
-                    p.server_ip,
-                    p.channel_id,
-                    p.udp_token,
-                    p.muted,
-                    p.voice_key,
-                    p.input_device,
-                    p.output_device,
-                    p.vad_threshold,
-                    p.input_gain,
-                    p.output_vol,
-                    p.sender_name,
-                )
-                .await;
+                device_restarts = 0;
+                last_restart = None;
+                let res = start_from(&p).await;
+                last_params = Some(p);
                 match res {
                     Ok(h) => {
                         handle = Some(h);
@@ -141,8 +160,37 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
             }
             Cmd::Stop => {
                 handle = None;
+                last_params = None;
             }
             Cmd::Snapshot(reply) => {
+                // Supervisor: rebuild the pipeline when an audio stream died
+                // (device unplugged) or a failed start can be retried — a new
+                // device may have appeared. Throttled to avoid a tight loop
+                // while no device is available. Snapshot runs ~5×/sec.
+                let needs_restart = match handle.as_ref() {
+                    Some(h) => !h.is_healthy(),
+                    None => last_params.is_some(),
+                };
+                if needs_restart && last_restart.is_none_or(|t| t.elapsed() >= restart_interval) {
+                    if let Some(p) = &last_params {
+                        last_restart = Some(std::time::Instant::now());
+                        handle = None; // tear down the dead pipeline first
+                        match start_from(p).await {
+                            Ok(h) => {
+                                device_restarts += 1;
+                                tracing::warn!(
+                                    "voice pipeline rebuilt after device failure (restart #{})",
+                                    device_restarts
+                                );
+                                handle = Some(h);
+                            }
+                            Err(e) => {
+                                tracing::warn!("voice pipeline rebuild failed: {:#}", e);
+                            }
+                        }
+                    }
+                }
+
                 let snap = match handle.as_ref() {
                     Some(h) => {
                         let (loss, tier) = h.quality_info();
@@ -156,6 +204,7 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                             rx_rate,
                             input_peak: h.input_peak(),
                             registered: h.is_registered(),
+                            device_restarts,
                         }
                     }
                     None => VoiceSnapshot::idle(),

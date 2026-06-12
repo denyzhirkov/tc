@@ -404,11 +404,16 @@ pub async fn start_voice(
     let cipher = XChaCha20Poly1305::new_from_slice(&voice_key)
         .map_err(|_| anyhow::anyhow!("invalid voice key"))?;
 
-    let (_capture_stream, capture_cons) = audio::start_capture(input_device.as_deref())?;
+    // Flipped by cpal error callbacks (device unplugged) or the capture
+    // starvation watchdog; a supervisor polls `is_healthy` and rebuilds.
+    let stream_failed = Arc::new(AtomicBool::new(false));
+    let (_capture_stream, capture_cons) =
+        audio::start_capture(input_device.as_deref(), stream_failed.clone())?;
     let (_playback_stream, playback_prod) = audio::start_playback(
         output_device.as_deref(),
         playback_cap.clone(),
         output_vol.clone(),
+        stream_failed.clone(),
     )?;
 
     // Sender pipeline: std::thread (capture → encode) → mpsc → tokio task (UDP send).
@@ -427,6 +432,7 @@ pub async fn start_voice(
         input_gain: input_gain.clone(),
         input_peak: input_peak.clone(),
         stop: stop.clone(),
+        stream_failed: stream_failed.clone(),
     });
 
     spawn_udp_send_task(
@@ -457,6 +463,7 @@ pub async fn start_voice(
         stats,
         stop,
         registered,
+        stream_failed,
         bytes_tx,
         bytes_rx,
         speaking,
@@ -562,6 +569,8 @@ struct CaptureCfg {
     input_gain: Arc<AtomicU32>,
     input_peak: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
+    /// Set when the capture device stops delivering frames (starvation watchdog).
+    stream_failed: Arc<AtomicBool>,
 }
 
 fn spawn_capture_thread(mut cfg: CaptureCfg) {
@@ -590,15 +599,32 @@ fn spawn_capture_thread(mut cfg: CaptureCfg) {
         let mut hangover_remaining: u32 = 0;
         let mut packet_buf = BytesMut::with_capacity(config::MAX_UDP_PACKET);
         let mut pcm_frame = vec![0.0f32; config::FRAME_SIZE];
+        let starvation = Duration::from_secs(config::AUDIO_STARVATION_SECS);
+        let mut last_frame_at = Instant::now();
+        let mut starvation_reported = false;
 
         loop {
             if cfg.stop.load(Ordering::Relaxed) {
                 break;
             }
             if cfg.capture_cons.occupied_len() < config::FRAME_SIZE {
+                // Starvation watchdog: a healthy device fills a frame every
+                // 20 ms. Seconds of nothing means the device died without an
+                // error callback (e.g. unplugged headset mic) — flag the
+                // pipeline so the supervisor rebuilds it.
+                if !starvation_reported && last_frame_at.elapsed() > starvation {
+                    starvation_reported = true;
+                    tracing::warn!(
+                        "capture starved for {}s — input device lost, flagging pipeline",
+                        config::AUDIO_STARVATION_SECS
+                    );
+                    cfg.stream_failed.store(true, Ordering::Relaxed);
+                }
                 std::thread::sleep(Duration::from_millis(2));
                 continue;
             }
+            last_frame_at = Instant::now();
+            starvation_reported = false;
             cfg.capture_cons.pop_slice(&mut pcm_frame);
             if cfg.muted.load(Ordering::Relaxed) {
                 // Zero the published level — otherwise the UI meter freezes at
@@ -1064,6 +1090,8 @@ pub struct VoiceHandle {
     stats: Arc<NetworkStats>,
     stop: Arc<AtomicBool>,
     registered: Arc<AtomicBool>,
+    /// Set when an audio stream died (device unplugged) or capture starved.
+    stream_failed: Arc<AtomicBool>,
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     speaking: Arc<Mutex<HashMap<String, SpeakerStat>>>,
@@ -1085,6 +1113,12 @@ impl VoiceHandle {
     /// inbound voice). `false` means we can send but will not hear anyone.
     pub fn is_registered(&self) -> bool {
         self.registered.load(Ordering::Relaxed)
+    }
+
+    /// `false` once an audio stream died (device unplugged / lost) — the
+    /// pipeline must be rebuilt; it will not recover on its own.
+    pub fn is_healthy(&self) -> bool {
+        !self.stream_failed.load(Ordering::Relaxed)
     }
 
     /// Returns names of speakers active within the last 300ms.
