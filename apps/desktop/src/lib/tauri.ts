@@ -138,6 +138,15 @@ export type VoiceLevelPayload = {
   muted: boolean;
   /** false while the server has not confirmed UDP registration (no inbound voice) */
   registered: boolean;
+  /** microphone half is live (false = listen-only call) */
+  capture_ok: boolean;
+  /** output half is live (false = speak-only call) */
+  playback_ok: boolean;
+};
+
+export type DeviceAddedPayload = {
+  kind: "input" | "output";
+  name: string;
 };
 
 export type InvitePayload = {
@@ -165,6 +174,7 @@ export type EventMap = {
   error: ErrorPayload;
   voice_level: VoiceLevelPayload;
   voice_stopped: Record<string, never>;
+  device_added: DeviceAddedPayload;
   quick_join: Record<string, never>;
   log: { text: string };
   muted_changed: { muted: boolean };

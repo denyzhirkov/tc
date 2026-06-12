@@ -8,7 +8,7 @@ use std::time::Duration;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
-use crate::events::{emit, SpeakerLevel, VoiceLevelPayload};
+use crate::events::{emit, DeviceAddedPayload, SpeakerLevel, VoiceLevelPayload};
 use crate::state::AppCore;
 
 const TICK: Duration = Duration::from_millis(200);
@@ -33,6 +33,17 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
             }
 
             let snap = voice.snapshot().await;
+            // Hot-plug prompts are relevant both in and out of calls.
+            for d in &snap.new_devices {
+                emit(
+                    &app,
+                    "device_added",
+                    DeviceAddedPayload {
+                        kind: d.kind.to_string(),
+                        name: d.name.clone(),
+                    },
+                );
+            }
             if !snap.active {
                 // The frontend must learn that voice stopped, or it keeps
                 // animating the last speaker levels forever (phantom waves).
@@ -49,7 +60,7 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
                     &app,
                     "log",
                     serde_json::json!({
-                        "text": "audio device lost — voice pipeline rebuilt automatically"
+                        "text": "audio device changed — stream rebuilt automatically"
                     }),
                 );
             }
@@ -69,6 +80,8 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
                     rx_kbps: snap.rx_rate / 1024.0,
                     muted,
                     registered: snap.registered,
+                    capture_ok: snap.capture_ok,
+                    playback_ok: snap.playback_ok,
                 },
             );
         }

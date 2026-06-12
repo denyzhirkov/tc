@@ -44,16 +44,19 @@ pub async fn list_output_devices() -> Result<Vec<DeviceInfo>, String> {
 #[tauri::command]
 pub async fn set_input_device(state: CoreState<'_>, name: Option<String>) -> Result<(), String> {
     let mut c = state.lock().await;
-    c.input_device = name;
+    c.input_device = name.clone();
     c.save();
+    // Apply mid-call immediately (no-op when not in a call).
+    c.voice.set_input_device(name).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn set_output_device(state: CoreState<'_>, name: Option<String>) -> Result<(), String> {
     let mut c = state.lock().await;
-    c.output_device = name;
+    c.output_device = name.clone();
     c.save();
+    c.voice.set_output_device(name).await;
     Ok(())
 }
 
@@ -108,15 +111,16 @@ fn play_sine(device_name: Option<&str>, duration: Duration) -> anyhow::Result<()
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     let host = cpal::default_host();
-    let device = match device_name {
-        Some(name) => host
-            .output_devices()?
-            .find(|d| d.name().map(|n| n == name).unwrap_or(false))
-            .ok_or_else(|| anyhow::anyhow!("output device '{}' not found", name))?,
-        None => host
-            .default_output_device()
-            .ok_or_else(|| anyhow::anyhow!("no default output device"))?,
-    };
+    // Same fallback semantics as the voice pipeline: a stale saved name
+    // degrades to the system default instead of failing silently.
+    let device = device_name
+        .and_then(|name| {
+            host.output_devices()
+                .ok()?
+                .find(|d| d.name().map(|n| n == name).unwrap_or(false))
+        })
+        .or_else(|| host.default_output_device())
+        .ok_or_else(|| anyhow::anyhow!("no output device available"))?;
 
     let config = device.default_output_config()?;
     let sample_rate = config.sample_rate().0 as f32;

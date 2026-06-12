@@ -6,6 +6,7 @@ import { createStore } from "solid-js/store";
 import type {
   AppStatus,
   ChannelListEntry,
+  DeviceAddedPayload,
   InvitePayload,
   VoiceLevelPayload,
 } from "./tauri";
@@ -39,6 +40,8 @@ export type AppState = {
   devLogs: boolean;
   /// tc:// invite to a server not in the registry, awaiting user confirmation.
   invitePrompt: InvitePayload | null;
+  /// Hot-plugged audio device awaiting the "use it now?" decision.
+  devicePrompt: DeviceAddedPayload | null;
 };
 
 let nextId = 1;
@@ -58,6 +61,7 @@ const [state, setState] = createStore<AppState>({
   dmLog: [],
   devLogs: false,
   invitePrompt: null,
+  devicePrompt: null,
 });
 
 export { state };
@@ -116,6 +120,7 @@ export const update = {
   showSettings: (v: boolean) => setState("showSettings", v),
   devLogs: (v: boolean) => setState("devLogs", v),
   invitePrompt: (p: InvitePayload | null) => setState("invitePrompt", p),
+  devicePrompt: (p: DeviceAddedPayload | null) => setState("devicePrompt", p),
   openDm: (pubkey_hex: string, name: string) => {
     setState("dm", { pubkey_hex, name });
     setState("dmLog", []);

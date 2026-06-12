@@ -51,6 +51,16 @@ export default function VoiceStrip() {
               {t("voice.no_rx")}
             </span>
           </Show>
+          <Show when={state.voice && !state.voice.capture_ok}>
+            <span class="text-[10px] uppercase tracking-wider text-warn">
+              {t("voice.no_mic")}
+            </span>
+          </Show>
+          <Show when={state.voice && !state.voice.playback_ok}>
+            <span class="text-[10px] uppercase tracking-wider text-warn">
+              {t("voice.no_output")}
+            </span>
+          </Show>
         </div>
         <div class="flex items-center gap-1.5 text-text">
           <span class="text-faint">

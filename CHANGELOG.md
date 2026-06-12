@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.15] — 2026-06-12
+
+### Added
+- Hot-plug prompt: a newly connected audio device shows a "use it now?"
+  toast (yes switches immediately, no is remembered for the session). The
+  device already configured in settings reconnecting switches back
+  automatically without a prompt.
+- Degraded-call chips in the voice strip: "no mic" / "no audio out".
+
+### Changed
+- Capture and playback are now independent halves of the voice pipeline:
+  a missing or dead microphone leaves you listening, a missing output
+  leaves you speaking, and with neither the call/chat still works — audio
+  recovers automatically as soon as devices appear.
+- Calls follow the system default device: when "Default" is selected, a
+  default-device change moves the live call within ~2 seconds.
+- Changing the input/output device in settings now applies immediately
+  mid-call instead of at the next join.
+- The settings test tone falls back to the system default when the saved
+  output device is gone.
+
 ## [1.9.14] — 2026-06-12
 
 ### Fixed

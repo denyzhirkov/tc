@@ -84,6 +84,9 @@ pub const AUDIO_STARVATION_SECS: u64 = 3;
 /// Minimum interval between automatic voice-pipeline restarts after a device
 /// failure (avoids a tight rebuild loop while no device is available).
 pub const VOICE_RESTART_MIN_INTERVAL_MS: u64 = 2000;
+/// How often the desktop supervisor polls audio devices: follow-the-default
+/// checks, hot-plug detection, and rebuild retries for absent halves.
+pub const DEVICE_POLL_INTERVAL_MS: u64 = 2000;
 /// Max concurrent per-sender receive streams (each owns a jitter buffer +
 /// Opus decoder). Packets from further senders are dropped until one goes stale.
 pub const MAX_SENDER_STREAMS: usize = 16;

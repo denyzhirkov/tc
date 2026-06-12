@@ -224,14 +224,27 @@ fn resolve_device(
     }
 }
 
+/// Name of the current system-default input device, if any.
+pub fn default_input_name() -> Option<String> {
+    cpal::default_host().default_input_device()?.name().ok()
+}
+
+/// Name of the current system-default output device, if any.
+pub fn default_output_name() -> Option<String> {
+    cpal::default_host().default_output_device()?.name().ok()
+}
+
+/// Start capturing. Returns the stream, the consumer side of the ring buffer
+/// and the name of the device actually opened (for follow-default checks).
 pub fn start_capture(
     device_name: Option<&str>,
     failed: Arc<AtomicBool>,
-) -> Result<(Stream, AudioConsumer)> {
+) -> Result<(Stream, AudioConsumer, String)> {
     let host = cpal::default_host();
     let device = resolve_device(&host, device_name, true)?;
+    let opened_name = device.name().unwrap_or_default();
 
-    tracing::info!("input device: {}", device.name().unwrap_or_default());
+    tracing::info!("input device: {}", opened_name);
 
     let params = resolve_stream_params(&device, true)?;
     tracing::info!(
@@ -334,7 +347,7 @@ pub fn start_capture(
     )?;
 
     stream.play()?;
-    Ok((stream, cons))
+    Ok((stream, cons, opened_name))
 }
 
 /// Start playing audio on an output device.
@@ -345,11 +358,12 @@ pub fn start_playback(
     playback_cap: Arc<AtomicU32>,
     output_vol: Arc<AtomicU32>,
     failed: Arc<AtomicBool>,
-) -> Result<(Stream, AudioProducer)> {
+) -> Result<(Stream, AudioProducer, String)> {
     let host = cpal::default_host();
     let device = resolve_device(&host, device_name, false)?;
+    let opened_name = device.name().unwrap_or_default();
 
-    tracing::info!("output device: {}", device.name().unwrap_or_default());
+    tracing::info!("output device: {}", opened_name);
 
     let params = resolve_stream_params(&device, false)?;
     tracing::info!(
@@ -450,7 +464,7 @@ pub fn start_playback(
     )?;
 
     stream.play()?;
-    Ok((stream, prod))
+    Ok((stream, prod, opened_name))
 }
 
 #[cfg(test)]

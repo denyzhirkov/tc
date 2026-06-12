@@ -6,6 +6,7 @@ import Peers from "./components/Peers";
 import Settings from "./components/Settings";
 import Palette from "./components/Palette";
 import InviteConfirm from "./components/InviteConfirm";
+import DevicePrompt from "./components/DevicePrompt";
 import { drainPendingInvite, fetchInitialStatus, subscribeAll } from "./lib/wire";
 import { pushLog, state } from "./lib/store";
 import { cmd } from "./lib/tauri";
@@ -50,6 +51,7 @@ export default function App() {
       </Show>
       <Palette />
       <InviteConfirm />
+      <DevicePrompt />
     </div>
   );
 }

@@ -70,6 +70,18 @@ pub struct VoiceLevelPayload {
     pub muted: bool,
     /// `false` while the server has not confirmed UDP registration (no inbound voice).
     pub registered: bool,
+    /// Microphone half is live (false = listen-only call).
+    pub capture_ok: bool,
+    /// Output half is live (false = speak-only call).
+    pub playback_ok: bool,
+}
+
+/// A new audio device was hot-plugged; the frontend asks whether to use it.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceAddedPayload {
+    /// "input" or "output".
+    pub kind: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

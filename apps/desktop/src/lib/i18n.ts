@@ -66,6 +66,18 @@ const en: Dict = {
   "invite.connect": "connect",
   "invite.cancel": "cancel",
 
+  // Hot-plugged audio device prompt
+  "device.added_input": "new microphone: {name}",
+  "device.added_output": "new audio output: {name}",
+  "device.use_now": "use it now?",
+  "device.yes": "yes",
+  "device.no": "no",
+  "device.switched": "switched to {name}",
+
+  // Degraded call chips
+  "voice.no_mic": "no mic",
+  "voice.no_output": "no audio out",
+
   // Voice mode names
   "voice_mode.open": "open mic",
   "voice_mode.vad": "voice activation",
@@ -150,6 +162,16 @@ const ru: Dict = {
     "эта ссылка ведёт на сервер, к которому вы ещё не подключались. при подключении он узнает ваш IP-адрес и публичный ключ.",
   "invite.connect": "подключиться",
   "invite.cancel": "отмена",
+
+  "device.added_input": "новый микрофон: {name}",
+  "device.added_output": "новое аудио-устройство вывода: {name}",
+  "device.use_now": "использовать сейчас?",
+  "device.yes": "да",
+  "device.no": "нет",
+  "device.switched": "переключено на {name}",
+
+  "voice.no_mic": "нет микрофона",
+  "voice.no_output": "нет вывода звука",
 
   "voice_mode.open": "открытый микрофон",
   "voice_mode.vad": "голосовая активация",

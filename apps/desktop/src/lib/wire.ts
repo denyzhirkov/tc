@@ -10,6 +10,9 @@ import { t } from "./i18n";
 let lastVoiceLevelAt = 0;
 const VOICE_LEVEL_STALL_MS = 1000;
 
+/// Hot-plugged devices the user declined this session ("kind:name").
+export const dismissedDevices = new Set<string>();
+
 export async function subscribeAll(): Promise<UnlistenFn[]> {
   setInterval(() => {
     if (state.voice && Date.now() - lastVoiceLevelAt > VOICE_LEVEL_STALL_MS) {
@@ -111,6 +114,11 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
     }),
     on("voice_stopped", () => {
       update.voice(null);
+    }),
+    on("device_added", (d) => {
+      // "No" is remembered per session so the same device doesn't nag again.
+      if (dismissedDevices.has(`${d.kind}:${d.name}`)) return;
+      update.devicePrompt(d);
     }),
     on("muted_changed", (p) => {
       if (state.status) state.status.muted = p.muted;

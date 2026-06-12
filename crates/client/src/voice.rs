@@ -364,8 +364,35 @@ enum PopResult {
     Empty,   // Nothing available
 }
 
+/// Swappable endpoint of the capture ring buffer: the capture thread reads
+/// through this slot so the supervisor can rebuild the input stream (new
+/// device) without restarting the thread. `None` = no capture device.
+pub type CaptureSlot = Arc<Mutex<Option<audio::AudioConsumer>>>;
+/// Swappable endpoint of the playback ring buffer (see [`CaptureSlot`]).
+pub type PlaybackSlot = Arc<Mutex<Option<audio::AudioProducer>>>;
+
+/// One direction of audio: the live cpal stream plus its health flag and the
+/// device that was actually opened. Absent (`None` in `VoiceHandle`) when no
+/// device was available — the supervisor retries until one appears.
+struct AudioHalf {
+    _stream: cpal::Stream,
+    opened_device: String,
+}
+
+/// Health of one audio direction, for the supervisor and the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HalfState {
+    Ok,
+    Failed,
+    Absent,
+}
+
 /// Start the voice pipeline: capture → encode → UDP send, UDP recv → decode → playback.
 /// Returns a handle that keeps the pipeline alive.
+///
+/// Audio is best-effort per direction: a missing/broken input or output device
+/// degrades that half (listen-only / speak-only) instead of failing the call.
+/// Only network-level setup errors abort.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_voice(
     server_ip: std::net::IpAddr,
@@ -404,66 +431,24 @@ pub async fn start_voice(
     let cipher = XChaCha20Poly1305::new_from_slice(&voice_key)
         .map_err(|_| anyhow::anyhow!("invalid voice key"))?;
 
-    // Flipped by cpal error callbacks (device unplugged) or the capture
-    // starvation watchdog; a supervisor polls `is_healthy` and rebuilds.
-    let stream_failed = Arc::new(AtomicBool::new(false));
-    let (_capture_stream, capture_cons) =
-        audio::start_capture(input_device.as_deref(), stream_failed.clone())?;
-    let (_playback_stream, playback_prod) = audio::start_playback(
-        output_device.as_deref(),
-        playback_cap.clone(),
-        output_vol.clone(),
-        stream_failed.clone(),
-    )?;
+    let capture_failed = Arc::new(AtomicBool::new(false));
+    let playback_failed = Arc::new(AtomicBool::new(false));
+    let capture_slot: CaptureSlot = Arc::new(Mutex::new(None));
+    let playback_slot: PlaybackSlot = Arc::new(Mutex::new(None));
 
-    // Sender pipeline: std::thread (capture → encode) → mpsc → tokio task (UDP send).
-    // The channel insulates non-runtime threads from tokio's IOCP-bound try_send().
-    let (encoded_tx, encoded_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(64);
-
-    spawn_capture_thread(CaptureCfg {
-        channel_id: channel_id.clone(),
-        sender_name: sender_name.clone(),
-        cipher: cipher.clone(),
-        capture_cons,
-        encoded_tx,
-        muted: muted.clone(),
-        stats: stats.clone(),
-        vad_threshold: vad_threshold.clone(),
-        input_gain: input_gain.clone(),
-        input_peak: input_peak.clone(),
-        stop: stop.clone(),
-        stream_failed: stream_failed.clone(),
-    });
-
-    spawn_udp_send_task(
-        socket.clone(),
-        encoded_rx,
-        bytes_tx.clone(),
-        udp_token,
-        Duration::from_secs(config::UDP_KEEPALIVE_INTERVAL_SECS),
-    );
-
-    let recv_handle = spawn_recv_task(RecvCfg {
-        socket: socket.clone(),
-        cipher,
-        stats: stats.clone(),
-        bytes_rx: bytes_rx.clone(),
-        playback_cap: playback_cap.clone(),
-        speaking: speaking.clone(),
-        playback_prod,
-        registered: registered.clone(),
-        udp_token,
-        own_name: sender_name,
-    });
-
-    Ok(VoiceHandle {
-        _capture_stream,
-        _playback_stream,
-        recv_handle,
+    let mut handle = VoiceHandle {
+        capture: None,
+        playback: None,
+        capture_slot,
+        playback_slot,
+        capture_failed,
+        playback_failed,
+        playback_cap,
+        output_vol,
+        recv_handle: None,
         stats,
         stop,
         registered,
-        stream_failed,
         bytes_tx,
         bytes_rx,
         speaking,
@@ -475,7 +460,57 @@ pub async fn start_voice(
             rx_rate: 0.0,
         }),
         input_peak,
-    })
+    };
+
+    // Best-effort halves: log-and-degrade instead of failing the call.
+    if let Err(e) = handle.rebuild_capture(input_device.as_deref()) {
+        tracing::warn!("starting without capture: {:#}", e);
+    }
+    if let Err(e) = handle.rebuild_playback(output_device.as_deref()) {
+        tracing::warn!("starting without playback: {:#}", e);
+    }
+
+    // Sender pipeline: std::thread (capture → encode) → mpsc → tokio task (UDP send).
+    // The channel insulates non-runtime threads from tokio's IOCP-bound try_send().
+    let (encoded_tx, encoded_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(64);
+
+    spawn_capture_thread(CaptureCfg {
+        channel_id: channel_id.clone(),
+        sender_name: sender_name.clone(),
+        cipher: cipher.clone(),
+        capture_slot: handle.capture_slot.clone(),
+        encoded_tx,
+        muted: muted.clone(),
+        stats: handle.stats.clone(),
+        vad_threshold: vad_threshold.clone(),
+        input_gain: input_gain.clone(),
+        input_peak: handle.input_peak.clone(),
+        stop: handle.stop.clone(),
+        stream_failed: handle.capture_failed.clone(),
+    });
+
+    spawn_udp_send_task(
+        socket.clone(),
+        encoded_rx,
+        handle.bytes_tx.clone(),
+        udp_token,
+        Duration::from_secs(config::UDP_KEEPALIVE_INTERVAL_SECS),
+    );
+
+    handle.recv_handle = Some(spawn_recv_task(RecvCfg {
+        socket: socket.clone(),
+        cipher,
+        stats: handle.stats.clone(),
+        bytes_rx: handle.bytes_rx.clone(),
+        playback_cap: handle.playback_cap.clone(),
+        speaking: handle.speaking.clone(),
+        playback_slot: handle.playback_slot.clone(),
+        registered: handle.registered.clone(),
+        udp_token,
+        own_name: sender_name,
+    }));
+
+    Ok(handle)
 }
 
 /// Connect the UDP voice socket to the server.
@@ -561,7 +596,7 @@ struct CaptureCfg {
     channel_id: ChannelId,
     sender_name: String,
     cipher: XChaCha20Poly1305,
-    capture_cons: audio::AudioConsumer,
+    capture_slot: CaptureSlot,
     encoded_tx: tokio::sync::mpsc::Sender<bytes::Bytes>,
     muted: Arc<AtomicBool>,
     stats: Arc<NetworkStats>,
@@ -573,7 +608,7 @@ struct CaptureCfg {
     stream_failed: Arc<AtomicBool>,
 }
 
-fn spawn_capture_thread(mut cfg: CaptureCfg) {
+fn spawn_capture_thread(cfg: CaptureCfg) {
     // Truncate sender name to fit in a u8 length prefix
     let name_bytes: Vec<u8> = cfg
         .sender_name
@@ -607,25 +642,45 @@ fn spawn_capture_thread(mut cfg: CaptureCfg) {
             if cfg.stop.load(Ordering::Relaxed) {
                 break;
             }
-            if cfg.capture_cons.occupied_len() < config::FRAME_SIZE {
-                // Starvation watchdog: a healthy device fills a frame every
-                // 20 ms. Seconds of nothing means the device died without an
-                // error callback (e.g. unplugged headset mic) — flag the
-                // pipeline so the supervisor rebuilds it.
-                if !starvation_reported && last_frame_at.elapsed() > starvation {
-                    starvation_reported = true;
-                    tracing::warn!(
-                        "capture starved for {}s — input device lost, flagging pipeline",
-                        config::AUDIO_STARVATION_SECS
-                    );
-                    cfg.stream_failed.store(true, Ordering::Relaxed);
+            // The consumer lives behind a swappable slot so the supervisor can
+            // rebuild the input stream (new device) without restarting this
+            // thread. Uncontended lock, taken at most every 2ms.
+            {
+                let mut slot = match cfg.capture_slot.lock() {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let Some(cons) = slot.as_mut() else {
+                    // No capture device right now: keep the meter at zero and
+                    // wait for the supervisor to install a new consumer.
+                    drop(slot);
+                    cfg.input_peak.store(0, Ordering::Relaxed);
+                    last_frame_at = Instant::now();
+                    starvation_reported = false;
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                };
+                if cons.occupied_len() < config::FRAME_SIZE {
+                    drop(slot);
+                    // Starvation watchdog: a healthy device fills a frame every
+                    // 20 ms. Seconds of nothing means the device died without
+                    // an error callback (e.g. unplugged headset mic) — flag the
+                    // half so the supervisor rebuilds it.
+                    if !starvation_reported && last_frame_at.elapsed() > starvation {
+                        starvation_reported = true;
+                        tracing::warn!(
+                            "capture starved for {}s — input device lost, flagging pipeline",
+                            config::AUDIO_STARVATION_SECS
+                        );
+                        cfg.stream_failed.store(true, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
                 }
-                std::thread::sleep(Duration::from_millis(2));
-                continue;
+                last_frame_at = Instant::now();
+                starvation_reported = false;
+                cons.pop_slice(&mut pcm_frame);
             }
-            last_frame_at = Instant::now();
-            starvation_reported = false;
-            cfg.capture_cons.pop_slice(&mut pcm_frame);
             if cfg.muted.load(Ordering::Relaxed) {
                 // Zero the published level — otherwise the UI meter freezes at
                 // the last pre-mute RMS and waves forever.
@@ -813,7 +868,7 @@ struct RecvCfg {
     bytes_rx: Arc<AtomicU64>,
     playback_cap: Arc<AtomicU32>,
     speaking: Arc<Mutex<HashMap<String, SpeakerStat>>>,
-    playback_prod: audio::AudioProducer,
+    playback_slot: PlaybackSlot,
     /// Confirmed-inbound flag shared with the re-hello task and the UI.
     registered: Arc<AtomicBool>,
     udp_token: u64,
@@ -832,7 +887,7 @@ struct SenderStream {
     last_packet: Instant,
 }
 
-fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
+fn spawn_recv_task(cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut streams: HashMap<String, SenderStream> = HashMap::new();
         let mut buf = vec![0u8; config::MAX_UDP_PACKET + 64];
@@ -929,12 +984,20 @@ fn spawn_recv_task(mut cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
                 Ordering::Relaxed,
             );
 
+            // Lock the playback slot once per drain round (uncontended; the
+            // supervisor swaps it only on device rebuilds). With no playback
+            // device the frames are still drained and decoded so jitter and
+            // decoder state stay current — output resumes seamlessly.
+            let mut slot = match cfg.playback_slot.lock() {
+                Ok(s) => s,
+                Err(_) => break,
+            };
             drain_streams_to_playback(
                 &mut streams,
                 &mut opus_swap,
                 &mut mix_buf,
                 &cfg.stats,
-                &mut cfg.playback_prod,
+                slot.as_mut(),
             );
         }
     })
@@ -1008,7 +1071,7 @@ fn drain_streams_to_playback(
     opus_swap: &mut Vec<u8>,
     mix_buf: &mut [f32],
     stats: &NetworkStats,
-    playback_prod: &mut audio::AudioProducer,
+    mut playback_prod: Option<&mut audio::AudioProducer>,
 ) {
     use ringbuf::traits::Producer;
     loop {
@@ -1062,7 +1125,9 @@ fn drain_streams_to_playback(
                 *m = m.clamp(-1.0, 1.0);
             }
         }
-        playback_prod.push_slice(&mix_buf[..mixed_len]);
+        if let Some(prod) = playback_prod.as_deref_mut() {
+            prod.push_slice(&mix_buf[..mixed_len]);
+        }
     }
 }
 
@@ -1084,14 +1149,18 @@ pub struct SpeakerStat {
 
 /// Keeps the voice pipeline alive. Drop to stop all tasks cleanly.
 pub struct VoiceHandle {
-    _capture_stream: cpal::Stream,
-    _playback_stream: cpal::Stream,
-    recv_handle: tokio::task::JoinHandle<()>,
+    capture: Option<AudioHalf>,
+    playback: Option<AudioHalf>,
+    capture_slot: CaptureSlot,
+    playback_slot: PlaybackSlot,
+    capture_failed: Arc<AtomicBool>,
+    playback_failed: Arc<AtomicBool>,
+    playback_cap: Arc<AtomicU32>,
+    output_vol: Arc<AtomicU32>,
+    recv_handle: Option<tokio::task::JoinHandle<()>>,
     stats: Arc<NetworkStats>,
     stop: Arc<AtomicBool>,
     registered: Arc<AtomicBool>,
-    /// Set when an audio stream died (device unplugged) or capture starved.
-    stream_failed: Arc<AtomicBool>,
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     speaking: Arc<Mutex<HashMap<String, SpeakerStat>>>,
@@ -1115,10 +1184,83 @@ impl VoiceHandle {
         self.registered.load(Ordering::Relaxed)
     }
 
-    /// `false` once an audio stream died (device unplugged / lost) — the
-    /// pipeline must be rebuilt; it will not recover on its own.
-    pub fn is_healthy(&self) -> bool {
-        !self.stream_failed.load(Ordering::Relaxed)
+    /// Health of the capture (microphone) half.
+    pub fn capture_state(&self) -> HalfState {
+        if self.capture.is_none() {
+            HalfState::Absent
+        } else if self.capture_failed.load(Ordering::Relaxed) {
+            HalfState::Failed
+        } else {
+            HalfState::Ok
+        }
+    }
+
+    /// Health of the playback (output) half.
+    pub fn playback_state(&self) -> HalfState {
+        if self.playback.is_none() {
+            HalfState::Absent
+        } else if self.playback_failed.load(Ordering::Relaxed) {
+            HalfState::Failed
+        } else {
+            HalfState::Ok
+        }
+    }
+
+    /// Device the capture half actually opened (None when absent).
+    pub fn opened_input(&self) -> Option<&str> {
+        self.capture.as_ref().map(|h| h.opened_device.as_str())
+    }
+
+    /// Device the playback half actually opened (None when absent).
+    pub fn opened_output(&self) -> Option<&str> {
+        self.playback.as_ref().map(|h| h.opened_device.as_str())
+    }
+
+    /// (Re)build the capture half on `device` (None = system default).
+    /// The encoder thread keeps running; it just starts reading from the new
+    /// ring buffer through the swappable slot. On failure the half is absent.
+    pub fn rebuild_capture(&mut self, device: Option<&str>) -> Result<()> {
+        // Drop the old stream first: on some hosts two open handles to the
+        // same device conflict, and a dead stream is useless anyway.
+        self.capture = None;
+        *self.capture_slot.lock().unwrap() = None;
+        self.capture_failed.store(false, Ordering::Relaxed);
+        match audio::start_capture(device, self.capture_failed.clone()) {
+            Ok((stream, cons, opened_device)) => {
+                *self.capture_slot.lock().unwrap() = Some(cons);
+                self.capture = Some(AudioHalf {
+                    _stream: stream,
+                    opened_device,
+                });
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// (Re)build the playback half on `device` (None = system default).
+    /// The receive task keeps running; decoded audio flows into the new ring
+    /// buffer through the swappable slot. On failure the half is absent.
+    pub fn rebuild_playback(&mut self, device: Option<&str>) -> Result<()> {
+        self.playback = None;
+        *self.playback_slot.lock().unwrap() = None;
+        self.playback_failed.store(false, Ordering::Relaxed);
+        match audio::start_playback(
+            device,
+            self.playback_cap.clone(),
+            self.output_vol.clone(),
+            self.playback_failed.clone(),
+        ) {
+            Ok((stream, prod, opened_device)) => {
+                *self.playback_slot.lock().unwrap() = Some(prod);
+                self.playback = Some(AudioHalf {
+                    _stream: stream,
+                    opened_device,
+                });
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Returns names of speakers active within the last 300ms.
@@ -1179,7 +1321,9 @@ impl Drop for VoiceHandle {
     fn drop(&mut self) {
         // Signal sender thread to stop, then abort the receiver task.
         self.stop.store(true, Ordering::Relaxed);
-        self.recv_handle.abort();
+        if let Some(h) = &self.recv_handle {
+            h.abort();
+        }
     }
 }
 
@@ -1240,7 +1384,7 @@ mod tests {
             &mut opus_swap,
             &mut mix_buf,
             &stats,
-            &mut prod,
+            Some(&mut prod),
         );
 
         // Mixed output: one frame per round, not one per packet.
@@ -1275,7 +1419,7 @@ mod tests {
             &mut opus_swap,
             &mut mix_buf,
             &stats,
-            &mut prod,
+            Some(&mut prod),
         );
 
         assert_eq!(cons.occupied_len(), config::FRAME_SIZE * 3);
