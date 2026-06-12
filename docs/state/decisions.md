@@ -36,6 +36,12 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 - Desktop HMR once double-subscribed Tauri event listeners (N× duplicate log lines after dev reloads) — guard listener registration against re-entry.
 - Self-rename can race a channel join; the client re-sends `SetName` if the join wins the race.
 
+## Voice UX
+
+- **VAD pre-roll:** the capture thread keeps the last `VAD_PREROLL_FRAMES` (100 ms) of gated audio in a pre-allocated ring and flushes it when VAD opens — without it the quiet first consonants are clipped and speech starts sound "scratchy". Receiver-side this is just a small seq burst the jitter buffer absorbs.
+- **Public channels are announced on creation:** the server pushes `ChannelList` to every connected client when a `pub-*` channel is created (`broadcast_channel_list` in `tcp.rs`), so sidebars update without `/list`. Private channels are never announced. Removal is NOT broadcast (sidebars may show a dead channel until the next list refresh — known gap).
+- **Default VAD level is 15 in both clients** (desktop `state.rs` and TUI via `VAD_RMS_THRESHOLD = 0.015`); the two clients still map level→threshold differently (TUI `level*0.001`, desktop `0.001 + n/100*0.049`) — a pre-existing inconsistency, unify when touching VAD next.
+
 ## UDP registration & liveness (one-way-audio fix pack)
 
 - **UDP voice target derives from the live TCP peer IP** (`ServerConnection::peer_addr()`), never from re-resolving the server string. The server requires hello-IP == TCP-IP; a hostname resolving differently per family (TCP v6, UDP v4 — `localhost` on Windows!) used to cause a permanent reject → one-way audio. Don't reintroduce a second resolve.
@@ -67,6 +73,8 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 - **Hot-plug prompt:** newly appeared devices (diff of name sets; first poll is baseline) surface as a `device_added` event → frontend toast "use it now?"; declined devices are remembered per session. The user's *configured* device reconnecting switches back automatically without a prompt.
 
 ## Desktop voice UI state (phantom-indicator class)
+
+- **Solid's `setState(key, object)` MERGES, it does not replace — `reconcile()` is load-bearing for `speakers`.** The original phantom-wave root cause: once a peer's level entered the store, an empty speakers object never deleted it, so the last loud level stuck forever and the identicon waved endlessly on both clients (all backend "clears" were silent no-ops). Any store map that must drop keys goes through `update.speakers`/`reconcile`. Symptom of regression: a peer waves while a packet probe shows zero traffic.
 
 - **The frontend voice state is event-driven and must be told about every transition, including "stopped".** `level_pump` emits `voice_level` only while the voice handle is active; it must emit `voice_stopped` on the active→inactive flip (and `left_channel` clears voice state too) — otherwise the Solid store freezes at the last snapshot and speaker waves animate forever ("constant stream from a peer" that no packet sniffer can see). A 1s frontend watchdog additionally zeroes the voice UI if `voice_level` events stall (backend pump stuck/dead).
 - **Published atomics must be reset on the path that stops publishing them.** The capture thread skips frames while muted — it has to store `input_peak = 0` first, or the self/sidebar level meter freezes at the last pre-mute RMS.

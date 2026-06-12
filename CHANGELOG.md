@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.16] — 2026-06-12
+
+### Fixed
+- Phantom speaking wave, actual root cause: Solid's `setState` merges
+  objects instead of replacing them, so a peer's speaking level never left
+  the UI store once set — the identicon waved forever on both clients while
+  the channel carried zero packets, and every previous backend-side "clear"
+  was a silent no-op. Speaker levels now go through `reconcile()`.
+- Scratchy speech onsets: the capture pipeline keeps a 100 ms pre-roll of
+  VAD-gated audio and flushes it when VAD opens, so the quiet first
+  consonants are no longer clipped.
+
+### Added
+- Public channels appear in everyone's sidebar immediately on creation
+  (server broadcasts the channel list); private channels stay unannounced.
+
+### Changed
+- Default VAD level is 15 in both clients (TUI default was 10).
+
 ## [1.9.15] — 2026-06-12
 
 ### Added

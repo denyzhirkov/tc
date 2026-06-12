@@ -2,7 +2,7 @@
 // Kept intentionally small — Solid stores hold what the UI renders, the
 // backend (`AppCore` in Rust) is the source of truth for everything else.
 
-import { createStore } from "solid-js/store";
+import { createStore, reconcile } from "solid-js/store";
 import type {
   AppStatus,
   ChannelListEntry,
@@ -95,13 +95,12 @@ export const update = {
     setState("participants", (p) =>
       p.map((n) => (n === oldName ? newName : n)),
     );
-    setState("speakers", (s) => {
-      if (!(oldName in s)) return s;
-      const next: Record<string, number> = { ...s };
+    if (oldName in state.speakers) {
+      const next: Record<string, number> = { ...state.speakers };
       next[newName] = next[oldName];
       delete next[oldName];
-      return next;
-    });
+      setState("speakers", reconcile(next));
+    }
     if (state.status?.name === oldName) {
       setState("status", "name", newName);
     }
@@ -109,14 +108,18 @@ export const update = {
   voice: (v: VoiceLevelPayload | null) => {
     setState("voice", v);
     if (!v) {
-      setState("speakers", {});
+      update.speakers({});
       return;
     }
     const next: Record<string, number> = {};
     for (const s of v.speakers) next[s.name] = s.level;
-    setState("speakers", next);
+    update.speakers(next);
   },
-  speakers: (m: Record<string, number>) => setState("speakers", m),
+  // reconcile() is load-bearing: a plain `setState("speakers", m)` MERGES
+  // objects and never deletes keys — a peer who spoke once would keep their
+  // last level forever ("phantom speaking wave"). reconcile diffs and removes.
+  speakers: (m: Record<string, number>) =>
+    setState("speakers", reconcile(m)),
   showSettings: (v: boolean) => setState("showSettings", v),
   devLogs: (v: boolean) => setState("devLogs", v),
   invitePrompt: (p: InvitePayload | null) => setState("invitePrompt", p),

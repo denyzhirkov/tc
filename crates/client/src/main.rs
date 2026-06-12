@@ -532,7 +532,7 @@ fn cmd_help(app: &mut tui::App) {
         "  /config output <N> select output device",
         "  /config gain <0-200> mic gain (default 100)",
         "  /config vol <0-200>  incoming volume (default 100)",
-        "  /config vad <0-100>  vad level (0/off = disable, default 10)",
+        "  /config vad <0-100>  vad level (0/off = disable, default 15)",
         "  /create (/c)       create a private channel",
         "  /create (/c) <name> create a public channel",
         "  /list (/ls)        list public channels",
@@ -1056,7 +1056,7 @@ fn handle_config_vad(value: &str, app: &mut tui::App) -> bool {
             true
         }
         _ => {
-            app.add_message("usage: /config vad <0-100|off> (default 10)".into());
+            app.add_message("usage: /config vad <0-100|off> (default 15)".into());
             false
         }
     }

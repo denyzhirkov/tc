@@ -355,6 +355,7 @@ async fn handle_create_channel(
         Ok(channel_id) => {
             let total = state.stats().await.channels;
             tracing::info!(%peer_addr, %name, %channel_id, total_channels = total, "channel created");
+            let is_public = channel_id.starts_with("pub-");
             send_to(
                 state,
                 senders,
@@ -362,6 +363,11 @@ async fn handle_create_channel(
                 ServerMessage::ChannelCreated { channel_id },
             )
             .await;
+            // Public channels appear in everyone's sidebar immediately —
+            // no manual /list needed. Private channels stay unannounced.
+            if is_public {
+                broadcast_channel_list(state, senders).await;
+            }
         }
         Err(err) => {
             tracing::debug!(%peer_addr, %name, %err, "create channel failed");
@@ -639,6 +645,32 @@ async fn handle_list_channels(
         ServerMessage::ChannelList { channels },
     )
     .await;
+}
+
+/// Push the current public channel list to every connected client.
+/// Serializes once, fans out cheap [`Bytes`] clones.
+async fn broadcast_channel_list(state: &ServerState, senders: &ClientSenders) {
+    let channels = state
+        .list_public_channels()
+        .await
+        .into_iter()
+        .map(|(channel_id, participant_count)| tc_shared::ChannelInfo {
+            channel_id,
+            participant_count,
+        })
+        .collect();
+    let frame = match encode(&ServerMessage::ChannelList { channels }) {
+        Some(b) => b,
+        None => return,
+    };
+    let metrics = state.metrics().clone();
+    for tx in senders.read().await.values() {
+        if tx.try_send(frame.clone()).is_err() {
+            metrics.tcp_drops_queue_full.fetch_add(1, Ordering::Relaxed);
+        } else {
+            metrics.tcp_broadcast_sends.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Send a message to a specific client (non-blocking, drops on full queue).

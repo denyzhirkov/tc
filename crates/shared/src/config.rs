@@ -100,10 +100,15 @@ pub const SENDER_STREAM_TTL_SECS: u64 = 10;
 
 /// RMS energy threshold for voice activity detection.
 /// Frames below this are silent and not sent. Set to 0.0 to disable.
-pub const VAD_RMS_THRESHOLD: f32 = 0.01;
+/// Maps to VAD level 15 in the TUI (`level * 0.001`) — the default level in
+/// both clients.
+pub const VAD_RMS_THRESHOLD: f32 = 0.015;
 /// Number of frames to keep sending after the last loud frame (hangover).
 /// At 20ms per frame, 10 frames ≈ 200ms of trailing audio.
 pub const VAD_HANGOVER_FRAMES: u32 = 10;
+/// Frames of gated audio kept and flushed when VAD opens, so quiet speech
+/// onsets (first consonants) aren't clipped. 5 frames = 100ms of pre-roll.
+pub const VAD_PREROLL_FRAMES: usize = 5;
 
 // ── Adaptive Quality ────────────────────────────────────────────────
 

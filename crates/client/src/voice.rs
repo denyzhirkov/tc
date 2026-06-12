@@ -637,6 +637,7 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
         let starvation = Duration::from_secs(config::AUDIO_STARVATION_SECS);
         let mut last_frame_at = Instant::now();
         let mut starvation_reported = false;
+        let mut preroll = VadPreroll::new();
 
         loop {
             if cfg.stop.load(Ordering::Relaxed) {
@@ -707,7 +708,39 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
             }
 
             if !pass_vad(&pcm_frame, &cfg.vad_threshold, &mut hangover_remaining) {
+                // Buffer gated audio: quiet speech onsets sit below the VAD
+                // threshold and would be clipped (audible scratchy starts).
+                preroll.push(&pcm_frame);
                 continue;
+            }
+
+            // VAD open: flush the pre-roll first so the onset plays intact.
+            let mut send_failed = false;
+            preroll.drain(|frame| {
+                if send_failed {
+                    return;
+                }
+                let Ok(opus) = encoder.encode(frame) else {
+                    return;
+                };
+                if build_packet(
+                    &mut packet_buf,
+                    sequence,
+                    &cfg.channel_id,
+                    &name_bytes,
+                    opus,
+                    &cfg.cipher,
+                ) {
+                    let frozen = packet_buf.split().freeze();
+                    if cfg.encoded_tx.blocking_send(frozen).is_err() {
+                        send_failed = true;
+                        return;
+                    }
+                    sequence = sequence.wrapping_add(1);
+                }
+            });
+            if send_failed {
+                break;
             }
 
             let opus_data = match encoder.encode(&pcm_frame) {
@@ -764,6 +797,51 @@ fn maybe_adapt_encoder(
             current_tier.bitrate(),
             loss_hint,
         );
+    }
+}
+
+/// Fixed ring of gated PCM frames flushed when VAD opens — speech onsets
+/// (quiet first consonants) sit below the threshold and would be clipped,
+/// audible as a "scratchy" first fraction of a second. Pre-allocated slots,
+/// zero allocation after construction.
+struct VadPreroll {
+    slots: Vec<Vec<f32>>,
+    start: usize,
+    len: usize,
+}
+
+impl VadPreroll {
+    fn new() -> Self {
+        Self {
+            slots: (0..config::VAD_PREROLL_FRAMES)
+                .map(|_| vec![0.0f32; config::FRAME_SIZE])
+                .collect(),
+            start: 0,
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, frame: &[f32]) {
+        let cap = self.slots.len();
+        let idx = (self.start + self.len) % cap;
+        let n = frame.len().min(config::FRAME_SIZE);
+        self.slots[idx][..n].copy_from_slice(&frame[..n]);
+        if self.len == cap {
+            self.start = (self.start + 1) % cap; // overwrite oldest
+        } else {
+            self.len += 1;
+        }
+    }
+
+    /// Visit buffered frames oldest-first, then reset.
+    fn drain(&mut self, mut f: impl FnMut(&[f32])) {
+        let cap = self.slots.len();
+        for i in 0..self.len {
+            let idx = (self.start + i) % cap;
+            f(&self.slots[idx]);
+        }
+        self.start = 0;
+        self.len = 0;
     }
 }
 
@@ -1465,6 +1543,27 @@ mod tests {
             .expect("no keepalive arrived")
             .unwrap();
         assert_eq!(decode_udp_hello(&buf[..len]), Some(777));
+    }
+
+    // ── VAD pre-roll ─────────────────────────────────────────────────
+
+    #[test]
+    fn vad_preroll_keeps_last_frames_in_order() {
+        let mut pr = VadPreroll::new();
+        // Push more frames than capacity; ring must keep the newest N.
+        let total = config::VAD_PREROLL_FRAMES + 2;
+        for i in 0..total {
+            let frame = vec![i as f32; config::FRAME_SIZE];
+            pr.push(&frame);
+        }
+        let mut seen = Vec::new();
+        pr.drain(|f| seen.push(f[0] as usize));
+        let expect: Vec<usize> = (2..total).collect();
+        assert_eq!(seen, expect);
+        // Drained: a second drain yields nothing.
+        let mut count = 0;
+        pr.drain(|_| count += 1);
+        assert_eq!(count, 0);
     }
 
     // ── re-hello ─────────────────────────────────────────────────────
