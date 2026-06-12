@@ -87,6 +87,9 @@ pub const VOICE_RESTART_MIN_INTERVAL_MS: u64 = 2000;
 /// How often the desktop supervisor polls audio devices: follow-the-default
 /// checks, hot-plug detection, and rebuild retries for absent halves.
 pub const DEVICE_POLL_INTERVAL_MS: u64 = 2000;
+/// Server-side TTL for *orphaned* UDP hello tokens (sessions gone or out of
+/// the token's channel). Tokens of live in-channel sessions never expire.
+pub const UDP_TOKEN_TTL_SECS: u64 = 30;
 /// Max concurrent per-sender receive streams (each owns a jitter buffer +
 /// Opus decoder). Packets from further senders are dropped until one goes stale.
 pub const MAX_SENDER_STREAMS: usize = 16;

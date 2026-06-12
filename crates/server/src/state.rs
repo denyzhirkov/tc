@@ -490,8 +490,21 @@ impl ServerState {
     /// Newly created channels get a grace period (2× maintenance interval) before
     /// being eligible for cleanup, so creators have time to join.
     pub async fn cleanup_empty_channels(&self) -> usize {
-        let grace =
-            std::time::Duration::from_secs(tc_shared::config::MAINTENANCE_INTERVAL_SECS * 2);
+        self.cleanup_with(
+            std::time::Duration::from_secs(tc_shared::config::MAINTENANCE_INTERVAL_SECS * 2),
+            std::time::Duration::from_secs(tc_shared::config::UDP_TOKEN_TTL_SECS),
+        )
+        .await
+    }
+
+    /// Cleanup with explicit grace/TTL. Split out so tests can use zero
+    /// durations instead of back-dating `Instant`s — `Instant::now() - 600s`
+    /// underflows and panics on Windows runners with a short uptime.
+    async fn cleanup_with(
+        &self,
+        grace: std::time::Duration,
+        token_ttl: std::time::Duration,
+    ) -> usize {
         let mut inner = self.inner.write().await;
         // Build set of occupied channel ids in one pass over clients.
         let occupied: HashSet<&str> = inner
@@ -521,13 +534,12 @@ impl ServerState {
             // Also remove any stale tokens for this channel
             inner.udp_tokens.retain(|_, (_, ch, _)| ch != &id);
         }
-        // Expire UDP tokens older than 30 seconds — but never for a live
-        // session that is still in the token's channel. The client's idle
-        // keepalive is a re-hello with this token (refreshing its registered
-        // address after NAT rebinds); expiring it would permanently lock the
-        // client out of voice receive after the first 30 silent-but-talking
-        // seconds (no keepalives flow while voice is streaming).
-        let token_ttl = std::time::Duration::from_secs(30);
+        // Expire aged UDP tokens — but never for a live session that is still
+        // in the token's channel. The client's idle keepalive is a re-hello
+        // with this token (refreshing its registered address after NAT
+        // rebinds); expiring it would permanently lock the client out of
+        // voice receive after the first 30 silent-but-talking seconds (no
+        // keepalives flow while voice is streaming).
         let Inner {
             udp_tokens,
             clients,
@@ -822,25 +834,27 @@ mod tests {
 
     // ── cleanup ──────────────────────────────────────────────────────
 
+    // Cleanup tests drive `cleanup_with` using zero grace/TTL instead of
+    // back-dating Instants: `Instant::now() - 300s` panics on Windows CI
+    // runners whose uptime is shorter than the subtracted duration.
+
     #[tokio::test]
     async fn cleanup_removes_empty_channels_after_grace() {
         let state = ServerState::new(unlimited());
-        let ch = state.create_channel(None).await.unwrap();
+        let _ch = state.create_channel(None).await.unwrap();
 
         // Channel just created — grace period should protect it
         let removed = state.cleanup_empty_channels().await;
         assert_eq!(removed, 0);
 
-        // Backdate channel creation to bypass grace
-        {
-            let mut inner = state.inner.write().await;
-            inner.channel_created_at.insert(
-                ch.clone(),
-                Instant::now() - std::time::Duration::from_secs(300),
-            );
-        }
-
-        let removed = state.cleanup_empty_channels().await;
+        // With the grace elapsed (zero grace), the empty channel goes away.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let removed = state
+            .cleanup_with(
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
         assert_eq!(removed, 1);
     }
 
@@ -851,16 +865,13 @@ mod tests {
         let ch = state.create_channel(None).await.unwrap();
         state.join_channel(&addr(1), &ch).await.unwrap();
 
-        // Backdate
-        {
-            let mut inner = state.inner.write().await;
-            inner.channel_created_at.insert(
-                ch.clone(),
-                Instant::now() - std::time::Duration::from_secs(300),
-            );
-        }
-
-        let removed = state.cleanup_empty_channels().await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let removed = state
+            .cleanup_with(
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
         assert_eq!(removed, 0);
     }
 
@@ -875,13 +886,14 @@ mod tests {
         let (_, token, _) = state.join_channel(&addr(1), &ch).await.unwrap();
         state.register_udp_by_token(token, addr(5001)).await;
 
-        // Age the token far past the 30s TTL.
-        {
-            let mut inner = state.inner.write().await;
-            inner.udp_tokens.get_mut(&token).unwrap().2 =
-                Instant::now() - std::time::Duration::from_secs(600);
-        }
-        state.cleanup_empty_channels().await;
+        // Zero TTL: any token age is "expired" — liveness alone must keep it.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        state
+            .cleanup_with(
+                std::time::Duration::from_secs(300),
+                std::time::Duration::ZERO,
+            )
+            .await;
 
         // Re-hello from a new source port (NAT rebind) must still register.
         assert!(state.register_udp_by_token(token, addr(5002)).await);
@@ -898,10 +910,14 @@ mod tests {
         {
             let mut inner = state.inner.write().await;
             inner.clients.get_mut(&addr(1)).unwrap().channel = None;
-            inner.udp_tokens.get_mut(&token).unwrap().2 =
-                Instant::now() - std::time::Duration::from_secs(600);
         }
-        state.cleanup_empty_channels().await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        state
+            .cleanup_with(
+                std::time::Duration::from_secs(300),
+                std::time::Duration::ZERO,
+            )
+            .await;
 
         assert!(!state.register_udp_by_token(token, addr(5001)).await);
     }
