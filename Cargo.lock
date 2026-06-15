@@ -5025,7 +5025,7 @@ dependencies = [
 
 [[package]]
 name = "tc-client"
-version = "1.9.18"
+version = "1.9.19"
 dependencies = [
  "anyhow",
  "audiopus",
@@ -5058,7 +5058,7 @@ dependencies = [
 
 [[package]]
 name = "tc-desktop"
-version = "1.9.18"
+version = "1.9.19"
 dependencies = [
  "anyhow",
  "cpal",
@@ -5080,11 +5080,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "winreg 0.55.0",
 ]
 
 [[package]]
 name = "tc-loadtest"
-version = "1.9.18"
+version = "1.9.19"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5102,7 +5103,7 @@ dependencies = [
 
 [[package]]
 name = "tc-server"
-version = "1.9.18"
+version = "1.9.19"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5125,7 +5126,7 @@ dependencies = [
 
 [[package]]
 name = "tc-shared"
-version = "1.9.18"
+version = "1.9.19"
 dependencies = [
  "anyhow",
  "bincode",

@@ -102,6 +102,10 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 - **Published atomics must be reset on the path that stops publishing them.** The capture thread skips frames while muted — it has to store `input_peak = 0` first, or the self/sidebar level meter freezes at the last pre-mute RMS.
 - **The settings test tone silences itself inside the audio callback** after the requested duration (frame countdown → zeros); the `sleep + drop(stream)` remains, but a wedged CoreAudio dispose can no longer leave an infinite beep.
 
+## Windows autostart (platform gotcha)
+
+- **Windows autostart bypasses `tauri-plugin-autostart` and writes the registry directly.** The plugin pins `auto-launch` 0.5, whose Windows `enable()` does `open_subkey_with_flags(HKCU\…\Run, KEY_SET_VALUE)` — it *opens* the Run key instead of creating it. On any profile where that key doesn't exist yet (fresh accounts, some locked-down/enterprise setups, Sandbox), enable fails with `os error 2` ("system cannot find the file specified"); `disable()` has the same shape when the value is already absent. `set_autostart` now `#[cfg(windows)]`-branches to our own `winreg` code: `create_subkey` (idempotent), `delete_value` tolerating `ErrorKind::NotFound`, and the exe path written **quoted** (`"C:\…\tc_.exe"`) so `Program Files` paths launch. macOS/Linux still use the plugin (`MacosLauncher::LaunchAgent`). `auto-launch` 0.6 fixes this upstream but `^0.5` won't pull it and the plugin hasn't bumped. `winreg` is a `[target.'cfg(windows)']` dep reusing the version already in the tree.
+
 ## tc:// deeplink hardening (invite pack)
 
 - **`tauri-plugin-single-instance` (feature `deep-link`) must stay the first plugin** in the builder. On Windows/Linux a tc:// click spawns a second process; the plugin forwards argv to the running instance and re-triggers `on_open_url` itself — our callback only surfaces the window. Re-ordering plugins silently breaks deep links on those platforms.

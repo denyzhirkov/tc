@@ -291,6 +291,9 @@ export async function runCommand(raw: string) {
         pushLog(`error: ${e}`, "error");
       }
       return;
+    case "/version":
+    case "/ver":
+      return pushLog(`tc_ v${state.status?.version ?? "unknown"}`, "system");
     case "/help":
     case "/h":
       return printHelp();
@@ -539,6 +542,7 @@ function printHelp() {
     "  /show_dev_logs       toggle DEBUG+ log stream in this feed (alias /devlogs)",
     "  /backup              copy all settings + saved servers to clipboard as JSON",
     "  /restore [json]      apply a backup (clipboard if no arg). private key stays untouched",
+    "  /version (/ver)      print the client version",
     "  /help (/h)           this help",
     "  <text>               chat in current channel",
   ]) {

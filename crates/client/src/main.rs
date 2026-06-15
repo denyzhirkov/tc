@@ -391,6 +391,9 @@ async fn handle_command(
     // Commands that work without a connection
     match parts[0] {
         "/matrix" => return cmd_matrix(app),
+        "/version" | "/ver" => {
+            return app.add_message(format!("tc_ v{}", env!("CARGO_PKG_VERSION")))
+        }
         "/paranoid" => return cmd_paranoid(app, arg),
         "/denoise" => return cmd_denoise(app, arg),
         "/trust" => {
@@ -594,6 +597,7 @@ fn cmd_help(app: &mut tui::App) {
         "  /server (/s) <ip>  set server address",
         "  /reconnect (/r)    reconnect to server",
         "  /web <port>        start web UI on port",
+        "  /version (/ver)    print the client version",
         "  /quit (/q)         exit",
         "  <text>             send chat message",
         "── keys ──",

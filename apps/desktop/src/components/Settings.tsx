@@ -647,6 +647,10 @@ export default function Settings() {
             </select>
           </Row>
         </Section>
+
+        <div class="text-center text-xs text-muted select-none pb-2">
+          tc_ v{state.status?.version ?? "—"}
+        </div>
       </div>
     </div>
   );

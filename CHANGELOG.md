@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.19] — 2026-06-16
+
+### Fixed
+- **Windows autostart toggle** failed with "The system cannot find the file
+  specified (os error 2)". The bundled `auto-launch` 0.5 (pinned by
+  `tauri-plugin-autostart`) *opens* `HKCU\…\Run` instead of creating it, so on
+  profiles where that key is absent both enable and disable error out. Windows
+  now manages the Run value directly (`create_subkey` is idempotent; delete
+  tolerates an absent value; the exe path is quoted for paths with spaces); the
+  plugin is still used on macOS/Linux.
+
+### Added
+- **Client version** shown at the bottom of the desktop Settings panel, and a
+  `/version` (`/ver`) command in both clients that prints it to the log.
+
 ## [1.9.18] — 2026-06-15
 
 ### Added

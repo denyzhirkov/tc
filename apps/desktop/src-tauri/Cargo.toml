@@ -32,3 +32,10 @@ tc-client = { path = "../../../crates/client" }
 hex = "0.4"
 cpal = { workspace = true }
 sha2 = { workspace = true }
+
+# Windows autostart is handled directly via the registry: the bundled
+# auto-launch 0.5 (pinned by tauri-plugin-autostart) *opens* HKCU\...\Run
+# instead of creating it, failing with os error 2 on profiles where that key
+# is absent. We manage the Run value ourselves and keep the plugin for mac/linux.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
