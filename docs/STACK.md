@@ -15,7 +15,8 @@ Source of truth for tooling decisions, wire contracts, and the security/resilien
 | Voice transport | UDP, custom binary | Latency over reliability. |
 | Voice crypto | `chacha20poly1305` (XChaCha20-Poly1305) | AEAD, 24-byte nonce, per-channel key. |
 | Identity | `ed25519-dalek` | Per-user keypair, fingerprint shown in UI. |
-| Codec | `audiopus` (Opus) | 48 kHz mono, 20 ms frames. |
+| Codec | `audiopus` (Opus) | 48 kHz mono, 20 ms frames. HD-voice HIGH tier (64 kbit/s → fullband), `signal=Voice`. |
+| Noise suppression | `nnnoiseless` (RNNoise port) | Opt-in mic denoise before encode (`Denoiser`, 480-sample frames). Pure Rust, no C/build deps. |
 | Audio I/O | `cpal` | CoreAudio / WASAPI / ALSA. |
 | Resampling | `rubato` (sinc) + linear fallback | Quality on device-rate mismatch. |
 | Ring buffers | `ringbuf` | Lock-free thread handoff on hot path. |

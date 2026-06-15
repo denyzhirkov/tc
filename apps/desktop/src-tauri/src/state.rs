@@ -71,6 +71,11 @@ pub struct AppCore {
     pub dm_peers: Vec<DmPeer>,
     /// Atomics shared with the audio capture thread.
     pub muted: Arc<AtomicBool>,
+    /// Paranoid mode: constant packet rate + flat frame size (read live by the
+    /// capture thread; survives across calls).
+    pub paranoid: Arc<AtomicBool>,
+    /// Noise suppression (RNNoise) on the captured mic (read live).
+    pub denoise: Arc<AtomicBool>,
     pub vad_threshold: Arc<AtomicU32>,
     pub input_gain: Arc<AtomicU32>,
     pub output_vol: Arc<AtomicU32>,
@@ -111,6 +116,8 @@ impl AppCore {
         let output_vol_pct = saved.output_vol.unwrap_or(100);
 
         let muted = Arc::new(AtomicBool::new(matches!(voice_mode, VoiceMode::Ptt)));
+        let paranoid = Arc::new(AtomicBool::new(saved.paranoid.unwrap_or(false)));
+        let denoise = Arc::new(AtomicBool::new(saved.denoise.unwrap_or(false)));
         let vad_threshold = Arc::new(AtomicU32::new(
             vad_threshold_for(voice_mode, vad_level_pct).to_bits(),
         ));
@@ -144,6 +151,8 @@ impl AppCore {
             servers: saved.servers.clone(),
             dm_peers: saved.dm_peers.clone(),
             muted,
+            paranoid,
+            denoise,
             vad_threshold,
             input_gain,
             output_vol,
@@ -171,6 +180,8 @@ impl AppCore {
             output_vol: Some(self.output_vol_pct),
             name: self.name.clone(),
             voice_mode: Some(self.voice_mode.as_str().to_string()),
+            paranoid: Some(self.paranoid.load(Ordering::Relaxed)),
+            denoise: Some(self.denoise.load(Ordering::Relaxed)),
             hotkeys: self.hotkeys.clone(),
             notifications: Some(self.notifications),
             autostart: Some(self.autostart),

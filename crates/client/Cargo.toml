@@ -18,6 +18,7 @@ serde.workspace = true
 bincode.workspace = true
 cpal.workspace = true
 audiopus.workspace = true
+nnnoiseless.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 anyhow.workspace = true

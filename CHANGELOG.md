@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.18] — 2026-06-15
+
+### Added
+- **HD voice + noise suppression** (voice-quality pack):
+  - **Noise suppression** (RNNoise via `nnnoiseless`, opt-in): cleans keyboard /
+    fan / background off the mic before encoding. Pure-Rust, no build deps;
+    runs in the capture thread (480-sample frames, no per-frame allocation),
+    applies live mid-call. Desktop toggle in Settings → Audio; `/denoise
+    <on|off>` in both clients. Persisted.
+  - **Higher Opus ceiling**: HIGH tier 32 → **64 kbit/s** (Opus selects 20 kHz
+    fullband automatically at that rate), tiers rebalanced
+    (40 / 24 / 12 kbit/s), and `signal=Voice` hints the encoder for speech.
+    Audio bandwidth is left to Opus to pick from the bitrate (pinning it would
+    hurt the low/loss tiers). Adaptive degradation on loss is unchanged.
+- **Paranoid mode** (opt-in toggle, both clients): traffic-analysis resistance
+  for voice. With it on, the client sends a **constant packet rate** of
+  **flat-size** frames even during silence/mute, so the relay (or any on-path
+  observer) can no longer infer *who is speaking when* from packet timing/size —
+  the metadata leak that VAD/mute otherwise expose. Mute sends comfort silence
+  (encoded zeros); the real mic never leaves while muted. Opus switches to
+  CBR + DTX-off so silence frames don't collapse into tiny tell-tale packets.
+  - Desktop: toggle in Settings → Audio; both clients: `/paranoid <on|off>`.
+    Persisted; applies live mid-call (capture thread reads the flag per frame).
+  - Zero wire/format change, zero server change, hot-path stays allocation-free;
+    a normal-mode peer in the same channel is unaffected.
+  - Honest scope: closes the **timing** leak fully and flattens size to CBR
+    granularity. Not byte-exact constant size (residual CBR variance + tier
+    changes remain) — strict padding needs a payload length field (future work).
+    Cost: constant bandwidth even in silence. Labelled accordingly in the UI.
+
 ## [1.9.17] — 2026-06-15
 
 ### Added

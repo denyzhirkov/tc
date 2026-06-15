@@ -442,12 +442,16 @@ export default function Settings() {
   const [notify, setNotify] = createSignal(state.status?.notifications ?? true);
   const [tray, setTray] = createSignal(state.status?.close_to_tray ?? false);
   const [auto, setAuto] = createSignal(state.status?.autostart ?? false);
+  const [para, setPara] = createSignal(state.status?.paranoid ?? false);
+  const [denoise, setDenoise] = createSignal(state.status?.denoise ?? false);
 
   onMount(async () => {
     await refreshStatus();
     setNotify(state.status?.notifications ?? true);
     setTray(state.status?.close_to_tray ?? false);
     setAuto(state.status?.autostart ?? false);
+    setPara(state.status?.paranoid ?? false);
+    setDenoise(state.status?.denoise ?? false);
     await refreshHotkeys();
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeSettings();
@@ -544,6 +548,30 @@ export default function Settings() {
           <Row label={t("settings.sound_check")}>
             <SoundCheck />
           </Row>
+          <div class="flex flex-col gap-1.5">
+            <Toggle
+              label={t("settings.denoise")}
+              value={denoise()}
+              onChange={async (v) => {
+                setDenoise(v);
+                await cmd.setDenoise(v);
+                if (state.status) state.status.denoise = v;
+              }}
+            />
+            <span class="text-xs text-muted">{t("settings.denoise_hint")}</span>
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <Toggle
+              label={t("settings.paranoid")}
+              value={para()}
+              onChange={async (v) => {
+                setPara(v);
+                await cmd.setParanoid(v);
+                if (state.status) state.status.paranoid = v;
+              }}
+            />
+            <span class="text-xs text-muted">{t("settings.paranoid_hint")}</span>
+          </div>
         </Section>
 
         <Section title={t("settings.hotkeys")}>

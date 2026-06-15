@@ -32,6 +32,8 @@ pub struct AppStatus {
     pub input_gain_pct: u32,
     pub output_vol_pct: u32,
     pub vad_level_pct: u32,
+    pub paranoid: bool,
+    pub denoise: bool,
     pub notifications: bool,
     pub close_to_tray: bool,
     pub autostart: bool,
@@ -56,6 +58,8 @@ pub async fn app_status(state: CoreState<'_>) -> Result<AppStatus, String> {
         input_gain_pct: c.input_gain_pct,
         output_vol_pct: c.output_vol_pct,
         vad_level_pct: c.vad_level_pct,
+        paranoid: c.paranoid.load(Ordering::Relaxed),
+        denoise: c.denoise.load(Ordering::Relaxed),
         notifications: c.notifications,
         close_to_tray: c.close_to_tray,
         autostart: c.autostart,
@@ -246,6 +250,25 @@ pub async fn set_voice_mode(state: CoreState<'_>, mode: String) -> Result<(), St
     Ok(())
 }
 
+/// Toggle paranoid (traffic-analysis-resistant) mode. Applies live mid-call —
+/// the capture thread reads the flag every frame.
+#[tauri::command]
+pub async fn set_paranoid(state: CoreState<'_>, enabled: bool) -> Result<(), String> {
+    let c = state.lock().await;
+    c.paranoid.store(enabled, Ordering::Relaxed);
+    c.save();
+    Ok(())
+}
+
+/// Toggle RNNoise mic noise suppression. Applies live mid-call.
+#[tauri::command]
+pub async fn set_denoise(state: CoreState<'_>, enabled: bool) -> Result<(), String> {
+    let c = state.lock().await;
+    c.denoise.store(enabled, Ordering::Relaxed);
+    c.save();
+    Ok(())
+}
+
 /// Set muted = !muted while held; reset by the runtime on key-up. PTT helper.
 #[tauri::command]
 pub async fn ptt_press(state: CoreState<'_>) -> Result<(), String> {
@@ -274,6 +297,8 @@ pub async fn export_settings(state: CoreState<'_>) -> Result<String, String> {
         output_vol: Some(c.output_vol_pct),
         name: c.name.clone(),
         voice_mode: Some(c.voice_mode.as_str().to_string()),
+        paranoid: Some(c.paranoid.load(Ordering::Relaxed)),
+        denoise: Some(c.denoise.load(Ordering::Relaxed)),
         hotkeys: c.hotkeys.clone(),
         notifications: Some(c.notifications),
         autostart: Some(c.autostart),
@@ -309,6 +334,12 @@ pub async fn import_settings(state: CoreState<'_>, json: String) -> Result<(), S
     c.name = s.name.clone();
     if let Some(m) = s.voice_mode.as_deref().and_then(VoiceMode::parse) {
         c.apply_voice_mode(m);
+    }
+    if let Some(v) = s.paranoid {
+        c.paranoid.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = s.denoise {
+        c.denoise.store(v, Ordering::Relaxed);
     }
     c.hotkeys = s.hotkeys.clone();
     if let Some(v) = s.notifications {

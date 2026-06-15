@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*", "apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "1.9.17"
+version = "1.9.18"
 edition = "2021"
 license = "MIT"
 
@@ -19,6 +19,7 @@ bincode = "1"
 # Audio
 cpal = "0.15"
 audiopus = "0.3.0-rc.0"
+nnnoiseless = { version = "0.5", default-features = false }
 
 # Terminal UI
 ratatui = "0.29"

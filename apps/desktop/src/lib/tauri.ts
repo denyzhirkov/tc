@@ -19,6 +19,8 @@ export type AppStatus = {
   input_gain_pct: number;
   output_vol_pct: number;
   vad_level_pct: number;
+  paranoid: boolean;
+  denoise: boolean;
   notifications: boolean;
   close_to_tray: boolean;
   autostart: boolean;
@@ -57,6 +59,8 @@ export const cmd = {
   setName: (name: string) => invoke<void>("set_name", { name }),
   setMute: (muted: boolean) => invoke<void>("set_mute", { muted }),
   setVoiceMode: (mode: VoiceMode) => invoke<void>("set_voice_mode", { mode }),
+  setParanoid: (enabled: boolean) => invoke<void>("set_paranoid", { enabled }),
+  setDenoise: (enabled: boolean) => invoke<void>("set_denoise", { enabled }),
   pttPress: () => invoke<void>("ptt_press"),
   pttRelease: () => invoke<void>("ptt_release"),
   setHotkey: (action: string, accel: string) =>

@@ -27,6 +27,10 @@ pub struct StartParams {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub sender_name: String,
+    /// Noise suppression (RNNoise) on the captured mic. Read live.
+    pub denoise: Arc<AtomicBool>,
+    /// Traffic-analysis-resistant mode (constant rate + flat size). Read live.
+    pub paranoid: Arc<AtomicBool>,
     /// Echo (sound-check) session — hear our own audio reflected by the server.
     pub echo_test: bool,
 }
@@ -200,6 +204,8 @@ async fn start_from(p: &StartParams) -> anyhow::Result<VoiceHandle> {
         p.input_gain.clone(),
         p.output_vol.clone(),
         p.sender_name.clone(),
+        p.denoise.clone(),
+        p.paranoid.clone(),
         p.echo_test,
     )
     .await

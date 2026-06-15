@@ -381,6 +381,8 @@ async fn spawn_echo(
             input_device: c.input_device.clone(),
             output_device: c.output_device.clone(),
             sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),
+            denoise: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            paranoid: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             echo_test: true,
         };
         (params, c.voice.clone())
@@ -439,6 +441,8 @@ async fn spawn_voice(app: AppHandle, core: Arc<Mutex<AppCore>>) {
             input_device: c.input_device.clone(),
             output_device: c.output_device.clone(),
             sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),
+            denoise: c.denoise.clone(),
+            paranoid: c.paranoid.clone(),
             echo_test: false,
         };
         (params, c.voice.clone())

@@ -84,6 +84,12 @@ async fn main() -> Result<()> {
         app.output_vol
             .store(vol_from_percent(pct).to_bits(), Ordering::Relaxed);
     }
+    if user_settings.paranoid == Some(true) {
+        app.paranoid.store(true, Ordering::Relaxed);
+    }
+    if user_settings.denoise == Some(true) {
+        app.denoise.store(true, Ordering::Relaxed);
+    }
     let mut terminal = tui::init_terminal()?;
 
     // TOFU state for TLS certificate verification
@@ -385,6 +391,8 @@ async fn handle_command(
     // Commands that work without a connection
     match parts[0] {
         "/matrix" => return cmd_matrix(app),
+        "/paranoid" => return cmd_paranoid(app, arg),
+        "/denoise" => return cmd_denoise(app, arg),
         "/trust" => {
             return cmd_trust(
                 app,
@@ -578,6 +586,8 @@ fn cmd_help(app: &mut tui::App) {
         "  /connect (/j) <id> join a channel (or just #<id>)",
         "  /leave (/l)        leave current channel",
         "  /echotest (/echo)  5s mic+connection check (hear yourself back)",
+        "  /denoise <on|off>  RNNoise mic noise suppression",
+        "  /paranoid <on|off> hide speaking patterns from the server (constant rate)",
         "  /invite (/i)       tc:// link to current server/channel",
         "  /mute (/m)         toggle mute",
         "  /name (/n) <name>  set your display name",
@@ -658,6 +668,52 @@ fn cmd_leave(
     app.participants.clear();
     app.voice_join_params = None;
     app.rejoin_channel = None;
+}
+
+fn cmd_denoise(app: &mut tui::App, arg: Option<&str>) {
+    let cur = app.denoise.load(Ordering::Relaxed);
+    let next = match arg.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("on") | Some("true") | Some("1") => true,
+        Some("off") | Some("false") | Some("0") => false,
+        None | Some("") => !cur,
+        _ => {
+            app.add_message("usage: /denoise <on|off>".into());
+            return;
+        }
+    };
+    app.denoise.store(next, Ordering::Relaxed);
+    save_settings(app);
+    app.add_message(
+        if next {
+            "noise suppression ON — RNNoise cleans the mic before sending"
+        } else {
+            "noise suppression OFF"
+        }
+        .into(),
+    );
+}
+
+fn cmd_paranoid(app: &mut tui::App, arg: Option<&str>) {
+    let cur = app.paranoid.load(Ordering::Relaxed);
+    let next = match arg.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("on") | Some("true") | Some("1") => true,
+        Some("off") | Some("false") | Some("0") => false,
+        None | Some("") => !cur, // toggle
+        _ => {
+            app.add_message("usage: /paranoid <on|off>".into());
+            return;
+        }
+    };
+    app.paranoid.store(next, Ordering::Relaxed);
+    save_settings(app);
+    app.add_message(
+        if next {
+            "paranoid mode ON — constant packet rate hides speaking patterns from the server (more bandwidth; not byte-exact size)"
+        } else {
+            "paranoid mode OFF"
+        }
+        .into(),
+    );
 }
 
 fn cmd_echotest(app: &mut tui::App, conn: &mut Option<network::ServerConnection>) {
@@ -833,6 +889,8 @@ async fn handle_server_message(
                 app.input_gain.clone(),
                 app.output_vol.clone(),
                 my_name,
+                app.denoise.clone(),
+                app.paranoid.clone(),
                 false,
             )
             .await
@@ -871,6 +929,8 @@ async fn handle_server_message(
                 app.input_gain.clone(),
                 app.output_vol.clone(),
                 my_name,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
                 true,
             )
             .await
@@ -1245,6 +1305,16 @@ fn build_settings(app: &tui::App) -> settings::UserSettings {
         output_vol: if vol_pct != 100 { Some(vol_pct) } else { None },
         name: app.name.clone(),
         voice_mode: None,
+        paranoid: if app.paranoid.load(Ordering::Relaxed) {
+            Some(true)
+        } else {
+            None
+        },
+        denoise: if app.denoise.load(Ordering::Relaxed) {
+            Some(true)
+        } else {
+            None
+        },
         hotkeys: Default::default(),
         notifications: None,
         autostart: None,
@@ -1286,6 +1356,8 @@ async fn restart_voice(
         app.input_gain.clone(),
         app.output_vol.clone(),
         my_name,
+        app.denoise.clone(),
+        app.paranoid.clone(),
         false,
     )
     .await

@@ -34,6 +34,12 @@ const en: Dict = {
   "settings.sound_check_silent": "no audio came back — were you silent? (VAD may have gated it)",
   "settings.sound_check_no_conn": "no round-trip — server unreachable over UDP",
   "settings.sound_check_no_mic": "no microphone detected",
+  "settings.denoise": "noise suppression",
+  "settings.denoise_hint":
+    "RNNoise cleans keyboard / fan / background off your mic before sending",
+  "settings.paranoid": "paranoid mode",
+  "settings.paranoid_hint":
+    "constant packet rate hides who's speaking when from the server (more bandwidth; not byte-exact size)",
   "settings.identity": "identity",
   "settings.fingerprint": "fingerprint",
   "settings.pubkey": "public key",
@@ -144,6 +150,12 @@ const ru: Dict = {
   "settings.sound_check_silent": "звук не вернулся — вы молчали? (мог сработать VAD)",
   "settings.sound_check_no_conn": "нет round-trip — сервер недоступен по UDP",
   "settings.sound_check_no_mic": "микрофон не обнаружен",
+  "settings.denoise": "шумоподавление",
+  "settings.denoise_hint":
+    "RNNoise убирает клавиатуру / вентилятор / фон с микрофона до отправки",
+  "settings.paranoid": "параноик-режим",
+  "settings.paranoid_hint":
+    "постоянная частота пакетов скрывает от сервера, кто и когда говорит (больше трафика; размер не байт-в-байт)",
   "settings.identity": "личность",
   "settings.fingerprint": "отпечаток",
   "settings.pubkey": "публичный ключ",

@@ -128,6 +128,33 @@ export async function runCommand(raw: string) {
       if (state.channel)
         return pushLog("leave the channel first (/leave) before a sound check", "error");
       return safe(() => cmd.startEchoTest());
+    case "/paranoid": {
+      const v = arg.toLowerCase();
+      const cur = state.status?.paranoid ?? false;
+      const next = v === "" ? !cur : v === "on" || v === "true" || v === "1";
+      const valid = v === "" || next || v === "off" || v === "false" || v === "0";
+      if (!valid) return pushLog("usage: /paranoid <on|off>", "error");
+      await safe(() => cmd.setParanoid(next));
+      if (state.status) state.status.paranoid = next;
+      pushLog(
+        next
+          ? "paranoid mode on — constant packet rate hides speaking patterns from the server"
+          : "paranoid mode off",
+        "system",
+      );
+      return;
+    }
+    case "/denoise": {
+      const v = arg.toLowerCase();
+      const cur = state.status?.denoise ?? false;
+      const next = v === "" ? !cur : v === "on" || v === "true" || v === "1";
+      const valid = v === "" || next || v === "off" || v === "false" || v === "0";
+      if (!valid) return pushLog("usage: /denoise <on|off>", "error");
+      await safe(() => cmd.setDenoise(next));
+      if (state.status) state.status.denoise = next;
+      pushLog(next ? "noise suppression on (RNNoise)" : "noise suppression off", "system");
+      return;
+    }
     case "/hotkey":
     case "/hk":
       return handleHotkey(rest);
@@ -491,6 +518,8 @@ function printHelp() {
     "  /vad  <0-100>        VAD level (0 = off)",
     "  /test                play 0.5s sine through current output",
     "  /echotest (/echo)    5s mic+connection check — hear yourself back via the server",
+    "  /denoise <on|off>    RNNoise mic noise suppression",
+    "  /paranoid <on|off>   hide speaking patterns from the server (constant packet rate)",
     "  /hotkey (/hk)        list / set / unset global hotkeys",
     isMac
       ? "    /hotkey set ptt Alt+V       /hotkey set mute Alt+M"

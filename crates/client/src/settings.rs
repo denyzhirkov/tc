@@ -27,6 +27,13 @@ pub struct UserSettings {
     /// "open" | "vad" | "ptt" — capture-side voice mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice_mode: Option<String>,
+    /// Paranoid mode: constant packet rate + flat frame size (traffic-analysis
+    /// resistance). None = default (false).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paranoid: Option<bool>,
+    /// Noise suppression (RNNoise) on the captured mic. None = default (false).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise: Option<bool>,
     /// Hotkey bindings (action → accelerator string, e.g. "CommandOrControl+Shift+M").
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub hotkeys: HashMap<String, String>,

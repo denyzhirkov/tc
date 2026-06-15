@@ -221,6 +221,11 @@ pub struct App {
     pub voice_join_params: Option<VoiceJoinParams>,
     /// When a sound-check (echo test) is running, the instant it should end.
     pub echo_deadline: Option<std::time::Instant>,
+    /// Noise suppression (RNNoise). Shared with the capture thread (read live).
+    pub denoise: Arc<AtomicBool>,
+    /// Traffic-analysis-resistant mode: constant packet rate + flat frame size
+    /// even in silence/mute. Shared with the capture thread (read live).
+    pub paranoid: Arc<AtomicBool>,
     /// VAD threshold (f32 stored as AtomicU32 bits for lock-free sharing with voice thread).
     pub vad_threshold: Arc<AtomicU32>,
     /// Microphone gain (f32 stored as AtomicU32 bits; 1.0 = 100%).
@@ -289,6 +294,8 @@ impl App {
             output_device: None,
             voice_join_params: None,
             echo_deadline: None,
+            denoise: Arc::new(AtomicBool::new(false)),
+            paranoid: Arc::new(AtomicBool::new(false)),
             vad_threshold: Arc::new(AtomicU32::new(config::VAD_RMS_THRESHOLD.to_bits())),
             input_gain: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             output_vol: Arc::new(AtomicU32::new(1.0_f32.to_bits())),

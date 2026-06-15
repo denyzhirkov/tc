@@ -133,11 +133,13 @@ pub const LOSS_THRESH_MEDIUM: u8 = 5;
 pub const LOSS_THRESH_LOW: u8 = 15;
 pub const LOSS_THRESH_MINIMUM: u8 = 30;
 
-/// Bitrates (bits/sec) per quality tier.
-pub const BITRATE_HIGH: i32 = 32_000;
-pub const BITRATE_MEDIUM: i32 = 24_000;
-pub const BITRATE_LOW: i32 = 16_000;
-pub const BITRATE_MINIMUM: i32 = 10_000;
+/// Bitrates (bits/sec) per quality tier. The HIGH tier is "HD voice": at
+/// 64 kbit/s mono VoIP Opus encodes full 20 kHz fullband automatically, well
+/// above typical speech-chat quality. Lower tiers degrade gracefully on loss.
+pub const BITRATE_HIGH: i32 = 64_000;
+pub const BITRATE_MEDIUM: i32 = 40_000;
+pub const BITRATE_LOW: i32 = 24_000;
+pub const BITRATE_MINIMUM: i32 = 12_000;
 
 /// Encoder complexity per quality tier (0–10).
 pub const COMPLEXITY_HIGH: u8 = 10;

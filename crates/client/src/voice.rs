@@ -12,7 +12,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePacket};
 
 use crate::audio;
-use crate::codec::{OpusDecoder, OpusEncoder};
+use crate::codec::{Denoiser, OpusDecoder, OpusEncoder};
 
 // ── Adaptive Quality ────────────────────────────────────────────────
 
@@ -406,6 +406,14 @@ pub async fn start_voice(
     input_gain: Arc<AtomicU32>,
     output_vol: Arc<AtomicU32>,
     sender_name: String,
+    // Noise suppression (RNNoise): clean the mic before encoding. Read live on
+    // the capture thread so the toggle applies mid-call.
+    denoise: Arc<AtomicBool>,
+    // Paranoid (traffic-analysis-resistant) mode: send a constant packet rate
+    // of flat-size frames even in silence/mute, so the relay can't infer who is
+    // speaking when. Read live on the capture thread so the toggle applies
+    // mid-call.
+    paranoid: Arc<AtomicBool>,
     // Echo (sound-check) mode: keep our own reflected packets instead of
     // dropping them, so we hear ourselves come back through the server.
     echo_test: bool,
@@ -490,6 +498,8 @@ pub async fn start_voice(
         input_peak: handle.input_peak.clone(),
         stop: handle.stop.clone(),
         stream_failed: handle.capture_failed.clone(),
+        denoise: denoise.clone(),
+        paranoid: paranoid.clone(),
     });
 
     spawn_udp_send_task(
@@ -610,6 +620,10 @@ struct CaptureCfg {
     stop: Arc<AtomicBool>,
     /// Set when the capture device stops delivering frames (starvation watchdog).
     stream_failed: Arc<AtomicBool>,
+    /// Noise suppression (RNNoise) on the captured signal. Read live.
+    denoise: Arc<AtomicBool>,
+    /// Traffic-analysis-resistant mode (constant rate + flat size). Read live.
+    paranoid: Arc<AtomicBool>,
 }
 
 fn spawn_capture_thread(cfg: CaptureCfg) {
@@ -642,6 +656,49 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
         let mut last_frame_at = Instant::now();
         let mut starvation_reported = false;
         let mut preroll = VadPreroll::new();
+
+        // Paranoid mode: a reusable all-zero frame sent (encoded) to keep a
+        // constant packet rate during silence/mute, and the last-seen flag so
+        // we reconfigure the encoder (CBR + DTX off) only when the toggle flips.
+        let silence_pcm = vec![0.0f32; config::FRAME_SIZE];
+        let mut last_paranoid = false;
+
+        // RNNoise denoiser, allocated once (heavy boxed model); applied per
+        // frame only when the toggle is on.
+        let mut denoiser = Denoiser::new();
+
+        // Shared encode→encrypt→send for the paranoid constant-rate paths.
+        // Returns false when the pipeline channel is closed (stop). Captures
+        // only shared refs, so it coexists with the normal path's borrows.
+        let send_one = |encoder: &mut OpusEncoder,
+                        packet_buf: &mut BytesMut,
+                        sequence: &mut u32,
+                        frame: &[f32]|
+         -> bool {
+            let opus = match encoder.encode(frame) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("encode error: {}", e);
+                    return true;
+                }
+            };
+            if !build_packet(
+                packet_buf,
+                *sequence,
+                &cfg.channel_id,
+                &name_bytes,
+                opus,
+                &cfg.cipher,
+            ) {
+                return true;
+            }
+            let frozen = packet_buf.split().freeze();
+            if cfg.encoded_tx.blocking_send(frozen).is_err() {
+                return false;
+            }
+            *sequence = sequence.wrapping_add(1);
+            true
+        };
 
         loop {
             if cfg.stop.load(Ordering::Relaxed) {
@@ -686,10 +743,27 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
                 starvation_reported = false;
                 cons.pop_slice(&mut pcm_frame);
             }
+
+            // Reconfigure the encoder only when the paranoid toggle flips.
+            let paranoid = cfg.paranoid.load(Ordering::Relaxed);
+            if paranoid != last_paranoid {
+                if let Err(e) = encoder.set_constant_bitrate(paranoid) {
+                    tracing::warn!("paranoid encoder reconfigure failed: {}", e);
+                }
+                last_paranoid = paranoid;
+            }
+
             if cfg.muted.load(Ordering::Relaxed) {
                 // Zero the published level — otherwise the UI meter freezes at
                 // the last pre-mute RMS and waves forever.
                 cfg.input_peak.store(0, Ordering::Relaxed);
+                // Paranoid: keep the cadence constant with comfort silence
+                // (encoded zeros) — the real mic never leaves while muted, but
+                // the relay can't tell mute apart from speech.
+                if paranoid && !send_one(&mut encoder, &mut packet_buf, &mut sequence, &silence_pcm)
+                {
+                    break;
+                }
                 continue;
             }
 
@@ -698,6 +772,12 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
                 for s in &mut pcm_frame {
                     *s *= gain;
                 }
+            }
+
+            // Noise suppression before the meter/VAD/encode, so the level meter
+            // and VAD react to the cleaned signal too.
+            if cfg.denoise.load(Ordering::Relaxed) {
+                denoiser.process(&mut pcm_frame);
             }
 
             // Publish RMS for UI level meter.
@@ -709,6 +789,15 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
             if frames_since_check >= config::STATS_WINDOW_PACKETS {
                 frames_since_check = 0;
                 maybe_adapt_encoder(&mut encoder, &cfg.stats, &mut current_tier);
+            }
+
+            // Paranoid: no VAD gating — send every frame so the packet cadence
+            // is constant and carries no speech-timing signal.
+            if paranoid {
+                if !send_one(&mut encoder, &mut packet_buf, &mut sequence, &pcm_frame) {
+                    break;
+                }
+                continue;
             }
 
             if !pass_vad(&pcm_frame, &cfg.vad_threshold, &mut hangover_remaining) {

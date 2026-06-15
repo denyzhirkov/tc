@@ -131,6 +131,8 @@ pub fn run() {
             commands::set_name,
             commands::set_mute,
             commands::set_voice_mode,
+            commands::set_paranoid,
+            commands::set_denoise,
             commands::ptt_press,
             commands::ptt_release,
             audio_cmd::list_input_devices,
