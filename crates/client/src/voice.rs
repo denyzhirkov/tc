@@ -406,6 +406,9 @@ pub async fn start_voice(
     input_gain: Arc<AtomicU32>,
     output_vol: Arc<AtomicU32>,
     sender_name: String,
+    // Echo (sound-check) mode: keep our own reflected packets instead of
+    // dropping them, so we hear ourselves come back through the server.
+    echo_test: bool,
 ) -> Result<VoiceHandle> {
     let (socket, acked) = udp_connect_and_handshake(server_ip, udp_token).await?;
     let socket = Arc::new(socket);
@@ -508,6 +511,7 @@ pub async fn start_voice(
         registered: handle.registered.clone(),
         udp_token,
         own_name: sender_name,
+        echo_test,
     }));
 
     Ok(handle)
@@ -952,6 +956,9 @@ struct RecvCfg {
     udp_token: u64,
     /// Our own display name — inbound packets carrying it are echoes and dropped.
     own_name: String,
+    /// Sound-check mode: don't drop our own reflected packets (we want to hear
+    /// them come back through the server).
+    echo_test: bool,
 }
 
 /// Per-sender receive state. Sequence counters of different senders are
@@ -1010,8 +1017,10 @@ fn spawn_recv_task(cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
                 continue;
             };
             // Echo guard: a relayed copy of our own stream (server-side echo,
-            // loopback on a peer) must never reach the speaking map or playback.
-            if name == cfg.own_name {
+            // loopback on a peer) must never reach the speaking map or playback
+            // — except during a sound-check, where hearing ourselves back is
+            // the whole point.
+            if !cfg.echo_test && name == cfg.own_name {
                 tracing::trace!("dropping echoed own packet");
                 continue;
             }
@@ -1362,6 +1371,12 @@ impl VoiceHandle {
         } else {
             Vec::new()
         }
+    }
+
+    /// Total bytes received on the voice socket so far. For the sound-check:
+    /// non-zero means our reflected audio made the full round-trip back.
+    pub fn bytes_received(&self) -> u64 {
+        self.bytes_rx.load(Ordering::Relaxed)
     }
 
     /// Returns the most recent input RMS (0.0–1.0).

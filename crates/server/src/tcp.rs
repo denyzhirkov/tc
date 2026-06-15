@@ -249,7 +249,7 @@ async fn reader_loop<R: AsyncRead + Unpin>(
             // Two layers checked in order: per-IP (cross-connection) then per-connection.
             match &msg {
                 ClientMessage::Ping | ClientMessage::Hello { .. } => {}
-                ClientMessage::CreateChannel { .. } => {
+                ClientMessage::CreateChannel { .. } | ClientMessage::StartEchoTest => {
                     if !ip_limiter.check(peer_addr.ip())
                         || !cmd_limiter.check()
                         || !create_limiter.check()
@@ -339,9 +339,47 @@ async fn handle_message(
         ClientMessage::Ping => {
             send_to(state, senders, &peer_addr, ServerMessage::Pong).await;
         }
+        ClientMessage::StartEchoTest => {
+            handle_start_echo_test(peer_addr, name, state, senders).await
+        }
+        // Tearing down the echo channel is exactly leaving it.
+        ClientMessage::StopEchoTest => handle_leave_channel(peer_addr, name, state, senders).await,
     }
 
     Ok(())
+}
+
+async fn handle_start_echo_test(
+    peer_addr: SocketAddr,
+    name: &str,
+    state: &ServerState,
+    senders: &ClientSenders,
+) {
+    match state.start_echo_test(&peer_addr).await {
+        Ok((channel_id, udp_token, voice_key)) => {
+            tracing::info!(%peer_addr, %name, %channel_id, "echo test started");
+            send_to(
+                state,
+                senders,
+                &peer_addr,
+                ServerMessage::EchoTestReady {
+                    channel_id,
+                    udp_token,
+                    voice_key,
+                },
+            )
+            .await;
+        }
+        Err(e) => {
+            send_to(
+                state,
+                senders,
+                &peer_addr,
+                ServerMessage::Error { message: e },
+            )
+            .await;
+        }
+    }
 }
 
 async fn handle_create_channel(

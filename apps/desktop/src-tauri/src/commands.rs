@@ -177,6 +177,34 @@ pub async fn leave_channel(state: CoreState<'_>) -> Result<(), String> {
     send_msg(&state, ClientMessage::LeaveChannel).await
 }
 
+/// Begin a sound-check. The drain task starts the echo voice session when the
+/// server replies `EchoTestReady`, then ends it after a fixed duration and
+/// emits `echo_test_started` / `echo_test_result`. Rejected while in a channel
+/// (the server's echo channel can't be joined on top of an existing one).
+#[tauri::command]
+pub async fn start_echo_test(state: CoreState<'_>) -> Result<(), String> {
+    {
+        let c = state.lock().await;
+        if c.conn.is_none() {
+            return Err("not connected".into());
+        }
+        if c.channel.is_some() {
+            return Err("leave the channel first".into());
+        }
+    }
+    send_msg(&state, ClientMessage::StartEchoTest).await
+}
+
+/// Abort an in-progress sound-check early (e.g. settings closed). Idempotent.
+#[tauri::command]
+pub async fn cancel_echo_test(state: CoreState<'_>) -> Result<(), String> {
+    let voice = state.lock().await.voice.clone();
+    let _ = voice.stop_echo().await;
+    // Best-effort teardown of the server-side echo channel.
+    let _ = send_msg(&state, ClientMessage::StopEchoTest).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn send_chat(state: CoreState<'_>, text: String) -> Result<(), String> {
     send_msg(&state, ClientMessage::ChatMessage { text }).await

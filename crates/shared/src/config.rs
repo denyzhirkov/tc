@@ -53,6 +53,19 @@ pub const CHANNEL_ID_LEN: usize = 5;
 pub const PUBLIC_CHANNEL_PREFIX: &str = "pub-";
 /// Max length of a public channel name (without prefix).
 pub const MAX_CHANNEL_NAME_LEN: usize = 20;
+/// Prefix for ephemeral echo-test channels. The UDP relay reflects voice
+/// packets on these channels back to the sender (loopback) instead of fanning
+/// them out — so a sound check exercises the real round-trip through the server
+/// without the server ever decrypting or storing anything.
+pub const ECHO_CHANNEL_PREFIX: &str = "echo-";
+
+// ── Echo test (sound check) ────────────────────────────────────────────────
+
+/// Duration of the live echo sound-check (seconds): mic → server → playback.
+pub const ECHO_TEST_DURATION_SECS: u64 = 5;
+/// How long the client waits for the server's `EchoTestReady` before giving up
+/// (e.g. the server is old and ignores the request, or is unreachable).
+pub const ECHO_TEST_SETUP_TIMEOUT_SECS: u64 = 5;
 
 // ── Audio ─────────────────────────────────────────────────────────────────
 

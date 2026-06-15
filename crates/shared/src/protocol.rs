@@ -53,6 +53,13 @@ pub enum ClientMessage {
     SetName { name: String },
     /// Ping (keep-alive).
     Ping,
+    /// Start a sound-check: the server creates an ephemeral, single-member echo
+    /// channel and replies with [`ServerMessage::EchoTestReady`]. Voice sent on
+    /// that channel is reflected straight back to the sender. Rejected if the
+    /// client is already in a channel.
+    StartEchoTest,
+    /// End the sound-check: leave (and destroy) the echo channel.
+    StopEchoTest,
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +103,15 @@ pub enum ServerMessage {
     Error { message: String },
     /// Pong (keep-alive response).
     Pong,
+    /// Sound-check is ready: join params for the ephemeral echo channel. Voice
+    /// sent here is reflected back to the sender — same shape as a channel join.
+    EchoTestReady {
+        channel_id: ChannelId,
+        udp_token: u64,
+        /// 32-byte XChaCha20-Poly1305 key. Loopback-only, but the server still
+        /// never decrypts: it mints the key and reflects ciphertext untouched.
+        voice_key: Vec<u8>,
+    },
 }
 
 /// Info about a public channel (for /list).
@@ -460,6 +476,21 @@ mod tests {
         let bytes = bincode::serialize(msg).unwrap();
         let back: ServerMessage = bincode::deserialize(&bytes).unwrap();
         assert_eq!(format!("{:?}", msg), format!("{:?}", back));
+    }
+
+    #[test]
+    fn client_message_serde_echo_test() {
+        roundtrip_client(&ClientMessage::StartEchoTest);
+        roundtrip_client(&ClientMessage::StopEchoTest);
+    }
+
+    #[test]
+    fn server_message_serde_echo_test_ready() {
+        roundtrip_server(&ServerMessage::EchoTestReady {
+            channel_id: "echo-abcde".into(),
+            udp_token: 42,
+            voice_key: vec![7u8; 32],
+        });
     }
 
     #[test]

@@ -158,6 +158,43 @@ async fn main() -> Result<()> {
             last_stats_tick = Instant::now();
         }
 
+        // End a running sound-check once its window elapses.
+        if let Some(deadline) = app.echo_deadline {
+            if Instant::now() >= deadline {
+                app.echo_deadline = None;
+                let verdict = voice_handle.as_ref().map(|vh| {
+                    (
+                        vh.capture_state() == voice::HalfState::Ok,
+                        vh.playback_state() == voice::HalfState::Ok,
+                        vh.is_registered(),
+                        vh.bytes_received(),
+                    )
+                });
+                voice_handle = None;
+                app.voice_active = false;
+                send_or_disconnect(&mut conn, &mut app, ClientMessage::StopEchoTest);
+                match verdict {
+                    Some((mic_ok, out_ok, _registered, rx)) if rx > 0 => app.add_message(format!(
+                        "sound check OK — heard yourself back (mic {}, output {})",
+                        if mic_ok { "ok" } else { "absent" },
+                        if out_ok { "ok" } else { "absent" },
+                    )),
+                    Some((_, _, registered, _)) if !registered => app.add_message(
+                        "sound check: no round-trip — server unreachable over UDP".into(),
+                    ),
+                    Some((mic_ok, _, _, _)) if !mic_ok => {
+                        app.add_message("sound check: no microphone detected".into())
+                    }
+                    Some(_) => app.add_message(
+                        "sound check: nothing came back — were you silent? (VAD may have gated it)"
+                            .into(),
+                    ),
+                    None => app.add_message("sound check ended".into()),
+                }
+                app.dirty = true;
+            }
+        }
+
         // Tick matrix rain if active
         if app.matrix_mode {
             let size = terminal.size()?;
@@ -244,6 +281,7 @@ async fn main() -> Result<()> {
                         conn = None;
                         voice_handle.take();
                         app.voice_active = false;
+                        app.echo_deadline = None;
                         app.participants.clear();
                         app.voice_join_params = None;
                         app.add_message("disconnected from server".into());
@@ -408,6 +446,7 @@ async fn handle_command(
         "/list" | "/ls" => cmd_list(app, conn),
         "/connect" | "/join" | "/j" => cmd_connect(app, arg, conn),
         "/leave" | "/l" => cmd_leave(app, conn, voice_handle),
+        "/echotest" | "/echo" => cmd_echotest(app, conn),
         "/invite" | "/i" => cmd_invite(app),
         _ => cmd_default(app, input, conn, parts[0]),
     }
@@ -538,6 +577,7 @@ fn cmd_help(app: &mut tui::App) {
         "  /list (/ls)        list public channels",
         "  /connect (/j) <id> join a channel (or just #<id>)",
         "  /leave (/l)        leave current channel",
+        "  /echotest (/echo)  5s mic+connection check (hear yourself back)",
         "  /invite (/i)       tc:// link to current server/channel",
         "  /mute (/m)         toggle mute",
         "  /name (/n) <name>  set your display name",
@@ -618,6 +658,19 @@ fn cmd_leave(
     app.participants.clear();
     app.voice_join_params = None;
     app.rejoin_channel = None;
+}
+
+fn cmd_echotest(app: &mut tui::App, conn: &mut Option<network::ServerConnection>) {
+    if app.channel.is_some() || app.voice_active {
+        app.add_message("leave the channel first (/leave) before a sound check".into());
+        return;
+    }
+    if app.echo_deadline.is_some() {
+        app.add_message("sound check already running".into());
+        return;
+    }
+    app.add_message("> /echotest — requesting sound check...".into());
+    send_or_disconnect(conn, app, ClientMessage::StartEchoTest);
 }
 
 fn cmd_default(
@@ -780,6 +833,7 @@ async fn handle_server_message(
                 app.input_gain.clone(),
                 app.output_vol.clone(),
                 my_name,
+                false,
             )
             .await
             {
@@ -790,6 +844,49 @@ async fn handle_server_message(
                 }
                 Err(e) => {
                     app.add_message(format!("voice error: {}", e));
+                }
+            }
+        }
+        ServerMessage::EchoTestReady {
+            channel_id,
+            udp_token,
+            voice_key,
+        } => {
+            let my_name = app.name.clone().unwrap_or_else(|| "user".into());
+            let Some(server_ip) = app.server_ip else {
+                app.add_message("echo test error: not connected".into());
+                return;
+            };
+            // Force the mic live for the test; keep VAD as configured.
+            let unmuted = Arc::new(AtomicBool::new(false));
+            match voice::start_voice(
+                server_ip,
+                channel_id,
+                udp_token,
+                unmuted,
+                voice_key,
+                app.input_device.clone(),
+                app.output_device.clone(),
+                app.vad_threshold.clone(),
+                app.input_gain.clone(),
+                app.output_vol.clone(),
+                my_name,
+                true,
+            )
+            .await
+            {
+                Ok(handle) => {
+                    *voice_handle = Some(handle);
+                    app.voice_active = true;
+                    app.echo_deadline =
+                        Some(Instant::now() + Duration::from_secs(config::ECHO_TEST_DURATION_SECS));
+                    app.add_message(format!(
+                        "sound check: speak now — you'll hear yourself back ({}s)",
+                        config::ECHO_TEST_DURATION_SECS
+                    ));
+                }
+                Err(e) => {
+                    app.add_message(format!("echo test error: {}", e));
                 }
             }
         }
@@ -1189,6 +1286,7 @@ async fn restart_voice(
         app.input_gain.clone(),
         app.output_vol.clone(),
         my_name,
+        false,
     )
     .await
     {

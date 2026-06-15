@@ -302,6 +302,59 @@ impl ServerState {
         Ok((names, token, voice_key))
     }
 
+    /// Create and join an ephemeral echo-test channel for this client.
+    /// Returns `(channel_id, udp_token, voice_key)` — the same join params a
+    /// real channel hands out. The id carries [`config::ECHO_CHANNEL_PREFIX`]
+    /// so the UDP relay reflects packets back to the sender instead of fanning
+    /// them out. The client must not already be in a channel.
+    pub async fn start_echo_test(
+        &self,
+        tcp_addr: &SocketAddr,
+    ) -> Result<(ChannelId, u64, Vec<u8>), String> {
+        let mut inner = self.inner.write().await;
+        if inner.limits.max_channels > 0 && inner.channels.len() >= inner.limits.max_channels {
+            return Err("channel limit reached".into());
+        }
+        let client = inner.clients.get(tcp_addr).ok_or("client not registered")?;
+        if client.channel.is_some() {
+            return Err("already in a channel, leave first".into());
+        }
+
+        let channel_id = loop {
+            let id = format!(
+                "{}{}",
+                tc_shared::config::ECHO_CHANNEL_PREFIX,
+                tc_shared::generate_channel_id()
+            );
+            if !inner.channels.contains_key(&id) {
+                break id;
+            }
+        };
+        inner.channels.insert(channel_id.clone(), HashSet::new());
+        let key: [u8; 32] = rand::random();
+        inner.channel_keys.insert(channel_id.clone(), key.to_vec());
+        inner
+            .channel_created_at
+            .insert(channel_id.clone(), Instant::now());
+
+        let token = loop {
+            let t = rand::random::<u64>();
+            if t != 0 && !inner.udp_tokens.contains_key(&t) {
+                break t;
+            }
+        };
+        inner
+            .udp_tokens
+            .insert(token, (*tcp_addr, channel_id.clone(), Instant::now()));
+        inner
+            .clients
+            .get_mut(tcp_addr)
+            .ok_or("client not registered")?
+            .channel = Some(channel_id.clone());
+
+        Ok((channel_id, token, key.to_vec()))
+    }
+
     /// Leave current channel.
     pub async fn leave_channel(&self, tcp_addr: &SocketAddr) -> Option<(String, ChannelId)> {
         let mut inner = self.inner.write().await;
@@ -782,6 +835,45 @@ mod tests {
         let mut peers = Vec::new();
         state.fill_channel_peers(&ch, &udp1, &mut peers);
         assert_eq!(peers, vec![udp2]);
+    }
+
+    // ── echo test ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn start_echo_test_returns_prefixed_channel_token_key() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let (channel_id, token, key) = state.start_echo_test(&addr(1)).await.unwrap();
+        assert!(channel_id.starts_with(tc_shared::config::ECHO_CHANNEL_PREFIX));
+        assert_ne!(token, 0);
+        assert_eq!(key.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn start_echo_test_rejected_when_in_channel() {
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let ch = state.create_channel(None).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+        assert!(state.start_echo_test(&addr(1)).await.is_err());
+    }
+
+    /// The tester's registered address must be reflected back to itself — an
+    /// echo channel includes the sender (no exclude), unlike a normal relay.
+    #[tokio::test]
+    async fn echo_channel_peer_includes_sender() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        let state = ServerState::new(unlimited());
+        state.register_client(addr(1)).await.unwrap();
+        let (channel_id, token, _) = state.start_echo_test(&addr(1)).await.unwrap();
+        let udp = addr(5001);
+        assert!(state.register_udp_by_token(token, udp).await);
+
+        // No-exclude sentinel (mirrors the relay): the sender stays in the list.
+        let no_exclude = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+        let mut peers = Vec::new();
+        state.fill_channel_peers(&channel_id, &no_exclude, &mut peers);
+        assert_eq!(peers, vec![udp]);
     }
 
     // ── rename ───────────────────────────────────────────────────────

@@ -121,6 +121,13 @@ export async function runCommand(raw: string) {
       return setVad(arg);
     case "/test":
       return safe(() => cmd.playTestSignal());
+    case "/echotest":
+    case "/echo":
+      if (!state.status?.connected)
+        return pushLog("not connected — /server <addr> first", "error");
+      if (state.channel)
+        return pushLog("leave the channel first (/leave) before a sound check", "error");
+      return safe(() => cmd.startEchoTest());
     case "/hotkey":
     case "/hk":
       return handleHotkey(rest);
@@ -483,6 +490,7 @@ function printHelp() {
     "  /vol  <0-200>        output volume (default 100)",
     "  /vad  <0-100>        VAD level (0 = off)",
     "  /test                play 0.5s sine through current output",
+    "  /echotest (/echo)    5s mic+connection check — hear yourself back via the server",
     "  /hotkey (/hk)        list / set / unset global hotkeys",
     isMac
       ? "    /hotkey set ptt Alt+V       /hotkey set mute Alt+M"

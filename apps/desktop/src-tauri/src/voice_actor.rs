@@ -27,6 +27,23 @@ pub struct StartParams {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub sender_name: String,
+    /// Echo (sound-check) session — hear our own audio reflected by the server.
+    pub echo_test: bool,
+}
+
+/// Outcome of a sound-check, sampled just before the echo handle is dropped.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct EchoResult {
+    /// Microphone half opened successfully (a capture device was available).
+    pub mic_ok: bool,
+    /// Output half opened successfully (a playback device was available).
+    pub output_ok: bool,
+    /// Server confirmed our UDP registration (control path round-trip worked).
+    pub registered: bool,
+    /// Reflected audio actually came back — the full mic→server→ear loop works.
+    pub roundtrip_ok: bool,
+    /// Bytes received back (diagnostic; 0 with VAD on usually means silence).
+    pub bytes_received: u64,
 }
 
 /// A newly hot-plugged audio device, reported once for the frontend prompt.
@@ -87,6 +104,10 @@ enum Cmd {
     SetInputDevice(Option<String>),
     /// Apply a new output device immediately (None = system default).
     SetOutputDevice(Option<String>),
+    /// Start a sound-check session (separate handle from a live call).
+    EchoStart(StartParams, oneshot::Sender<Result<(), String>>),
+    /// Stop the sound-check, sampling the result first. Idempotent.
+    EchoStop(oneshot::Sender<EchoResult>),
 }
 
 #[derive(Clone)]
@@ -142,6 +163,28 @@ impl VoiceManager {
         }
         reply_rx.await.unwrap_or_else(|_| VoiceSnapshot::idle())
     }
+
+    /// Start a sound-check session. Runs alongside (but separate from) any live
+    /// call handle; in practice the caller blocks echo while in a channel.
+    pub async fn start_echo(&self, params: StartParams) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Cmd::EchoStart(params, reply_tx))
+            .await
+            .map_err(|_| "voice actor gone".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "voice actor dropped reply".to_string())?
+    }
+
+    /// Stop the sound-check and read its result. Safe to call when none runs.
+    pub async fn stop_echo(&self) -> EchoResult {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self.tx.send(Cmd::EchoStop(reply_tx)).await.is_err() {
+            return EchoResult::default();
+        }
+        reply_rx.await.unwrap_or_default()
+    }
 }
 
 async fn start_from(p: &StartParams) -> anyhow::Result<VoiceHandle> {
@@ -157,6 +200,7 @@ async fn start_from(p: &StartParams) -> anyhow::Result<VoiceHandle> {
         p.input_gain.clone(),
         p.output_vol.clone(),
         p.sender_name.clone(),
+        p.echo_test,
     )
     .await
 }
@@ -315,8 +359,23 @@ impl Supervisor {
     }
 }
 
+/// Sample a sound-check result from a live echo handle.
+fn echo_result(h: &VoiceHandle) -> EchoResult {
+    let bytes = h.bytes_received();
+    EchoResult {
+        mic_ok: h.capture_state() == voice::HalfState::Ok,
+        output_ok: h.playback_state() == voice::HalfState::Ok,
+        registered: h.is_registered(),
+        roundtrip_ok: bytes > 0,
+        bytes_received: bytes,
+    }
+}
+
 async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
     let mut handle: Option<VoiceHandle> = None;
+    // Sound-check handle, kept separate from a live call so the call's restart
+    // supervisor never touches it. Mutually exclusive with `handle` in practice.
+    let mut echo_handle: Option<VoiceHandle> = None;
     // Kept while in a call so the pipeline can be rebuilt after an audio
     // device failure (unplugged headset, default-device switch, …).
     let mut last_params: Option<StartParams> = None;
@@ -348,6 +407,23 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                 handle = None;
                 last_params = None;
             }
+            Cmd::EchoStart(p, reply) => {
+                echo_handle = None;
+                match start_from(&p).await {
+                    Ok(h) => {
+                        echo_handle = Some(h);
+                        let _ = reply.send(Ok(()));
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(format!("{:#}", e)));
+                    }
+                }
+            }
+            Cmd::EchoStop(reply) => {
+                let result = echo_handle.as_ref().map(echo_result).unwrap_or_default();
+                echo_handle = None;
+                let _ = reply.send(result);
+            }
             Cmd::SetInputDevice(name) => {
                 sup.desired_input = name;
                 if let Some(h) = handle.as_mut() {
@@ -372,6 +448,7 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                 // never fail the start anymore; they degrade and are handled
                 // by the supervisor below.
                 if handle.is_none()
+                    && echo_handle.is_none()
                     && last_params.is_some()
                     && last_restart.is_none_or(|t| t.elapsed() >= restart_interval)
                 {
@@ -391,7 +468,9 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
 
                 sup.tick(handle.as_mut());
 
-                let snap = match handle.as_ref() {
+                // Report the call handle if present, otherwise a running
+                // sound-check — so the frontend's level meter works in both.
+                let snap = match handle.as_ref().or(echo_handle.as_ref()) {
                     Some(h) => {
                         let (loss, tier) = h.quality_info();
                         let (tx_rate, rx_rate, _bytes_total) = h.traffic_info();

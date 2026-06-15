@@ -2,10 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.9.9**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.9.17**, protocol **3**.
 
 ## Recently closed (newest first)
 
+- Sound check / echo test (`x6hyqs`, **v1.9.17**, shared+server+both clients): 5 s live echo through the server — mic → Opus → XChaCha20 → UDP → server reflects → decode → playback, so you hear yourself back. Tests mic, headphones, codec, crypto, jitter **and** the round-trip in one action. Desktop button in Settings → Audio (countdown + verdict) and `/echotest` in both clients. Server stays a dumb relay: ephemeral single-member `echo-<id>` channel, reflects ciphertext to the tester's *registered* address (no reflection vector), never decrypts/stores. New additive wire msgs `StartEchoTest`/`StopEchoTest`/`EchoTestReady`; `PROTOCOL_VERSION` unchanged. e2e test proves byte-identical reflection to the sender. See `decisions.md` → "Sound check / echo test".
 - Phantom-wave root cause + voice UX (`c8y7zv`, **v1.9.16**): Solid `setState` merge (keys never deleted) was THE phantom-wave cause — speaker levels now go through `reconcile()`; VAD pre-roll (100 ms ring) fixes clipped/scratchy speech onsets; server broadcasts `ChannelList` to all clients when a public channel is created; default VAD level 15 in both clients.
 - Device UX & stability pack (`kihuol`, **v1.9.15**, client+UI): capture/playback split into independent halves behind swappable ring-buffer slots (no mic = listen-only, no output = speak-only, neither = chat works, audio self-heals); calls follow the system default device; settings device changes apply mid-call; hot-plug "use it now?" toast (configured device reconnecting switches back silently); `no mic`/`no audio out` chips in VoiceStrip.
 - Audio device lifecycle resilience (`hqvzm9`, **v1.9.14**): macOS bundle was missing `NSMicrophoneUsageDescription` — the installed app silently got mic zeros and never prompted (dev worked via the terminal's TCC grant); added `src-tauri/Info.plist` + `Entitlements.plist`. Stream-death detection (error callbacks + capture starvation watchdog) → `VoiceHandle::is_healthy()`; the desktop voice actor supervises and rebuilds the pipeline (throttled, retries failed starts); stale device names fall back to the system default instead of failing the join.

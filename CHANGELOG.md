@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.17] — 2026-06-15
+
+### Added
+- **Sound check (echo test)** in both clients: a 5 s live echo that sends your
+  mic through the full pipeline (Opus → XChaCha20 → UDP → server → back →
+  decrypt → decode → jitter → playback) so you hear yourself returned. Tests
+  microphone, headphones, codec, crypto, jitter buffer **and** the round-trip
+  to the server in one action. Desktop: a button in Settings → Audio with a
+  live countdown and a verdict; both clients: `/echotest` (`/echo`).
+  - The server stays a dumb relay: it mints an ephemeral, single-member
+    `echo-<id>` channel, reflects the ciphertext back to the tester's
+    hello-confirmed registered address, and never decrypts or stores anything.
+    Reflecting to the registered address (not the raw UDP source) keeps a
+    spoofed source from turning it into a reflection primitive.
+  - New wire messages (additive, backward-compatible): `StartEchoTest` /
+    `StopEchoTest` (client→server), `EchoTestReady` (server→client). Old
+    servers ignore the request and the client times out with a clear message;
+    `PROTOCOL_VERSION` unchanged.
+
 ## [1.9.16] — 2026-06-12
 
 ### Fixed

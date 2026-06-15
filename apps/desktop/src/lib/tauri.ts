@@ -73,6 +73,8 @@ export const cmd = {
   setVadLevel: (pct: number) => invoke<void>("set_vad_level", { pct }),
   playTestSignal: (durationMs?: number) =>
     invoke<void>("play_test_signal", { durationMs: durationMs ?? 500 }),
+  startEchoTest: () => invoke<void>("start_echo_test"),
+  cancelEchoTest: () => invoke<void>("cancel_echo_test"),
   // platform integration
   setNotifications: (enabled: boolean) => invoke<void>("set_notifications", { enabled }),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
@@ -149,6 +151,14 @@ export type DeviceAddedPayload = {
   name: string;
 };
 
+export type EchoResult = {
+  mic_ok: boolean;
+  output_ok: boolean;
+  registered: boolean;
+  roundtrip_ok: boolean;
+  bytes_received: number;
+};
+
 export type InvitePayload = {
   addr: string;
   channel: string | null;
@@ -174,6 +184,8 @@ export type EventMap = {
   error: ErrorPayload;
   voice_level: VoiceLevelPayload;
   voice_stopped: Record<string, never>;
+  echo_test_started: Record<string, never>;
+  echo_test_result: EchoResult;
   device_added: DeviceAddedPayload;
   quick_join: Record<string, never>;
   log: { text: string };

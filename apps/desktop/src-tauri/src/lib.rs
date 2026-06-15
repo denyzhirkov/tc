@@ -141,6 +141,8 @@ pub fn run() {
             audio_cmd::set_output_volume,
             audio_cmd::set_vad_level,
             audio_cmd::play_test_signal,
+            commands::start_echo_test,
+            commands::cancel_echo_test,
             hotkeys::set_hotkey,
             hotkeys::unset_hotkey,
             hotkeys::list_hotkeys,

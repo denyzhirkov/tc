@@ -13,7 +13,7 @@ import {
 } from "solid-js";
 import { closeSettings, refreshStatus } from "../lib/actions";
 import { pushLog, state } from "../lib/store";
-import { cmd, type DeviceInfo, type VoiceMode } from "../lib/tauri";
+import { cmd, on, type DeviceInfo, type VoiceMode } from "../lib/tauri";
 import {
   setTweak,
   tweaks,
@@ -65,6 +65,105 @@ function btnCls(props?: { danger?: boolean }) {
       ? "text-muted hover:text-danger hover:border-danger"
       : "text-text2 hover:text-text hover:border-faint"
   }`;
+}
+
+// Sound check: a 5s live echo through the server. Backend owns the timing and
+// emits `echo_test_started` → countdown, `echo_test_result` → verdict.
+function SoundCheck() {
+  const ECHO_SECS = 5;
+  type Phase = "idle" | "starting" | "running" | "done";
+  const [phase, setPhase] = createSignal<Phase>("idle");
+  const [secs, setSecs] = createSignal(ECHO_SECS);
+  const [msg, setMsg] = createSignal<{ text: string; ok: boolean } | null>(null);
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const unlisteners: Array<() => void> = [];
+
+  const stopTimer = () => {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+  };
+
+  onMount(async () => {
+    unlisteners.push(
+      await on("echo_test_started", () => {
+        setMsg(null);
+        setPhase("running");
+        setSecs(ECHO_SECS);
+        stopTimer();
+        timer = setInterval(() => {
+          setSecs((s) => Math.max(0, s - 1));
+        }, 1000);
+      }),
+    );
+    unlisteners.push(
+      await on("echo_test_result", (r) => {
+        stopTimer();
+        setPhase("done");
+        if (r.roundtrip_ok) setMsg({ text: t("settings.sound_check_ok"), ok: true });
+        else if (!r.registered)
+          setMsg({ text: t("settings.sound_check_no_conn"), ok: false });
+        else if (!r.mic_ok)
+          setMsg({ text: t("settings.sound_check_no_mic"), ok: false });
+        else setMsg({ text: t("settings.sound_check_silent"), ok: false });
+      }),
+    );
+  });
+
+  onCleanup(() => {
+    stopTimer();
+    for (const u of unlisteners) u();
+    // Abort a still-running check so the server channel + handle tear down.
+    if (phase() === "running" || phase() === "starting") {
+      cmd.cancelEchoTest().catch(() => {});
+    }
+  });
+
+  const busy = () => phase() === "starting" || phase() === "running";
+
+  const start = async () => {
+    if (busy()) return;
+    if (!state.status?.connected) {
+      setMsg({ text: t("settings.sound_check_disconnected"), ok: false });
+      return;
+    }
+    if (state.status?.channel) {
+      setMsg({ text: t("settings.sound_check_in_channel"), ok: false });
+      return;
+    }
+    setMsg(null);
+    setPhase("starting");
+    try {
+      await cmd.startEchoTest();
+    } catch (e) {
+      setPhase("idle");
+      setMsg({ text: String(e), ok: false });
+    }
+  };
+
+  return (
+    <div class="flex flex-col gap-1.5">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span
+          class={btnCls()}
+          classList={{ "opacity-50 pointer-events-none": busy() }}
+          onClick={start}
+        >
+          {busy()
+            ? t("settings.sound_check_recording", { secs: String(secs()) })
+            : t("settings.sound_check_start")}
+        </span>
+        <Show when={!busy() && msg()}>
+          <span
+            class="text-sm"
+            classList={{ "text-accent": msg()!.ok, "text-danger": !msg()!.ok }}
+          >
+            {msg()!.text}
+          </span>
+        </Show>
+      </div>
+      <span class="text-xs text-muted">{t("settings.sound_check_hint")}</span>
+    </div>
+  );
 }
 
 function NameInput() {
@@ -441,6 +540,9 @@ export default function Settings() {
           </Show>
           <Row label={t("settings.voice_mode")}>
             <ModePicker />
+          </Row>
+          <Row label={t("settings.sound_check")}>
+            <SoundCheck />
           </Row>
         </Section>
 

@@ -336,11 +336,82 @@ async fn handle(
             };
             emit(app, "channel_list", payload);
         }
+        ServerMessage::EchoTestReady {
+            channel_id,
+            udp_token,
+            voice_key,
+        } => {
+            spawn_echo(app.clone(), core.clone(), channel_id, udp_token, voice_key).await;
+        }
         ServerMessage::Error { message } => {
             emit(app, "error", ErrorPayload { message });
         }
         ServerMessage::Pong => {}
     }
+}
+
+/// Start a sound-check voice session and arm the backend-owned timer that ends
+/// it after [`ECHO_TEST_DURATION_SECS`], samples the result, and emits it.
+/// The frontend is purely reactive: `echo_test_started` → countdown,
+/// `echo_test_result` → verdict.
+async fn spawn_echo(
+    app: AppHandle,
+    core: Arc<Mutex<AppCore>>,
+    channel_id: String,
+    udp_token: u64,
+    voice_key: Vec<u8>,
+) {
+    let (params, voice) = {
+        let c = core.lock().await;
+        let Some(server_ip) = c.conn.as_ref().map(|conn| conn.peer_addr().ip()) else {
+            tracing::warn!("echo test skipped: no live connection");
+            return;
+        };
+        let params = StartParams {
+            server_ip,
+            channel_id,
+            udp_token,
+            voice_key,
+            // Force the mic live for the test regardless of mute/PTT, but keep
+            // VAD as the user configured it — the check exercises that too.
+            muted: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            vad_threshold: c.vad_threshold.clone(),
+            input_gain: c.input_gain.clone(),
+            output_vol: c.output_vol.clone(),
+            input_device: c.input_device.clone(),
+            output_device: c.output_device.clone(),
+            sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),
+            echo_test: true,
+        };
+        (params, c.voice.clone())
+    };
+
+    if let Err(e) = voice.start_echo(params).await {
+        tracing::error!("echo test start failed: {}", e);
+        emit(
+            &app,
+            "error",
+            ErrorPayload {
+                message: format!("sound check failed: {}", e),
+            },
+        );
+        return;
+    }
+    emit(&app, "echo_test_started", serde_json::json!({}));
+
+    // Backend owns the timing so the test always tears itself down (server
+    // channel + client handle) even if the settings panel is closed early.
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(
+            tc_shared::config::ECHO_TEST_DURATION_SECS,
+        ))
+        .await;
+        let result = voice.stop_echo().await;
+        if let Some(conn) = core.lock().await.conn.as_ref() {
+            let _ = conn.send(ClientMessage::StopEchoTest);
+        }
+        emit(&app, "echo_test_result", result);
+    });
 }
 
 /// Forward a `StartParams` to the voice actor using params stashed in `pending_join`.
@@ -368,6 +439,7 @@ async fn spawn_voice(app: AppHandle, core: Arc<Mutex<AppCore>>) {
             input_device: c.input_device.clone(),
             output_device: c.output_device.clone(),
             sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),
+            echo_test: false,
         };
         (params, c.voice.clone())
     };

@@ -219,6 +219,8 @@ pub struct App {
     pub output_device: Option<String>,
     /// Stored voice join params for restart.
     pub voice_join_params: Option<VoiceJoinParams>,
+    /// When a sound-check (echo test) is running, the instant it should end.
+    pub echo_deadline: Option<std::time::Instant>,
     /// VAD threshold (f32 stored as AtomicU32 bits for lock-free sharing with voice thread).
     pub vad_threshold: Arc<AtomicU32>,
     /// Microphone gain (f32 stored as AtomicU32 bits; 1.0 = 100%).
@@ -286,6 +288,7 @@ impl App {
             input_device: None,
             output_device: None,
             voice_join_params: None,
+            echo_deadline: None,
             vad_threshold: Arc::new(AtomicU32::new(config::VAD_RMS_THRESHOLD.to_bits())),
             input_gain: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             output_vol: Arc::new(AtomicU32::new(1.0_f32.to_bits())),

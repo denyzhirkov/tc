@@ -532,8 +532,20 @@ async fn relay_loop(
             }
         };
 
-        // Fill reusable peer buffer (no allocation when capacity suffices)
-        state.fill_channel_peers(channel_id, &src_addr, &mut peers);
+        // Echo-test channels reflect back to the sender instead of fanning out.
+        // We send to the channel's *registered* peer (the tester's hello-
+        // confirmed address), never the raw source — so a spoofed source can
+        // never turn this into a reflection primitive aimed at a third party.
+        // A non-matching exclude (0.0.0.0:0 is never a registered UDP address)
+        // keeps the sender in the peer list instead of dropping it.
+        if channel_id.starts_with(config::ECHO_CHANNEL_PREFIX) {
+            const ECHO_NO_EXCLUDE: SocketAddr =
+                SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+            state.fill_channel_peers(channel_id, &ECHO_NO_EXCLUDE, &mut peers);
+        } else {
+            // Fill reusable peer buffer (no allocation when capacity suffices)
+            state.fill_channel_peers(channel_id, &src_addr, &mut peers);
+        }
 
         if !peers.is_empty() {
             metrics.udp_voice_relayed.fetch_add(1, Ordering::Relaxed);

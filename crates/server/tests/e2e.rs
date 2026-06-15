@@ -217,6 +217,76 @@ async fn two_clients_chat_and_voice_ipv6() {
     run_two_client_voice(ip).await;
 }
 
+/// Sound-check: one client starts an echo test and a voice packet it sends is
+/// reflected straight back to *itself* (the server never excludes the sender on
+/// an echo channel), proving the honest round-trip without a second peer.
+#[tokio::test]
+async fn echo_test_reflects_voice_to_sender() {
+    let bind_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let server = start_server(bind_ip).await;
+
+        let mut client = connect_client(server.tcp_addr).await;
+        assert!(matches!(client.recv().await, ServerMessage::Welcome { .. }));
+        client
+            .send(&ClientMessage::Hello {
+                version: "test".into(),
+                protocol: tc_shared::config::PROTOCOL_VERSION,
+                pubkey: None,
+            })
+            .await;
+
+        client.send(&ClientMessage::StartEchoTest).await;
+        let (channel_id, token) = match client.recv().await {
+            ServerMessage::EchoTestReady {
+                channel_id,
+                udp_token,
+                voice_key,
+            } => {
+                assert!(channel_id.starts_with(tc_shared::config::ECHO_CHANNEL_PREFIX));
+                assert_eq!(voice_key.len(), 32);
+                (channel_id, udp_token)
+            }
+            other => panic!("expected EchoTestReady, got {:?}", other),
+        };
+
+        // Register UDP + drain the hello ACK.
+        let udp = UdpSocket::bind((bind_ip, 0)).await.unwrap();
+        udp.connect(server.udp_addr).await.unwrap();
+        udp.send(&encode_udp_hello(token)).await.unwrap();
+        let mut ack = [0u8; 64];
+        tokio::time::timeout(std::time::Duration::from_secs(2), udp.recv(&mut ack))
+            .await
+            .expect("hello ACK timed out")
+            .unwrap();
+
+        // A voice packet on the echo channel must come straight back to us.
+        let voice = VoicePacket {
+            sequence: 1,
+            channel_id: channel_id.clone(),
+            opus_data: vec![0xCD; 80],
+        };
+        let encoded = voice.encode();
+        udp.send(&encoded).await.unwrap();
+
+        let mut buf = [0u8; 2048];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), udp.recv(&mut buf))
+            .await
+            .expect("echo reflect timed out")
+            .unwrap();
+        assert_eq!(
+            &buf[..n],
+            &encoded[..],
+            "echoed packet must be byte-identical"
+        );
+
+        client.send(&ClientMessage::StopEchoTest).await;
+        assert!(matches!(client.recv().await, ServerMessage::LeftChannel));
+    })
+    .await
+    .expect("echo e2e test timed out after 10s");
+}
+
 async fn run_two_client_voice(bind_ip: std::net::IpAddr) {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let server = start_server(bind_ip).await;

@@ -115,6 +115,15 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
     on("voice_stopped", () => {
       update.voice(null);
     }),
+    on("echo_test_started", () => {
+      pushLog(t("settings.sound_check_recording", { secs: "5" }), "system");
+    }),
+    on("echo_test_result", (r) => {
+      if (r.roundtrip_ok) pushLog(t("settings.sound_check_ok"), "system");
+      else if (!r.registered) pushLog(t("settings.sound_check_no_conn"), "error");
+      else if (!r.mic_ok) pushLog(t("settings.sound_check_no_mic"), "error");
+      else pushLog(t("settings.sound_check_silent"), "error");
+    }),
     on("device_added", (d) => {
       // "No" is remembered per session so the same device doesn't nag again.
       if (dismissedDevices.has(`${d.kind}:${d.name}`)) return;
