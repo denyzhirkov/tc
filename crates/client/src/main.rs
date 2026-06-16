@@ -615,7 +615,7 @@ fn cmd_create(app: &mut tui::App, arg: Option<&str>, conn: &mut Option<network::
         send_or_disconnect(conn, app, ClientMessage::CreateChannel { name: None });
         return;
     };
-    let name = sanitize_channel_name(raw_name);
+    let name = tc_shared::sanitize_channel_name(raw_name);
     if name.is_empty() {
         app.add_message("channel name must contain [a-z0-9-]".into());
     } else if name.len() > config::MAX_CHANNEL_NAME_LEN {
@@ -1147,16 +1147,6 @@ fn sanitize_name(s: &str) -> String {
         .to_string()
 }
 
-/// Sanitize a public channel name: lowercase, keep only [a-z0-9-].
-fn sanitize_channel_name(s: &str) -> String {
-    s.to_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
-}
-
 fn vad_level_from_threshold(threshold: f32) -> u32 {
     (threshold * 1000.0).round() as u32
 }
@@ -1407,14 +1397,6 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_channel_name_valid() {
-        assert_eq!(sanitize_channel_name("My Channel!"), "mychannel");
-        assert_eq!(sanitize_channel_name("test-room"), "test-room");
-        assert_eq!(sanitize_channel_name("--edge--"), "edge");
-        assert_eq!(sanitize_channel_name("UPPER123"), "upper123");
-    }
-
-    #[test]
     fn sanitize_name_empty_and_whitespace() {
         assert_eq!(sanitize_name(""), "");
         assert_eq!(sanitize_name("   "), "");
@@ -1425,19 +1407,6 @@ mod tests {
     fn sanitize_name_preserves_unicode() {
         assert_eq!(sanitize_name("Денис"), "Денис");
         assert_eq!(sanitize_name("  日本語  "), "日本語");
-    }
-
-    #[test]
-    fn sanitize_channel_name_empty() {
-        assert_eq!(sanitize_channel_name(""), "");
-        assert_eq!(sanitize_channel_name("!!!"), "");
-        assert_eq!(sanitize_channel_name("---"), "");
-    }
-
-    #[test]
-    fn sanitize_channel_name_unicode_stripped() {
-        assert_eq!(sanitize_channel_name("канал-1"), "1");
-        assert_eq!(sanitize_channel_name("café"), "caf");
     }
 
     #[test]

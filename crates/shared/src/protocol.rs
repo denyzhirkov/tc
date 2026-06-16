@@ -23,6 +23,19 @@ pub fn generate_channel_id() -> ChannelId {
         .collect()
 }
 
+/// Sanitize a public channel name to the wire contract: lowercase, keep only
+/// `[a-z0-9-]`, and trim leading/trailing `-`. The result is the canonical
+/// name both clients and the server agree on; an empty result means the input
+/// carried no valid characters and should be rejected.
+pub fn sanitize_channel_name(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 // ---------------------------------------------------------------------------
 // TCP Control Messages  (client → server)
 // ---------------------------------------------------------------------------
@@ -322,6 +335,26 @@ where
 mod tests {
     use super::*;
     use bytes::BytesMut;
+
+    #[test]
+    fn sanitize_channel_name_valid() {
+        assert_eq!(sanitize_channel_name("My Channel!"), "mychannel");
+        assert_eq!(sanitize_channel_name("--edge--"), "edge");
+        assert_eq!(sanitize_channel_name("UPPER123"), "upper123");
+    }
+
+    #[test]
+    fn sanitize_channel_name_empty() {
+        assert_eq!(sanitize_channel_name(""), "");
+        assert_eq!(sanitize_channel_name("!!!"), "");
+        assert_eq!(sanitize_channel_name("---"), "");
+    }
+
+    #[test]
+    fn sanitize_channel_name_unicode_stripped() {
+        assert_eq!(sanitize_channel_name("канал-1"), "1");
+        assert_eq!(sanitize_channel_name("café"), "caf");
+    }
 
     #[test]
     fn udp_hello_roundtrip() {

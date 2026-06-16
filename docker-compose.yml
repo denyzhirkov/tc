@@ -8,3 +8,5 @@ services:
     command:
       - --log-level
       - info
+      - --public-channels
+      - hello-room

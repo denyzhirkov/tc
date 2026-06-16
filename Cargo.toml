@@ -39,7 +39,7 @@ libc = "0.2"
 bytes = "1"
 arc-swap = "1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
 
 # Web

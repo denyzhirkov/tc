@@ -59,6 +59,13 @@ pub struct Args {
     /// per-IP cap. Values < 1.0 tighten the limits.
     #[arg(long, default_value_t = 1.0)]
     rate_limit_multiplier: f64,
+
+    /// Public channels to pre-create at startup. These persist even when empty
+    /// (never reaped) so they are always available to join. Comma-separated;
+    /// names are sanitized to [a-z0-9-], invalid/duplicate entries are skipped
+    /// with a warning. The flag overrides the TC_PUBLIC_CHANNELS env var.
+    #[arg(long, env = "TC_PUBLIC_CHANNELS", value_delimiter = ',')]
+    public_channels: Vec<String>,
 }
 
 #[tokio::main]
@@ -106,6 +113,33 @@ async fn main() -> Result<()> {
         rate_limit_multiplier: m,
     };
     let state = ServerState::new(limits);
+
+    // Stand up pre-configured public channels. Invalid or duplicate names are
+    // skipped (warn) rather than aborting startup, so a typo in the operator's
+    // list never takes the whole server down.
+    for raw in &args.public_channels {
+        let name = tc_shared::sanitize_channel_name(raw);
+        if name.is_empty() {
+            tracing::warn!(
+                input = raw,
+                "skipping public channel: name has no [a-z0-9-] chars"
+            );
+            continue;
+        }
+        if name.len() > config::MAX_CHANNEL_NAME_LEN {
+            tracing::warn!(
+                name,
+                max = config::MAX_CHANNEL_NAME_LEN,
+                "skipping public channel: name too long"
+            );
+            continue;
+        }
+        match state.create_persistent_channel(&name).await {
+            Ok(id) => tracing::info!(channel = %id, "pre-created persistent public channel"),
+            Err(e) => tracing::warn!(name, error = %e, "skipping public channel"),
+        }
+    }
+
     let senders: tcp::ClientSenders = Arc::new(RwLock::new(HashMap::new()));
     let ip_limiter = Arc::new(IpRateLimiter::new(
         config::RATE_LIMIT_IP_CMD_PER_SEC * m,

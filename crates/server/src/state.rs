@@ -69,6 +69,8 @@ struct Inner {
     channel_keys: HashMap<ChannelId, Vec<u8>>,
     /// Channel creation timestamps (grace period for cleanup).
     channel_created_at: HashMap<ChannelId, Instant>,
+    /// Channels that survive being empty (pre-created at startup); never reaped.
+    persistent: HashSet<ChannelId>,
     /// Pending UDP tokens: token → (tcp_addr, channel_id, created_at).
     udp_tokens: HashMap<u64, (SocketAddr, ChannelId, Instant)>,
     /// Counter for generating simple peer names.
@@ -96,6 +98,7 @@ impl ServerState {
                 channels: HashMap::new(),
                 channel_keys: HashMap::new(),
                 channel_created_at: HashMap::new(),
+                persistent: HashSet::new(),
                 clients: HashMap::new(),
                 pubkey_index: HashMap::new(),
                 udp_tokens: HashMap::new(),
@@ -186,11 +189,12 @@ impl ServerState {
         inner.udp_tokens.retain(|_, (addr, _, _)| addr != tcp_addr);
         if let Some(ref ch) = info.channel {
             let mut channel_destroyed = false;
+            let is_persistent = inner.persistent.contains(ch);
             if let Some(participants) = inner.channels.get_mut(ch) {
                 if let Some(udp) = info.udp_addr {
                     participants.remove(&udp);
                 }
-                if participants.is_empty() {
+                if participants.is_empty() && !is_persistent {
                     inner.channels.remove(ch);
                     inner.channel_keys.remove(ch);
                     inner.channel_created_at.remove(ch);
@@ -236,6 +240,16 @@ impl ServerState {
         Ok(id)
     }
 
+    /// Pre-create a public channel that is never reaped when empty. Used at
+    /// startup to stand up well-known lobbies. The voice key is rotated on the
+    /// 0→1 occupancy transition (see [`Self::join_channel`]), so persistence
+    /// covers the channel's existence, not a long-lived static key.
+    pub async fn create_persistent_channel(&self, name: &str) -> Result<ChannelId, String> {
+        let id = self.create_channel(Some(name)).await?;
+        self.inner.write().await.persistent.insert(id.clone());
+        Ok(id)
+    }
+
     /// List public channels with participant counts.
     pub async fn list_public_channels(&self) -> Vec<(ChannelId, u32)> {
         let inner = self.inner.read().await;
@@ -266,14 +280,33 @@ impl ServerState {
         if !inner.channels.contains_key(channel_id) {
             return Err(format!("channel '{}' not found", channel_id));
         }
-        let client = inner
+        match inner.clients.get(tcp_addr) {
+            None => return Err("client not registered".into()),
+            Some(c) if c.channel.is_some() => {
+                return Err("already in a channel, leave first".into());
+            }
+            Some(_) => {}
+        }
+
+        // Forward secrecy for persistent channels: the first client to enter an
+        // otherwise-empty persistent channel mints a fresh voice key, so a prior
+        // session's key can't decrypt this one. Ephemeral channels get a fresh
+        // key for free (they are destroyed and recreated), but persistent ones
+        // outlive their occupants, so rotate explicitly here.
+        let occupied = inner
+            .clients
+            .values()
+            .any(|c| c.channel.as_deref() == Some(channel_id.as_str()));
+        if !occupied && inner.persistent.contains(channel_id) {
+            let key: [u8; 32] = rand::random();
+            inner.channel_keys.insert(channel_id.clone(), key.to_vec());
+        }
+
+        inner
             .clients
             .get_mut(tcp_addr)
-            .ok_or("client not registered")?;
-        if client.channel.is_some() {
-            return Err("already in a channel, leave first".into());
-        }
-        client.channel = Some(channel_id.clone());
+            .expect("client presence checked above")
+            .channel = Some(channel_id.clone());
 
         // Generate a unique UDP token
         let token = loop {
@@ -572,6 +605,7 @@ impl ServerState {
             .filter(|(id, participants)| {
                 participants.is_empty()
                     && !occupied.contains(id.as_str())
+                    && !inner.persistent.contains(id.as_str())
                     && inner
                         .channel_created_at
                         .get(id.as_str())
@@ -1067,5 +1101,57 @@ mod tests {
         // Channel should be gone
         let s = state.stats().await;
         assert_eq!(s.channels, 0);
+    }
+
+    // ── persistent (pre-created) public channels ─────────────────────
+
+    #[tokio::test]
+    async fn persistent_channel_survives_last_client_leaving() {
+        let state = ServerState::new(unlimited());
+        let ch = state.create_persistent_channel("lobby").await.unwrap();
+        state.register_client(addr(1)).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+
+        state.remove_client(&addr(1)).await;
+
+        // Empty, but a persistent channel is not reaped — still listed.
+        let s = state.stats().await;
+        assert_eq!(s.channels, 1);
+        let public = state.list_public_channels().await;
+        assert_eq!(public, vec![(ch, 0)]);
+    }
+
+    #[tokio::test]
+    async fn persistent_channel_survives_cleanup() {
+        let state = ServerState::new(unlimited());
+        let _ch = state.create_persistent_channel("general").await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let removed = state
+            .cleanup_with(
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+        assert_eq!(removed.len(), 0);
+        assert_eq!(state.stats().await.channels, 1);
+    }
+
+    #[tokio::test]
+    async fn persistent_channel_rotates_key_on_rejoin() {
+        let state = ServerState::new(unlimited());
+        let ch = state.create_persistent_channel("music").await.unwrap();
+
+        state.register_client(addr(1)).await.unwrap();
+        let (_, _, key1) = state.join_channel(&addr(1), &ch).await.unwrap();
+        state.remove_client(&addr(1)).await;
+
+        // Re-entering the now-empty persistent channel mints a fresh voice key.
+        state.register_client(addr(2)).await.unwrap();
+        let (_, _, key2) = state.join_channel(&addr(2), &ch).await.unwrap();
+
+        assert_eq!(key1.len(), 32);
+        assert_eq!(key2.len(), 32);
+        assert_ne!(key1, key2, "voice key must rotate across sessions");
     }
 }
