@@ -8,6 +8,7 @@ import type {
   ChannelListEntry,
   DeviceAddedPayload,
   InvitePayload,
+  UpdateInfo,
   VoiceLevelPayload,
 } from "./tauri";
 
@@ -42,6 +43,8 @@ export type AppState = {
   invitePrompt: InvitePayload | null;
   /// Hot-plugged audio device awaiting the "use it now?" decision.
   devicePrompt: DeviceAddedPayload | null;
+  /// A newer GitHub release than this build, surfaced as a dismissable toast.
+  updateAvailable: UpdateInfo | null;
 };
 
 let nextId = 1;
@@ -62,6 +65,7 @@ const [state, setState] = createStore<AppState>({
   devLogs: false,
   invitePrompt: null,
   devicePrompt: null,
+  updateAvailable: null,
 });
 
 export { state };
@@ -124,6 +128,7 @@ export const update = {
   devLogs: (v: boolean) => setState("devLogs", v),
   invitePrompt: (p: InvitePayload | null) => setState("invitePrompt", p),
   devicePrompt: (p: DeviceAddedPayload | null) => setState("devicePrompt", p),
+  updateAvailable: (u: UpdateInfo | null) => setState("updateAvailable", u),
   openDm: (pubkey_hex: string, name: string) => {
     setState("dm", { pubkey_hex, name });
     setState("dmLog", []);

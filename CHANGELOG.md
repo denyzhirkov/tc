@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.20] — 2026-06-16
+
+### Added
+- **Update notification.** On launch the desktop client checks GitHub Releases
+  and, when a newer version exists, shows a dismissable toast with a "view
+  release" button that opens the release page. The check is best-effort and
+  silent on failure (offline clients are never nagged); drafts and pre-releases
+  are ignored.
+
 ## [1.9.19] — 2026-06-16
 
 ### Fixed

@@ -15,6 +15,7 @@ mod server_registry;
 mod settings_cmd;
 mod state;
 mod tray;
+mod update_check;
 mod voice_actor;
 
 use std::sync::Arc;
@@ -167,6 +168,8 @@ pub fn run() {
             commands::invite_link,
             commands::export_settings,
             commands::import_settings,
+            update_check::check_for_update,
+            update_check::open_release,
             dev_log::set_dev_logs,
         ])
         .run(tauri::generate_context!())

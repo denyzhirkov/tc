@@ -109,6 +109,16 @@ export const cmd = {
   importSettings: (json: string) => invoke<void>("import_settings", { json }),
   // dev logs
   setDevLogs: (enabled: boolean) => invoke<boolean>("set_dev_logs", { enabled }),
+  // update check
+  checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
+  openRelease: (url: string) => invoke<void>("open_release", { url }),
+};
+
+export type UpdateInfo = {
+  /** Latest release version, no leading "v" (e.g. "1.9.20"). */
+  version: string;
+  /** Browser URL of the release page. */
+  url: string;
 };
 
 export type DmPeerView = {

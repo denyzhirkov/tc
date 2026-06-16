@@ -7,8 +7,9 @@ import Settings from "./components/Settings";
 import Palette from "./components/Palette";
 import InviteConfirm from "./components/InviteConfirm";
 import DevicePrompt from "./components/DevicePrompt";
+import UpdateNotification from "./components/UpdateNotification";
 import { drainPendingInvite, fetchInitialStatus, subscribeAll } from "./lib/wire";
-import { pushLog, state } from "./lib/store";
+import { pushLog, state, update } from "./lib/store";
 import { cmd } from "./lib/tauri";
 import { installTheme } from "./lib/theme";
 import { shortcut } from "./lib/platform";
@@ -32,6 +33,13 @@ export default function App() {
     }
     // The sidebar's channel list is now refreshed by `wire.ts` whenever the
     // connection_state flips to "connected".
+
+    // Update check is best-effort and out-of-band: offline / API hiccups are
+    // swallowed by the backend (returns null) so they never surface as errors.
+    cmd
+      .checkForUpdate()
+      .then((info) => info && update.updateAvailable(info))
+      .catch(() => {});
   });
 
   return (
@@ -52,6 +60,7 @@ export default function App() {
       <Palette />
       <InviteConfirm />
       <DevicePrompt />
+      <UpdateNotification />
     </div>
   );
 }

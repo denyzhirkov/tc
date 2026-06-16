@@ -90,6 +90,12 @@ const en: Dict = {
   "device.no": "no",
   "device.switched": "switched to {name}",
 
+  // New release available
+  "update.available": "version {version} is available",
+  "update.hint": "you're on an older build",
+  "update.view": "view release",
+  "update.dismiss": "later",
+
   // Degraded call chips
   "voice.no_mic": "no mic",
   "voice.no_output": "no audio out",
@@ -201,6 +207,11 @@ const ru: Dict = {
   "device.yes": "да",
   "device.no": "нет",
   "device.switched": "переключено на {name}",
+
+  "update.available": "доступна версия {version}",
+  "update.hint": "у вас более старая сборка",
+  "update.view": "открыть релиз",
+  "update.dismiss": "позже",
 
   "voice.no_mic": "нет микрофона",
   "voice.no_output": "нет вывода звука",
