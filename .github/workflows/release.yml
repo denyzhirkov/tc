@@ -154,6 +154,7 @@ jobs:
             libssl-dev \
             libasound2-dev \
             libxdo-dev \
+            xdg-utils \
             patchelf
 
       - uses: pnpm/action-setup@v4
