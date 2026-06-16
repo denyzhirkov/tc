@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
     ));
 
     let shutdown_senders = senders.clone();
+    let maint_senders = senders.clone();
 
     // Spawn server tasks
     let mut tcp_handle = tokio::spawn(tcp::run_tcp_server(
@@ -130,6 +131,7 @@ async fn main() -> Result<()> {
     ));
     let mut maint_handle = tokio::spawn(run_maintenance(
         state,
+        maint_senders,
         ip_limiter,
         args.maintenance_interval,
     ));
@@ -219,6 +221,7 @@ async fn shutdown_signal() {
 
 async fn run_maintenance(
     state: ServerState,
+    senders: tcp::ClientSenders,
     ip_limiter: Arc<IpRateLimiter>,
     interval_secs: u64,
 ) -> Result<()> {
@@ -228,8 +231,16 @@ async fn run_maintenance(
     loop {
         interval.tick().await;
         let removed = state.cleanup_empty_channels().await;
-        if removed > 0 {
-            tracing::info!("cleaned up {} empty channels", removed);
+        if !removed.is_empty() {
+            tracing::info!("cleaned up {} empty channels", removed.len());
+            // If a reaped channel was public, its row is still in every sidebar —
+            // push a fresh list so the dead entry disappears.
+            if removed
+                .iter()
+                .any(|id| id.starts_with(config::PUBLIC_CHANNEL_PREFIX))
+            {
+                tcp::broadcast_channel_list(&state, &senders).await;
+            }
         }
         let ip_reclaimed = ip_limiter.sweep_idle(ip_ttl);
         if ip_reclaimed > 0 {

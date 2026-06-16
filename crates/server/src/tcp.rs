@@ -169,6 +169,12 @@ async fn handle_client(
             },
         )
         .await;
+        // A disconnect changes a public channel's count (and removes it if this
+        // was the last member) — refresh every sidebar so it doesn't show a dead
+        // or mis-counted row.
+        if channel_id.starts_with(tc_shared::config::PUBLIC_CHANNEL_PREFIX) {
+            broadcast_channel_list(&state, &senders).await;
+        }
     }
     ip_limiter.untrack(peer_addr.ip());
     let total = state.stats().await.clients;
@@ -430,6 +436,7 @@ async fn handle_join_channel(
     match state.join_channel(&peer_addr, &channel_id).await {
         Ok((participants, udp_token, voice_key)) => {
             tracing::info!(%peer_addr, %name, %channel_id, participants = participants.len(), "joined channel");
+            let is_public = channel_id.starts_with(tc_shared::config::PUBLIC_CHANNEL_PREFIX);
             broadcast_to_channel(
                 state,
                 senders,
@@ -452,6 +459,11 @@ async fn handle_join_channel(
                 },
             )
             .await;
+            // Joining a public channel bumps its participant count — refresh
+            // every sidebar so the listed count stays live.
+            if is_public {
+                broadcast_channel_list(state, senders).await;
+            }
         }
         Err(err) => {
             tracing::debug!(%peer_addr, %name, %channel_id, %err, "join channel failed");
@@ -485,6 +497,13 @@ async fn handle_leave_channel(
             },
         )
         .await;
+        // Leaving a public channel changes its count, and empties it (destroying
+        // it) if this was the last member — refresh every sidebar so the row's
+        // count stays live and a destroyed channel disappears instead of
+        // lingering as a dead entry that errors with "channel not found" on join.
+        if channel_id.starts_with(tc_shared::config::PUBLIC_CHANNEL_PREFIX) {
+            broadcast_channel_list(state, senders).await;
+        }
     } else {
         tracing::debug!(%peer_addr, %name, "leave failed: not in a channel");
         send_to(
@@ -687,7 +706,7 @@ async fn handle_list_channels(
 
 /// Push the current public channel list to every connected client.
 /// Serializes once, fans out cheap [`Bytes`] clones.
-async fn broadcast_channel_list(state: &ServerState, senders: &ClientSenders) {
+pub async fn broadcast_channel_list(state: &ServerState, senders: &ClientSenders) {
     let channels = state
         .list_public_channels()
         .await

@@ -39,7 +39,7 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 ## Voice UX
 
 - **VAD pre-roll:** the capture thread keeps the last `VAD_PREROLL_FRAMES` (100 ms) of gated audio in a pre-allocated ring and flushes it when VAD opens — without it the quiet first consonants are clipped and speech starts sound "scratchy". Receiver-side this is just a small seq burst the jitter buffer absorbs.
-- **Public channels are announced on creation:** the server pushes `ChannelList` to every connected client when a `pub-*` channel is created (`broadcast_channel_list` in `tcp.rs`), so sidebars update without `/list`. Private channels are never announced. Removal is NOT broadcast (sidebars may show a dead channel until the next list refresh — known gap).
+- **Public channel list is push-synced on every membership change.** The server pushes `ChannelList` to all connected clients whenever a `pub-*` channel's state changes — created, joined, left, on disconnect, and when the maintenance sweep reaps it (`broadcast_channel_list` in `tcp.rs`, plus the reap path in `run_maintenance`). So sidebars stay live without `/list`: counts update and a destroyed channel disappears instead of lingering as a dead row that errors with "channel not found" on join. Private channels are never announced. (Earlier this only fired on creation — removal was unbroadcast, leaving phantom channels in the sidebar.)
 - **Default VAD level is 15 in both clients** (desktop `state.rs` and TUI via `VAD_RMS_THRESHOLD = 0.015`); the two clients still map level→threshold differently (TUI `level*0.001`, desktop `0.001 + n/100*0.049`) — a pre-existing inconsistency, unify when touching VAD next.
 
 ## UDP registration & liveness (one-way-audio fix pack)

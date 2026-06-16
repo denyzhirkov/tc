@@ -539,10 +539,11 @@ impl ServerState {
         inner.clients.get(tcp_addr).cloned()
     }
 
-    /// Remove empty channels (no participants). Returns count of removed channels.
+    /// Remove empty channels (no participants). Returns the removed channel ids
+    /// (so the caller can refresh sidebars when a *public* channel disappears).
     /// Newly created channels get a grace period (2× maintenance interval) before
     /// being eligible for cleanup, so creators have time to join.
-    pub async fn cleanup_empty_channels(&self) -> usize {
+    pub async fn cleanup_empty_channels(&self) -> Vec<ChannelId> {
         self.cleanup_with(
             std::time::Duration::from_secs(tc_shared::config::MAINTENANCE_INTERVAL_SECS * 2),
             std::time::Duration::from_secs(tc_shared::config::UDP_TOKEN_TTL_SECS),
@@ -557,7 +558,7 @@ impl ServerState {
         &self,
         grace: std::time::Duration,
         token_ttl: std::time::Duration,
-    ) -> usize {
+    ) -> Vec<ChannelId> {
         let mut inner = self.inner.write().await;
         // Build set of occupied channel ids in one pass over clients.
         let occupied: HashSet<&str> = inner
@@ -579,13 +580,12 @@ impl ServerState {
             })
             .map(|(id, _)| id.clone())
             .collect();
-        let count = empty.len();
-        for id in empty {
-            inner.channels.remove(&id);
-            inner.channel_keys.remove(&id);
-            inner.channel_created_at.remove(&id);
+        for id in &empty {
+            inner.channels.remove(id);
+            inner.channel_keys.remove(id);
+            inner.channel_created_at.remove(id);
             // Also remove any stale tokens for this channel
-            inner.udp_tokens.retain(|_, (_, ch, _)| ch != &id);
+            inner.udp_tokens.retain(|_, (_, ch, _)| ch != id);
         }
         // Expire aged UDP tokens — but never for a live session that is still
         // in the token's channel. The client's idle keepalive is a re-hello
@@ -604,7 +604,7 @@ impl ServerState {
                 .is_some_and(|c| c.channel.as_deref() == Some(ch.as_str()));
             live || created.elapsed() < token_ttl
         });
-        count
+        empty
     }
 }
 
@@ -937,7 +937,7 @@ mod tests {
 
         // Channel just created — grace period should protect it
         let removed = state.cleanup_empty_channels().await;
-        assert_eq!(removed, 0);
+        assert_eq!(removed.len(), 0);
 
         // With the grace elapsed (zero grace), the empty channel goes away.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -947,7 +947,7 @@ mod tests {
                 std::time::Duration::from_secs(30),
             )
             .await;
-        assert_eq!(removed, 1);
+        assert_eq!(removed.len(), 1);
     }
 
     #[tokio::test]
@@ -964,7 +964,7 @@ mod tests {
                 std::time::Duration::from_secs(30),
             )
             .await;
-        assert_eq!(removed, 0);
+        assert_eq!(removed.len(), 0);
     }
 
     /// A token of a connected client that is still in the token's channel must
