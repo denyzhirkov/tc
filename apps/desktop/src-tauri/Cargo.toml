@@ -30,9 +30,11 @@ rustls = { workspace = true }
 tc-shared = { path = "../../../crates/shared" }
 tc-client = { path = "../../../crates/client" }
 hex = "0.4"
-# Update check: a single GitHub Releases GET. rustls-tls keeps us on the same
-# TLS stack as the rest of the workspace (no openssl/native-tls).
-reqwest = { version = "0.13", default-features = false, features = ["rustls-tls", "json"] }
+# Update check: a single GitHub Releases GET. We stay on the same TLS stack as
+# the rest of the workspace — rustls with the *ring* provider (installed
+# process-wide in lib.rs), so `rustls-no-provider` avoids pulling aws-lc-rs.
+# `webpki-roots` bundles the trust anchors so we don't depend on a system store.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "webpki-roots", "json"] }
 open = "5"
 cpal = { workspace = true }
 sha2 = { workspace = true }
