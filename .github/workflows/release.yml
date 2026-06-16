@@ -129,12 +129,18 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: ""
+          # Native ARM64 runner (Raspberry Pi / aarch64). Building on a native
+          # arm64 host avoids cross-compiling webkit2gtk, which is the painful
+          # part of a Tauri ARM build.
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            args: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Linux deps
-        if: matrix.os == 'ubuntu-22.04'
+        if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
