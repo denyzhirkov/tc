@@ -403,11 +403,12 @@ impl ServerState {
         // Remove pending tokens for this client
         inner.udp_tokens.retain(|_, (addr, _, _)| addr != tcp_addr);
         let mut channel_destroyed = false;
+        let is_persistent = inner.persistent.contains(&channel_id);
         if let Some(participants) = inner.channels.get_mut(&channel_id) {
             if let Some(udp) = udp_addr {
                 participants.remove(&udp);
             }
-            if participants.is_empty() {
+            if participants.is_empty() && !is_persistent {
                 inner.channels.remove(&channel_id);
                 inner.channel_keys.remove(&channel_id);
                 inner.channel_created_at.remove(&channel_id);
@@ -1119,6 +1120,20 @@ mod tests {
         assert_eq!(s.channels, 1);
         let public = state.list_public_channels().await;
         assert_eq!(public, vec![(ch, 0)]);
+    }
+
+    #[tokio::test]
+    async fn persistent_channel_survives_explicit_leave() {
+        let state = ServerState::new(unlimited());
+        let ch = state.create_persistent_channel("lobby").await.unwrap();
+        state.register_client(addr(1)).await.unwrap();
+        state.join_channel(&addr(1), &ch).await.unwrap();
+
+        // Explicit /leave (not a disconnect) must not reap a persistent channel.
+        state.leave_channel(&addr(1)).await;
+
+        assert_eq!(state.stats().await.channels, 1);
+        assert_eq!(state.list_public_channels().await, vec![(ch, 0)]);
     }
 
     #[tokio::test]

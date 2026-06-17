@@ -7,11 +7,15 @@ import { createStore } from "solid-js/store";
 export type Theme = "dark" | "light";
 export type Accent = "indigo" | "forest" | "rust" | "slate";
 export type Typeface = "inter" | "plex" | "mono";
+// How this client draws identicons. Purely local presentation — never sent to
+// peers; each user sees every avatar in their own chosen style.
+export type AvatarStyle = "weave" | "pixel" | "faces";
 
 export type Tweaks = {
   theme: Theme;
   accent: Accent;
   typeface: Typeface;
+  avatarStyle: AvatarStyle;
 };
 
 const KEY = "tc.tweaks";
@@ -30,10 +34,13 @@ const FONTS: Record<Typeface, string> = {
   mono: "'JetBrains Mono','SF Mono',Menlo,Consolas,ui-monospace,monospace",
 };
 
+const AVATAR_STYLES: AvatarStyle[] = ["weave", "pixel", "faces"];
+
 const DEFAULTS: Tweaks = {
   theme: "dark",
   accent: "indigo",
   typeface: "inter",
+  avatarStyle: "weave",
 };
 
 function load(): Tweaks {
@@ -45,6 +52,8 @@ function load(): Tweaks {
     // Migrate legacy values: `serif` (Newsreader) was retired in favour of
     // a monospace option — fall back to the default sans typeface.
     if (!(merged.typeface in FONTS)) merged.typeface = DEFAULTS.typeface;
+    if (!AVATAR_STYLES.includes(merged.avatarStyle))
+      merged.avatarStyle = DEFAULTS.avatarStyle;
     return merged;
   } catch {
     return { ...DEFAULTS };

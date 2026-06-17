@@ -15,3 +15,4 @@ apps/desktop/vite.config.d.ts
 .kungfu
 CLAUDE.md
 .claude
+apps/desktop/avatar-preview.html

@@ -123,6 +123,10 @@ const en: Dict = {
   "common.appearance": "appearance",
   "common.nickname": "nickname",
   "common.identicon": "identicon",
+  "common.avatar_style": "avatar style",
+  "avatar.weave": "weave",
+  "avatar.pixel": "pixel",
+  "avatar.faces": "faces",
   "common.none": "(none)",
   "common.test": "test",
 
@@ -237,6 +241,10 @@ const ru: Dict = {
   "common.appearance": "оформление",
   "common.nickname": "имя",
   "common.identicon": "идентикон",
+  "common.avatar_style": "стиль аватара",
+  "avatar.weave": "плетение",
+  "avatar.pixel": "пиксели",
+  "avatar.faces": "лица",
   "common.none": "(нет)",
   "common.test": "тест",
 

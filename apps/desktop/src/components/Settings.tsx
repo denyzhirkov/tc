@@ -18,6 +18,7 @@ import {
   setTweak,
   tweaks,
   type Accent,
+  type AvatarStyle,
   type Theme,
   type Typeface,
 } from "../lib/theme";
@@ -380,6 +381,13 @@ function Appearance() {
     { value: "plex", label: "IBM Plex" },
     { value: "mono", label: "JetBrains Mono" },
   ];
+  const avatars: { value: AvatarStyle; label: string }[] = [
+    { value: "weave", label: t("avatar.weave") },
+    { value: "pixel", label: t("avatar.pixel") },
+    { value: "faces", label: t("avatar.faces") },
+  ];
+  // Preview each style on the user's own key when available, else a fixed seed.
+  const previewSeed = () => state.status?.pubkey ?? "tc-preview-seed";
   return (
     <>
       <Row label="theme">
@@ -420,6 +428,25 @@ function Appearance() {
               onClick={() => setTweak("typeface", f.value)}
             >
               {f.label}
+            </span>
+          )}
+        </For>
+      </Row>
+      <Row label={t("common.avatar_style")}>
+        <For each={avatars}>
+          {(a) => (
+            <span
+              class={`flex items-center gap-1.5 ${chipCls(
+                tweaks.avatarStyle === a.value,
+              )}`}
+              onClick={() => setTweak("avatarStyle", a.value)}
+            >
+              <Identicon
+                pubkeyHex={previewSeed()}
+                size={18}
+                variant={a.value}
+              />
+              {a.label}
             </span>
           )}
         </For>
