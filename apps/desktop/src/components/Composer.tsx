@@ -5,7 +5,7 @@
 
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import { pushLog, state } from "../lib/store";
-import { runCommand } from "../lib/commands";
+import { classifyInput, runCommand } from "../lib/commands";
 import { openDm } from "../lib/dm";
 import { cmd } from "../lib/tauri";
 import { Send } from "./Icons";
@@ -168,6 +168,22 @@ export default function Composer() {
   const disabled = () =>
     !state.dm && !state.channel && !value().startsWith("/");
 
+  // Command-mode signal: recognised /cmd (and #join) → accent, unrecognised
+  // /word → warn, plain text → no signal.
+  const kind = () => classifyInput(value());
+
+  const wrapCls = () => {
+    if (disabled()) return "border-line bg-surface2 text-muted";
+    switch (kind()) {
+      case "command":
+        return "border-accent bg-surface ring-1 ring-accent";
+      case "unknown-command":
+        return "border-warn bg-surface ring-1 ring-warn";
+      default:
+        return "border-line bg-surface focus-within:border-accent";
+    }
+  };
+
   return (
     <div class="px-4 pb-4 pt-2 shrink-0 relative">
       <Show when={mentionQuery() !== null && candidates().length > 0}>
@@ -198,12 +214,15 @@ export default function Composer() {
         </div>
       </Show>
       <div
-        class={`flex items-center gap-2 px-3 py-2 rounded-lg border ${
-          disabled()
-            ? "border-line bg-surface2 text-muted"
-            : "border-line bg-surface focus-within:border-accent"
-        }`}
+        class={`relative flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors ${wrapCls()}`}
       >
+        <Show when={kind() !== "chat" && !disabled()}>
+          <span
+            class={`absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full ${
+              kind() === "command" ? "bg-accent" : "bg-warn"
+            }`}
+          />
+        </Show>
         <input
           ref={inputRef}
           class="flex-1 bg-transparent placeholder:text-faint text-sm"
@@ -217,6 +236,22 @@ export default function Composer() {
           autocomplete="off"
           spellcheck={false}
         />
+        <Show when={kind() !== "chat" && !disabled()}>
+          <span
+            class={`text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded select-none ${
+              kind() === "command"
+                ? "text-accent bg-accent-bg"
+                : "text-warn bg-surface2"
+            }`}
+            title={
+              kind() === "command"
+                ? "command mode — recognised"
+                : "command mode — unknown command"
+            }
+          >
+            {kind() === "command" ? "cmd" : "cmd?"}
+          </span>
+        </Show>
         <Show when={value()}>
           <button
             class="text-muted hover:text-accent"

@@ -3,6 +3,36 @@ import { cmd } from "./tauri";
 import { pushLog, state, update } from "./store";
 import { isMac } from "./platform";
 
+// Every recognised command head (incl. aliases). Keep in sync with the switch
+// in `runCommand` — used by the composer to colour the input when the user is
+// typing a command the app actually understands.
+export const KNOWN_COMMANDS = new Set<string>([
+  "/server", "/s", "/reconnect", "/r", "/disconnect", "/dc",
+  "/list", "/ls", "/create", "/connect", "/c", "/join", "/j",
+  "/leave", "/l", "/name", "/n", "/mute", "/m", "/mode", "/dm",
+  "/devices", "/dev", "/input", "/in", "/output", "/out", "/gain",
+  "/vol", "/vad", "/test", "/echotest", "/echo", "/paranoid", "/denoise",
+  "/hotkey", "/hk", "/notify", "/autostart", "/tray", "/servers", "/srv",
+  "/forget", "/fav", "/history", "/settings", "/set", "/show_dev_logs",
+  "/devlogs", "/backup", "/restore", "/invite", "/i", "/version", "/ver",
+  "/help", "/h",
+]);
+
+export type InputKind = "chat" | "command" | "unknown-command";
+
+/// Classify the composer's current text for visual feedback. `#…` (join
+/// shortcut) and a recognised `/cmd` are "command"; an unrecognised `/word`
+/// is "unknown-command"; everything else is plain chat. Matching is
+/// case-sensitive, mirroring `runCommand`'s exact-head switch.
+export function classifyInput(raw: string): InputKind {
+  const t = raw.trimStart();
+  if (!t) return "chat";
+  if (t.startsWith("#")) return t.length > 1 ? "command" : "unknown-command";
+  if (!t.startsWith("/")) return "chat";
+  const head = t.split(/\s+/)[0];
+  return KNOWN_COMMANDS.has(head) ? "command" : "unknown-command";
+}
+
 export async function runCommand(raw: string) {
   const input = raw.trim();
   if (!input) return;
