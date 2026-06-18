@@ -72,6 +72,10 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
       try {
         update.status(await cmd.status());
       } catch {}
+      // Surface any saved per-peer volume overrides for this roster.
+      try {
+        update.peerVolumes(await cmd.listPeerVolumes());
+      } catch {}
     }),
     on("left_channel", () => {
       update.channel(null);
@@ -106,6 +110,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
     on("name_changed", (p) => {
       pushLog(t("log.name_changed", { old: p.old_name, new: p.new_name }), "system");
       update.renameParticipant(p.old_name, p.new_name);
+      update.renamePeerVolume(p.old_name, p.new_name);
     }),
     on("voice_level", (v) => {
       lastVoiceLevelAt = Date.now();

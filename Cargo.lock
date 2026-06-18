@@ -5159,9 +5159,10 @@ dependencies = [
 
 [[package]]
 name = "tc-client"
-version = "1.9.22"
+version = "1.9.23"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "audiopus",
  "axum",
  "bincode",
@@ -5192,7 +5193,7 @@ dependencies = [
 
 [[package]]
 name = "tc-desktop"
-version = "1.9.22"
+version = "1.9.23"
 dependencies = [
  "anyhow",
  "cpal",
@@ -5221,7 +5222,7 @@ dependencies = [
 
 [[package]]
 name = "tc-loadtest"
-version = "1.9.22"
+version = "1.9.23"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5239,7 +5240,7 @@ dependencies = [
 
 [[package]]
 name = "tc-server"
-version = "1.9.22"
+version = "1.9.23"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5262,7 +5263,7 @@ dependencies = [
 
 [[package]]
 name = "tc-shared"
-version = "1.9.22"
+version = "1.9.23"
 dependencies = [
  "anyhow",
  "bincode",

@@ -16,6 +16,8 @@ use tc_shared::config;
 
 use tc_shared::ChannelId;
 
+use crate::peer_gain::PeerGains;
+
 // ── Matrix rain ─────────────────────────────────────────────────────────
 
 const MATRIX_CHARSET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ0123456789@#$&*=<>~{}[]|:;";
@@ -139,6 +141,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/connect", "join a channel"),
     ("/leave", "leave current channel"),
     ("/mute", "toggle mute"),
+    (
+        "/volume",
+        "set a peer's local volume: /volume <name> <0-200>",
+    ),
     ("/name", "set your display name"),
     ("/reconnect", "reconnect to server"),
     ("/server", "set server address"),
@@ -232,6 +238,9 @@ pub struct App {
     pub input_gain: Arc<AtomicU32>,
     /// Incoming audio volume (f32 stored as AtomicU32 bits; 1.0 = 100%).
     pub output_vol: Arc<AtomicU32>,
+    /// Per-peer local playback volume (sender name → gain). Shared with the
+    /// voice receive path (ArcSwap) so `/volume` applies live mid-call.
+    pub peer_gains: PeerGains,
     /// Display name.
     pub name: Option<String>,
     /// Channel ID to auto-rejoin after reconnect.
@@ -299,6 +308,7 @@ impl App {
             vad_threshold: Arc::new(AtomicU32::new(config::VAD_RMS_THRESHOLD.to_bits())),
             input_gain: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             output_vol: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            peer_gains: PeerGains::new(),
             name: None,
             rejoin_channel: None,
             scroll_offset: 0,

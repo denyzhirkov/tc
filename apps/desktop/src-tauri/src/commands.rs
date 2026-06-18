@@ -307,6 +307,7 @@ pub async fn export_settings(state: CoreState<'_>) -> Result<String, String> {
         trusted_servers: c.tofu.trusted_map(),
         servers: c.servers.clone(),
         dm_peers: c.dm_peers.clone(),
+        peer_volumes: c.peer_gains.pct_map(),
     };
     serde_json::to_string_pretty(&s).map_err(|e| format!("serialize: {}", e))
 }
@@ -359,6 +360,7 @@ pub async fn import_settings(state: CoreState<'_>, json: String) -> Result<(), S
     c.tofu = tc_client::tls::TofuState::new(s.trusted_servers.clone());
     c.servers = s.servers.clone();
     c.dm_peers = s.dm_peers.clone();
+    c.peer_gains.set_all_from_pct(&s.peer_volumes);
     c.save();
     Ok(())
 }

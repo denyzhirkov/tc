@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 use tokio::sync::{broadcast, mpsc};
 
+use tc_client::peer_gain::PeerGains;
 use tc_client::{audio, identity, network, settings, tls, tui, voice, web};
 use tc_shared::config;
 use tc_shared::{ClientMessage, ServerMessage};
@@ -84,6 +85,7 @@ async fn main() -> Result<()> {
         app.output_vol
             .store(vol_from_percent(pct).to_bits(), Ordering::Relaxed);
     }
+    app.peer_gains = PeerGains::from_pct_map(&user_settings.peer_volumes);
     if user_settings.paranoid == Some(true) {
         app.paranoid.store(true, Ordering::Relaxed);
     }
@@ -437,6 +439,7 @@ async fn handle_command(
         }
         "/name" | "/n" => return cmd_name(app, arg, conn),
         "/mute" | "/m" => return cmd_mute(app, muted),
+        "/volume" | "/vol" => return cmd_volume(app, arg),
         "/web" => return cmd_web(app, arg, web_cmd_tx, web_state_tx),
         "/quit" | "/exit" | "/q" => {
             app.should_quit = true;
@@ -546,6 +549,47 @@ fn cmd_name(app: &mut tui::App, arg: Option<&str>, conn: &mut Option<network::Se
     save_settings(app);
 }
 
+/// `/volume` — local per-peer playback volume. No arg lists current overrides;
+/// `<name>` shows one; `<name> <0-200>` sets it (100 = unchanged). Purely local.
+fn cmd_volume(app: &mut tui::App, arg: Option<&str>) {
+    let arg = arg.map(str::trim).unwrap_or("");
+    if arg.is_empty() {
+        let overrides = app.peer_gains.pct_map();
+        if overrides.is_empty() {
+            app.add_message("no per-peer volume overrides (all at 100%)".into());
+        } else {
+            app.add_message("── peer volume ──".into());
+            let mut rows: Vec<(String, u32)> = overrides.into_iter().collect();
+            rows.sort_by(|a, b| a.0.cmp(&b.0));
+            for (name, pct) in rows {
+                app.add_message(format!("  {}: {}%", name, pct));
+            }
+        }
+        return;
+    }
+
+    let mut it = arg.splitn(2, ' ');
+    let name = it.next().unwrap_or("").trim();
+    let rest = it.next().map(str::trim).unwrap_or("");
+    if name.is_empty() {
+        app.add_message("usage: /volume <name> <0-200>".into());
+        return;
+    }
+    if rest.is_empty() {
+        let pct = app.peer_gains.pct_map().get(name).copied().unwrap_or(100);
+        app.add_message(format!("{}: {}%", name, pct));
+        return;
+    }
+    match rest.parse::<u32>() {
+        Ok(pct) if pct <= config::PEER_VOL_MAX_PCT => {
+            app.peer_gains.set_pct(name, pct);
+            app.add_message(format!("{} volume → {}%", name, pct));
+            save_settings(app);
+        }
+        _ => app.add_message(format!("volume must be 0-{}", config::PEER_VOL_MAX_PCT)),
+    }
+}
+
 fn cmd_mute(app: &mut tui::App, muted: &Arc<AtomicBool>) {
     let was_muted = muted.fetch_xor(true, Ordering::Relaxed);
     app.add_message(if was_muted {
@@ -593,6 +637,7 @@ fn cmd_help(app: &mut tui::App) {
         "  /paranoid <on|off> hide speaking patterns from the server (constant rate)",
         "  /invite (/i)       tc:// link to current server/channel",
         "  /mute (/m)         toggle mute",
+        "  /volume (/vol) <name> <0-200>  set a peer's local volume",
         "  /name (/n) <name>  set your display name",
         "  /server (/s) <ip>  set server address",
         "  /reconnect (/r)    reconnect to server",
@@ -893,6 +938,7 @@ async fn handle_server_message(
                 app.input_gain.clone(),
                 app.output_vol.clone(),
                 my_name,
+                app.peer_gains.clone(),
                 app.denoise.clone(),
                 app.paranoid.clone(),
                 false,
@@ -933,6 +979,7 @@ async fn handle_server_message(
                 app.input_gain.clone(),
                 app.output_vol.clone(),
                 my_name,
+                app.peer_gains.clone(),
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(AtomicBool::new(false)),
                 true,
@@ -973,6 +1020,8 @@ async fn handle_server_message(
         }
         ServerMessage::NameChanged { old_name, new_name } => {
             app.add_message(format!("{} is now {}", old_name, new_name));
+            // Carry any local volume adjustment across the rename.
+            app.peer_gains.rename(&old_name, &new_name);
             // Update participants list
             if let Some(p) = app.participants.iter_mut().find(|p| *p == &old_name) {
                 *p = new_name;
@@ -1317,6 +1366,7 @@ fn build_settings(app: &tui::App) -> settings::UserSettings {
         trusted_servers: Default::default(),
         servers: Vec::new(),
         dm_peers: Vec::new(),
+        peer_volumes: app.peer_gains.pct_map(),
     }
 }
 
@@ -1350,6 +1400,7 @@ async fn restart_voice(
         app.input_gain.clone(),
         app.output_vol.clone(),
         my_name,
+        app.peer_gains.clone(),
         app.denoise.clone(),
         app.paranoid.clone(),
         false,

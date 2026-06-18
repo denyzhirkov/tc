@@ -71,3 +71,9 @@ export const SpeakerOff = (p: P) =>
     <path d="M3 6h2.5L9 3v10L5.5 10H3z" />,
     <path d="M11 6l3 3M14 6l-3 3" />,
   ]);
+
+export const Speaker = (p: P) =>
+  SVG(p, [
+    <path d="M3 6h2.5L9 3v10L5.5 10H3z" />,
+    <path d="M11.5 5.5a3.5 3.5 0 010 5M13 4a6 6 0 010 8" />,
+  ]);

@@ -76,6 +76,24 @@ pub async fn set_output_volume(state: CoreState<'_>, pct: u32) -> Result<(), Str
     Ok(())
 }
 
+/// Set a peer's local playback volume (percent, 100 = unchanged). Listener-side
+/// only — applied per-sender before mixing, never sent to the relay.
+#[tauri::command]
+pub async fn set_peer_volume(state: CoreState<'_>, name: String, pct: u32) -> Result<(), String> {
+    let c = state.lock().await;
+    c.apply_peer_volume(&name, pct);
+    c.save();
+    Ok(())
+}
+
+/// Current per-peer volume overrides as `(name, percent)`. Only peers whose
+/// volume differs from 100% are present.
+#[tauri::command]
+pub async fn list_peer_volumes(state: CoreState<'_>) -> Result<Vec<(String, u32)>, String> {
+    let c = state.lock().await;
+    Ok(c.peer_gains.pct_map().into_iter().collect())
+}
+
 #[tauri::command]
 pub async fn set_vad_level(state: CoreState<'_>, pct: u32) -> Result<(), String> {
     let mut c = state.lock().await;

@@ -2,6 +2,7 @@ pub mod audio;
 pub mod codec;
 pub mod identity;
 pub mod network;
+pub mod peer_gain;
 pub mod settings;
 pub mod tls;
 pub mod tui;

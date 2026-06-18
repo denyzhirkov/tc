@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tc_client::audio;
+use tc_client::peer_gain::PeerGains;
 use tc_client::voice::{self, VoiceHandle};
 use tc_shared::ChannelId;
 use tokio::sync::{mpsc, oneshot};
@@ -24,6 +25,9 @@ pub struct StartParams {
     pub vad_threshold: Arc<AtomicU32>,
     pub input_gain: Arc<AtomicU32>,
     pub output_vol: Arc<AtomicU32>,
+    /// Per-peer local playback gain (sender name → factor), shared with the
+    /// receive path so slider changes apply live mid-call.
+    pub peer_gains: PeerGains,
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub sender_name: String,
@@ -204,6 +208,7 @@ async fn start_from(p: &StartParams) -> anyhow::Result<VoiceHandle> {
         p.input_gain.clone(),
         p.output_vol.clone(),
         p.sender_name.clone(),
+        p.peer_gains.clone(),
         p.denoise.clone(),
         p.paranoid.clone(),
         p.echo_test,

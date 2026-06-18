@@ -318,6 +318,12 @@ async fn handle(
             );
         }
         ServerMessage::NameChanged { old_name, new_name } => {
+            // Carry any local volume override across the rename, then persist.
+            {
+                let c = core.lock().await;
+                c.peer_gains.rename(&old_name, &new_name);
+                c.save();
+            }
             emit(
                 app,
                 "name_changed",
@@ -378,6 +384,8 @@ async fn spawn_echo(
             vad_threshold: c.vad_threshold.clone(),
             input_gain: c.input_gain.clone(),
             output_vol: c.output_vol.clone(),
+            // Sound-check only hears our own reflected audio — no other peers.
+            peer_gains: tc_client::peer_gain::PeerGains::new(),
             input_device: c.input_device.clone(),
             output_device: c.output_device.clone(),
             sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),
@@ -438,6 +446,7 @@ async fn spawn_voice(app: AppHandle, core: Arc<Mutex<AppCore>>) {
             vad_threshold: c.vad_threshold.clone(),
             input_gain: c.input_gain.clone(),
             output_vol: c.output_vol.clone(),
+            peer_gains: c.peer_gains.clone(),
             input_device: c.input_device.clone(),
             output_device: c.output_device.clone(),
             sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),

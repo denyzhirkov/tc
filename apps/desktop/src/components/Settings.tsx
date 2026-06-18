@@ -451,6 +451,11 @@ function Appearance() {
           )}
         </For>
       </Row>
+      <Toggle
+        label={t("settings.composer_hints")}
+        value={tweaks.composerHints}
+        onChange={(v) => setTweak("composerHints", v)}
+      />
     </>
   );
 }

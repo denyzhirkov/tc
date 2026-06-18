@@ -109,6 +109,12 @@ pub const MAX_SENDER_STREAMS: usize = 16;
 /// Drop a sender's receive stream after this long without a packet from them.
 pub const SENDER_STREAM_TTL_SECS: u64 = 10;
 
+/// Per-peer local playback volume (listener-side gain applied before mixing).
+/// 100 = unchanged (1.0×); 0 mutes the peer locally; 200 doubles them. Purely
+/// local — never sent to the relay or other peers.
+pub const PEER_VOL_DEFAULT_PCT: u32 = 100;
+pub const PEER_VOL_MAX_PCT: u32 = 200;
+
 // ── VAD ──────────────────────────────────────────────────────────────────
 
 /// RMS energy threshold for voice activity detection.

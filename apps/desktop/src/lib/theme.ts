@@ -16,6 +16,8 @@ export type Tweaks = {
   accent: Accent;
   typeface: Typeface;
   avatarStyle: AvatarStyle;
+  /// Show the subtle hotkey-hint strip above the composer input.
+  composerHints: boolean;
 };
 
 const KEY = "tc.tweaks";
@@ -41,6 +43,7 @@ const DEFAULTS: Tweaks = {
   accent: "indigo",
   typeface: "inter",
   avatarStyle: "weave",
+  composerHints: true,
 };
 
 function load(): Tweaks {

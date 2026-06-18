@@ -74,6 +74,9 @@ export const cmd = {
   setOutputDevice: (name: string | null) => invoke<void>("set_output_device", { name }),
   setInputGain: (pct: number) => invoke<void>("set_input_gain", { pct }),
   setOutputVolume: (pct: number) => invoke<void>("set_output_volume", { pct }),
+  setPeerVolume: (name: string, pct: number) =>
+    invoke<void>("set_peer_volume", { name, pct }),
+  listPeerVolumes: () => invoke<[string, number][]>("list_peer_volumes"),
   setVadLevel: (pct: number) => invoke<void>("set_vad_level", { pct }),
   playTestSignal: (durationMs?: number) =>
     invoke<void>("play_test_signal", { durationMs: durationMs ?? 500 }),

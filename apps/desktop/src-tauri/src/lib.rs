@@ -142,6 +142,8 @@ pub fn run() {
             audio_cmd::set_output_device,
             audio_cmd::set_input_gain,
             audio_cmd::set_output_volume,
+            audio_cmd::set_peer_volume,
+            audio_cmd::list_peer_volumes,
             audio_cmd::set_vad_level,
             audio_cmd::play_test_signal,
             commands::start_echo_test,

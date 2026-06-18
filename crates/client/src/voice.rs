@@ -13,6 +13,7 @@ use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePack
 
 use crate::audio;
 use crate::codec::{Denoiser, OpusDecoder, OpusEncoder};
+use crate::peer_gain::PeerGains;
 
 // ── Adaptive Quality ────────────────────────────────────────────────
 
@@ -406,6 +407,10 @@ pub async fn start_voice(
     input_gain: Arc<AtomicU32>,
     output_vol: Arc<AtomicU32>,
     sender_name: String,
+    // Per-peer local playback gain (sender name → factor), applied per-sender
+    // before mixing on the receive path. Shared (ArcSwap) so slider changes
+    // apply live mid-call.
+    peer_gains: PeerGains,
     // Noise suppression (RNNoise): clean the mic before encoding. Read live on
     // the capture thread so the toggle applies mid-call.
     denoise: Arc<AtomicBool>,
@@ -521,6 +526,7 @@ pub async fn start_voice(
         registered: handle.registered.clone(),
         udp_token,
         own_name: sender_name,
+        peer_gains,
         echo_test,
     }));
 
@@ -1045,6 +1051,8 @@ struct RecvCfg {
     udp_token: u64,
     /// Our own display name — inbound packets carrying it are echoes and dropped.
     own_name: String,
+    /// Per-peer local playback gain (sender name → factor), read on the mix path.
+    peer_gains: PeerGains,
     /// Sound-check mode: don't drop our own reflected packets (we want to hear
     /// them come back through the server).
     echo_test: bool,
@@ -1173,6 +1181,7 @@ fn spawn_recv_task(cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
                 &mut opus_swap,
                 &mut mix_buf,
                 &cfg.stats,
+                &cfg.peer_gains,
                 slot.as_mut(),
             );
         }
@@ -1247,13 +1256,18 @@ fn drain_streams_to_playback(
     opus_swap: &mut Vec<u8>,
     mix_buf: &mut [f32],
     stats: &NetworkStats,
+    peer_gains: &PeerGains,
     mut playback_prod: Option<&mut audio::AudioProducer>,
 ) {
     use ringbuf::traits::Producer;
     loop {
         let mut contributors = 0usize;
         let mut mixed_len = 0usize;
-        for stream in streams.values_mut() {
+        for (name, stream) in streams.iter_mut() {
+            // Listener-side per-peer volume (1.0 = unchanged). Read live; one
+            // map lookup per sender per round, no allocation, multiply skipped
+            // when unity.
+            let gain = peer_gains.get(name);
             let pcm = match stream.jitter.pop(opus_swap) {
                 PopResult::Packet => {
                     stats.record_received();
@@ -1280,14 +1294,27 @@ fn drain_streams_to_playback(
                 PopResult::Empty => continue,
             };
             let n = pcm.len().min(mix_buf.len());
+            let unity = (gain - 1.0).abs() < f32::EPSILON;
             if contributors == 0 {
-                mix_buf[..n].copy_from_slice(&pcm[..n]);
+                if unity {
+                    mix_buf[..n].copy_from_slice(&pcm[..n]);
+                } else {
+                    for (m, s) in mix_buf[..n].iter_mut().zip(&pcm[..n]) {
+                        *m = *s * gain;
+                    }
+                }
             } else {
                 if n > mixed_len {
                     mix_buf[mixed_len..n].fill(0.0);
                 }
-                for (m, s) in mix_buf[..n].iter_mut().zip(pcm) {
-                    *m += *s;
+                if unity {
+                    for (m, s) in mix_buf[..n].iter_mut().zip(pcm) {
+                        *m += *s;
+                    }
+                } else {
+                    for (m, s) in mix_buf[..n].iter_mut().zip(pcm) {
+                        *m += *s * gain;
+                    }
                 }
             }
             mixed_len = mixed_len.max(n);
@@ -1566,6 +1593,7 @@ mod tests {
             &mut opus_swap,
             &mut mix_buf,
             &stats,
+            &PeerGains::new(),
             Some(&mut prod),
         );
 
@@ -1601,10 +1629,56 @@ mod tests {
             &mut opus_swap,
             &mut mix_buf,
             &stats,
+            &PeerGains::new(),
             Some(&mut prod),
         );
 
         assert_eq!(cons.occupied_len(), config::FRAME_SIZE * 3);
+        assert_eq!(stats.lost.load(Ordering::Relaxed), 0);
+    }
+
+    // A per-peer gain of 0% mutes that sender locally: the mixed output is
+    // silent even though the packet was received and decoded (decoder/jitter
+    // state stays current).
+    #[test]
+    fn drain_applies_per_peer_gain() {
+        use ringbuf::traits::{Consumer, Split};
+
+        let mut enc = OpusEncoder::new().unwrap();
+        let mut streams: HashMap<String, SenderStream> = HashMap::new();
+        streams.insert("loud".into(), sender_stream());
+        for i in 0..3u32 {
+            // A non-silent tone so a passthrough would be audibly non-zero.
+            let pkt = encoded_frame(&mut enc, 0.5);
+            streams.get_mut("loud").unwrap().jitter.push(1 + i, &pkt);
+        }
+
+        let rb = ringbuf::HeapRb::<f32>::new(config::FRAME_SIZE * 8);
+        let (mut prod, mut cons) = rb.split();
+        let stats = NetworkStats::new();
+        let mut opus_swap = Vec::new();
+        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
+
+        let gains = PeerGains::new();
+        gains.set_pct("loud", 0); // mute locally
+
+        drain_streams_to_playback(
+            &mut streams,
+            &mut opus_swap,
+            &mut mix_buf,
+            &stats,
+            &gains,
+            Some(&mut prod),
+        );
+
+        let mut sink = vec![1.0f32; config::FRAME_SIZE * 3];
+        let n = cons.pop_slice(&mut sink);
+        assert!(n > 0, "muted peer still produces (zeroed) frames");
+        assert!(
+            sink[..n].iter().all(|s| *s == 0.0),
+            "gain 0% must zero the peer's contribution"
+        );
+        // Packets were still consumed/decoded, not dropped.
         assert_eq!(stats.lost.load(Ordering::Relaxed), 0);
     }
 

@@ -3,12 +3,28 @@
 // Typing `@` triggers a mention popover that filters channel participants;
 // picking one opens a DM thread with them.
 
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 import { pushLog, state } from "../lib/store";
 import { classifyInput, runCommand } from "../lib/commands";
 import { openDm } from "../lib/dm";
 import { cmd } from "../lib/tauri";
+import { tweaks } from "../lib/theme";
+import { formatAccel, shortcut } from "../lib/platform";
 import { Send } from "./Icons";
+
+// Short, friendly labels for the configurable global hotkeys.
+const GLOBAL_LABELS: Record<string, string> = {
+  ptt: "talk",
+  mute: "mute",
+  quick_join: "join",
+};
 
 const HISTORY_KEY = "tc.cmdhistory";
 const HISTORY_MAX = 100;
@@ -39,9 +55,36 @@ export default function Composer() {
   const [value, setValue] = createSignal("");
   const [mentionQuery, setMentionQuery] = createSignal<string | null>(null);
   const [mentionIdx, setMentionIdx] = createSignal(0);
+  const [globalKeys, setGlobalKeys] = createSignal<[string, string][]>([]);
   let history = loadHistory();
   let historyIndex = history.length;
   let inputRef: HTMLInputElement | undefined;
+
+  // Pull configured global hotkeys for the hint strip. Re-read whenever the
+  // settings overlay closes, since that's where bindings get changed.
+  const refreshGlobalKeys = async () => {
+    try {
+      setGlobalKeys(await cmd.listHotkeys());
+    } catch {}
+  };
+  createEffect(() => {
+    if (!state.showSettings) void refreshGlobalKeys();
+  });
+
+  // In-app shortcuts (always available) + bound global hotkeys.
+  const hints = () => {
+    const out = [
+      { keys: shortcut("k"), label: "palette" },
+      { keys: shortcut("l"), label: "focus" },
+      { keys: "/", label: "commands" },
+      { keys: "@", label: "DM" },
+    ];
+    for (const [action, accel] of globalKeys()) {
+      const label = GLOBAL_LABELS[action];
+      if (label) out.push({ keys: formatAccel(accel), label });
+    }
+    return out;
+  };
 
   onMount(() => {
     inputRef?.focus();
@@ -209,6 +252,18 @@ export default function Composer() {
                 <span class="text-faint">@</span>
                 <span class="flex-1 truncate">{name}</span>
               </button>
+            )}
+          </For>
+        </div>
+      </Show>
+      <Show when={tweaks.composerHints && !value()}>
+        <div class="flex items-center gap-x-3 gap-y-0.5 flex-wrap px-1 pb-1.5 text-[10px] text-faint select-none">
+          <For each={hints()}>
+            {(h) => (
+              <span class="flex items-center gap-1">
+                <kbd class="font-mono text-muted">{h.keys}</kbd>
+                <span>{h.label}</span>
+              </span>
             )}
           </For>
         </div>

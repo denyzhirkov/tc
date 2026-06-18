@@ -45,6 +45,9 @@ export type AppState = {
   devicePrompt: DeviceAddedPayload | null;
   /// A newer GitHub release than this build, surfaced as a dismissable toast.
   updateAvailable: UpdateInfo | null;
+  /// Per-peer local playback volume (sender name → percent, 100 = unchanged).
+  /// Only peers with a non-default volume are present. Listener-side only.
+  peerVolumes: Record<string, number>;
 };
 
 let nextId = 1;
@@ -66,6 +69,7 @@ const [state, setState] = createStore<AppState>({
   invitePrompt: null,
   devicePrompt: null,
   updateAvailable: null,
+  peerVolumes: {},
 });
 
 export { state };
@@ -129,6 +133,28 @@ export const update = {
   invitePrompt: (p: InvitePayload | null) => setState("invitePrompt", p),
   devicePrompt: (p: DeviceAddedPayload | null) => setState("devicePrompt", p),
   updateAvailable: (u: UpdateInfo | null) => setState("updateAvailable", u),
+  peerVolumes: (entries: [string, number][]) => {
+    const m: Record<string, number> = {};
+    for (const [name, pct] of entries) m[name] = pct;
+    setState("peerVolumes", reconcile(m));
+  },
+  peerVolume: (name: string, pct: number) => {
+    setState("peerVolumes", (v) => {
+      const next = { ...v };
+      if (pct === 100) delete next[name];
+      else next[name] = pct;
+      return next;
+    });
+  },
+  renamePeerVolume: (oldName: string, newName: string) => {
+    setState("peerVolumes", (v) => {
+      if (!(oldName in v)) return v;
+      const next = { ...v };
+      next[newName] = next[oldName];
+      delete next[oldName];
+      return next;
+    });
+  },
   openDm: (pubkey_hex: string, name: string) => {
     setState("dm", { pubkey_hex, name });
     setState("dmLog", []);

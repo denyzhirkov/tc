@@ -58,6 +58,11 @@ pub struct UserSettings {
     /// Known DM peers (pubkey-hex → last name + last_seen).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dm_peers: Vec<DmPeer>,
+    /// Per-peer local playback volume (display-name → percent, 100 = unchanged).
+    /// Listener-side only; never sent to the relay. Keyed by name because the
+    /// channel/voice wire carries no pubkey (see `peer_gain`).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub peer_volumes: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tc_client::identity::Identity;
 use tc_client::network::ServerConnection;
+use tc_client::peer_gain::PeerGains;
 use tc_client::settings::{DmPeer, ServerEntry, UserSettings};
 use tc_client::tls::TofuState;
 use tc_shared::ChannelId;
@@ -79,6 +80,9 @@ pub struct AppCore {
     pub vad_threshold: Arc<AtomicU32>,
     pub input_gain: Arc<AtomicU32>,
     pub output_vol: Arc<AtomicU32>,
+    /// Per-peer local playback volume (sender name → gain), shared with the
+    /// voice receive path (ArcSwap). Listener-side only; persisted by name.
+    pub peer_gains: PeerGains,
     /// UDP token + voice key from the most recent JoinedChannel — fed to
     /// `voice::start_voice` once the drain task picks it up.
     pub pending_join: Option<PendingJoin>,
@@ -123,6 +127,7 @@ impl AppCore {
         ));
         let input_gain = Arc::new(AtomicU32::new(pct_to_float(input_gain_pct).to_bits()));
         let output_vol = Arc::new(AtomicU32::new(pct_to_float(output_vol_pct).to_bits()));
+        let peer_gains = PeerGains::from_pct_map(&saved.peer_volumes);
 
         Self {
             identity,
@@ -156,6 +161,7 @@ impl AppCore {
             vad_threshold,
             input_gain,
             output_vol,
+            peer_gains,
             pending_join: None,
             drain_handle: None,
         }
@@ -190,6 +196,7 @@ impl AppCore {
             trusted_servers: self.tofu.trusted_map(),
             servers: self.servers.clone(),
             dm_peers: self.dm_peers.clone(),
+            peer_volumes: self.peer_gains.pct_map(),
         };
         s.save();
     }
@@ -225,6 +232,13 @@ impl AppCore {
             pct_to_float(self.output_vol_pct).to_bits(),
             Ordering::Relaxed,
         );
+    }
+
+    /// Set a peer's local playback volume (percent, 100 = unchanged). Applies
+    /// live on the receive path via the shared `PeerGains`.
+    pub fn apply_peer_volume(&self, name: &str, pct: u32) {
+        self.peer_gains
+            .set_pct(name, pct.min(tc_shared::config::PEER_VOL_MAX_PCT));
     }
 }
 
