@@ -22,6 +22,9 @@
   --c-danger: #c44a4a;
   --c-warn: #c2862b;
   --c-ok: #3a8a5e;
+  /* Translucent surface for frosted-glass toasts (color tokens are opaque
+     hex, so Tailwind opacity modifiers can't derive this). */
+  --c-glass: rgba(24, 25, 28, 0.72);
 }
 
 :root[data-theme="light"] {
@@ -36,6 +39,39 @@
   --c-muted: #8a8a86;
   --c-faint: #b3b3af;
   --c-accent-bg: rgba(91, 108, 255, 0.10);
+  --c-glass: rgba(255, 255, 255, 0.7);
+}
+
+/* Frosted-glass system toast: translucent blurred panel with an accent
+   glow that follows the chosen accent (via color-mix). */
+.toast-card {
+  background: var(--c-glass);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 22%, var(--c-line));
+  border-radius: 1rem;
+  box-shadow:
+    0 1px 0 0 color-mix(in srgb, var(--c-accent) 10%, transparent) inset,
+    0 10px 40px -8px color-mix(in srgb, var(--c-accent) 38%, transparent),
+    0 8px 24px -10px rgba(0, 0, 0, 0.55);
+  animation: toast-in 0.24s cubic-bezier(0.2, 0.85, 0.25, 1);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-card {
+    animation: none;
+  }
 }
 
 html,

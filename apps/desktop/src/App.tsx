@@ -59,8 +59,11 @@ export default function App() {
       </Show>
       <Palette />
       <InviteConfirm />
-      <DevicePrompt />
-      <UpdateNotification />
+      {/* Corner stack for non-blocking system toasts (newest at the bottom). */}
+      <div class="fixed bottom-4 right-4 z-40 flex flex-col-reverse items-end gap-2">
+        <DevicePrompt />
+        <UpdateNotification />
+      </div>
     </div>
   );
 }

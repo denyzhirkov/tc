@@ -7,6 +7,8 @@ import { cmd } from "../lib/tauri";
 import { pushLog, state, update } from "../lib/store";
 import { dismissedDevices } from "../lib/wire";
 import { t } from "../lib/i18n";
+import Toast from "./Toast";
+import { Mic, Speaker } from "./Icons";
 
 export default function DevicePrompt() {
   const decline = () => {
@@ -31,29 +33,18 @@ export default function DevicePrompt() {
   return (
     <Show when={state.devicePrompt}>
       {(p) => (
-        <div class="fixed bottom-4 right-4 z-40 w-[320px] bg-surface border border-line rounded-xl shadow-2xl p-3">
-          <div class="text-sm mb-1">
-            {t(
-              p().kind === "input" ? "device.added_input" : "device.added_output",
-              { name: p().name },
-            )}
-          </div>
-          <div class="text-xs text-muted mb-3">{t("device.use_now")}</div>
-          <div class="flex justify-end gap-2">
-            <button
-              class="px-3 py-1 text-sm rounded-lg border border-line text-text2 hover:bg-hover"
-              onClick={decline}
-            >
-              {t("device.no")}
-            </button>
-            <button
-              class="px-3 py-1 text-sm rounded-lg bg-accent-bg text-text hover:opacity-90"
-              onClick={accept}
-            >
-              {t("device.yes")}
-            </button>
-          </div>
-        </div>
+        <Toast
+          icon={p().kind === "input" ? <Mic size={18} /> : <Speaker size={18} />}
+          title={t(
+            p().kind === "input" ? "device.added_input" : "device.added_output",
+            { name: p().name },
+          )}
+          body={t("device.use_now")}
+          actions={[
+            { label: t("device.no"), onClick: decline },
+            { label: t("device.yes"), onClick: accept, primary: true },
+          ]}
+        />
       )}
     </Show>
   );
