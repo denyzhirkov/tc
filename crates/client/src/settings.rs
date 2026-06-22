@@ -63,6 +63,15 @@ pub struct UserSettings {
     /// channel/voice wire carries no pubkey (see `peer_gain`).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub peer_volumes: HashMap<String, u32>,
+    /// Room overlay (HUD shown over fullscreen games). None = default (off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_enabled: Option<bool>,
+    /// Overlay corner/edge preset: "tl" | "tr" | "lc" | "rc" | "bl" | "br".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_position: Option<String>,
+    /// When the overlay is shown: "always" | "in_call". None = default ("in_call").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_visibility: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -1367,6 +1367,10 @@ fn build_settings(app: &tui::App) -> settings::UserSettings {
         servers: Vec::new(),
         dm_peers: Vec::new(),
         peer_volumes: app.peer_gains.pct_map(),
+        // Desktop-only overlay; the TUI never sets these — preserve as absent.
+        overlay_enabled: None,
+        overlay_position: None,
+        overlay_visibility: None,
     }
 }
 

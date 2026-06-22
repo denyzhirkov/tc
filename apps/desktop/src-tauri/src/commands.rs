@@ -38,6 +38,10 @@ pub struct AppStatus {
     pub close_to_tray: bool,
     pub autostart: bool,
     pub language: String,
+    pub participants: Vec<String>,
+    pub overlay_enabled: bool,
+    pub overlay_position: String,
+    pub overlay_visibility: String,
 }
 
 #[tauri::command]
@@ -64,6 +68,10 @@ pub async fn app_status(state: CoreState<'_>) -> Result<AppStatus, String> {
         close_to_tray: c.close_to_tray,
         autostart: c.autostart,
         language: c.language.clone(),
+        participants: c.participants.clone(),
+        overlay_enabled: c.overlay_enabled,
+        overlay_position: c.overlay_position.clone(),
+        overlay_visibility: c.overlay_visibility.clone(),
     })
 }
 
@@ -103,6 +111,7 @@ pub async fn connect(app: AppHandle, state: CoreState<'_>, addr: String) -> Resu
         }
         c.conn = None;
         c.channel = None;
+        c.participants.clear();
         c.pending_join = None;
         c.server_addr = Some(addr.clone());
         c.save();
@@ -151,6 +160,7 @@ pub async fn disconnect(app: AppHandle, state: CoreState<'_>) -> Result<(), Stri
         }
         c.conn = None;
         c.channel = None;
+        c.participants.clear();
         c.pending_join = None;
         c.voice.clone()
     };
@@ -308,6 +318,9 @@ pub async fn export_settings(state: CoreState<'_>) -> Result<String, String> {
         servers: c.servers.clone(),
         dm_peers: c.dm_peers.clone(),
         peer_volumes: c.peer_gains.pct_map(),
+        overlay_enabled: Some(c.overlay_enabled),
+        overlay_position: Some(c.overlay_position.clone()),
+        overlay_visibility: Some(c.overlay_visibility.clone()),
     };
     serde_json::to_string_pretty(&s).map_err(|e| format!("serialize: {}", e))
 }
@@ -361,6 +374,19 @@ pub async fn import_settings(state: CoreState<'_>, json: String) -> Result<(), S
     c.servers = s.servers.clone();
     c.dm_peers = s.dm_peers.clone();
     c.peer_gains.set_all_from_pct(&s.peer_volumes);
+    if let Some(v) = s.overlay_enabled {
+        c.overlay_enabled = v;
+    }
+    if let Some(p) = s.overlay_position.as_deref() {
+        if crate::state::is_overlay_position(p) {
+            c.overlay_position = p.to_string();
+        }
+    }
+    if let Some(v) = s.overlay_visibility.as_deref() {
+        if matches!(v, "always" | "in_call") {
+            c.overlay_visibility = v.to_string();
+        }
+    }
     c.save();
     Ok(())
 }

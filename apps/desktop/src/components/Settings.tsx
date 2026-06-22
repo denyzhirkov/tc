@@ -13,7 +13,14 @@ import {
 } from "solid-js";
 import { closeSettings, refreshStatus } from "../lib/actions";
 import { pushLog, state } from "../lib/store";
-import { cmd, on, type DeviceInfo, type VoiceMode } from "../lib/tauri";
+import {
+  cmd,
+  on,
+  type DeviceInfo,
+  type OverlayPosition,
+  type OverlayVisibility,
+  type VoiceMode,
+} from "../lib/tauri";
 import {
   setTweak,
   tweaks,
@@ -460,6 +467,92 @@ function Appearance() {
   );
 }
 
+function OverlaySettings() {
+  const [enabled, setEnabled] = createSignal(
+    state.status?.overlay_enabled ?? false,
+  );
+  const [pos, setPos] = createSignal<OverlayPosition>(
+    state.status?.overlay_position ?? "tr",
+  );
+  const [vis, setVis] = createSignal<OverlayVisibility>(
+    state.status?.overlay_visibility ?? "in_call",
+  );
+  createEffect(() => {
+    setEnabled(state.status?.overlay_enabled ?? false);
+    setPos(state.status?.overlay_position ?? "tr");
+    setVis(state.status?.overlay_visibility ?? "in_call");
+  });
+
+  // 2×3 grid mirroring the screen: left column = left edge, right = right edge.
+  const positions: { value: OverlayPosition; glyph: string }[] = [
+    { value: "tl", glyph: "↖" },
+    { value: "tr", glyph: "↗" },
+    { value: "lc", glyph: "←" },
+    { value: "rc", glyph: "→" },
+    { value: "bl", glyph: "↙" },
+    { value: "br", glyph: "↘" },
+  ];
+
+  const applyEnabled = async (v: boolean) => {
+    setEnabled(v);
+    if (state.status) state.status.overlay_enabled = v;
+    try {
+      await cmd.setOverlayEnabled(v);
+    } catch (e) {
+      alert(`overlay: ${e}`);
+      setEnabled(!v);
+    }
+  };
+  const applyPos = async (p: OverlayPosition) => {
+    setPos(p);
+    if (state.status) state.status.overlay_position = p;
+    cmd.setOverlayPosition(p).catch(() => {});
+  };
+  const applyVis = async (v: OverlayVisibility) => {
+    setVis(v);
+    if (state.status) state.status.overlay_visibility = v;
+    cmd.setOverlayVisibility(v).catch(() => {});
+  };
+
+  return (
+    <>
+      <div class="flex flex-col gap-1.5">
+        <Toggle
+          label={t("settings.overlay_enable")}
+          value={enabled()}
+          onChange={applyEnabled}
+        />
+        <span class="text-xs text-muted">{t("settings.overlay_hint")}</span>
+      </div>
+      <Show when={enabled()}>
+        <Row label={t("settings.overlay_position")}>
+          <div class="grid grid-cols-2 gap-1.5 w-24">
+            <For each={positions}>
+              {(p) => (
+                <span
+                  class={`${chipCls(pos() === p.value)} text-center`}
+                  title={p.value}
+                  onClick={() => applyPos(p.value)}
+                >
+                  {p.glyph}
+                </span>
+              )}
+            </For>
+          </div>
+        </Row>
+        <Row label={t("settings.overlay_visibility")}>
+          <span class={chipCls(vis() === "in_call")} onClick={() => applyVis("in_call")}>
+            {t("settings.overlay_vis_in_call")}
+          </span>
+          <span class={chipCls(vis() === "always")} onClick={() => applyVis("always")}>
+            {t("settings.overlay_vis_always")}
+          </span>
+        </Row>
+      </Show>
+    </>
+  );
+}
+
 export default function Settings() {
   const [hotkeys, setHotkeys] = createSignal<Record<string, string>>({});
   const refreshHotkeys = async () => {
@@ -604,6 +697,10 @@ export default function Settings() {
             />
             <span class="text-xs text-muted">{t("settings.paranoid_hint")}</span>
           </div>
+        </Section>
+
+        <Section title={t("settings.overlay")}>
+          <OverlaySettings />
         </Section>
 
         <Section title={t("settings.hotkeys")}>

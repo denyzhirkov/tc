@@ -104,6 +104,7 @@ async fn tear_down_session(core: &Arc<Mutex<AppCore>>) {
         let mut c = core.lock().await;
         c.conn = None;
         c.channel = None;
+        c.participants.clear();
         c.pending_join = None;
         c.voice.clone()
     };
@@ -214,6 +215,7 @@ async fn handle(
             let resend_name = {
                 let mut c = core.lock().await;
                 c.channel = Some(channel_id.clone());
+                c.participants = participants.clone();
                 let addr = c.server_addr.clone();
                 if let Some(addr) = addr {
                     crate::server_registry::record_channel(&mut c.servers, &addr, &channel_id);
@@ -249,16 +251,24 @@ async fn handle(
             spawn_voice(app.clone(), core.clone()).await;
         }
         ServerMessage::PeerJoined { peer_name } => {
+            {
+                let mut c = core.lock().await;
+                if !c.participants.contains(&peer_name) {
+                    c.participants.push(peer_name.clone());
+                }
+            }
             maybe_notify(app, core, "tc_", &format!("{} joined", peer_name)).await;
             emit(app, "peer_joined", PeerEvent { name: peer_name });
         }
         ServerMessage::PeerLeft { peer_name } => {
+            core.lock().await.participants.retain(|p| p != &peer_name);
             emit(app, "peer_left", PeerEvent { name: peer_name });
         }
         ServerMessage::LeftChannel => {
             {
                 let mut c = core.lock().await;
                 c.channel = None;
+                c.participants.clear();
                 c.voice.stop().await;
             }
             emit(app, "left_channel", serde_json::json!({}));
@@ -320,8 +330,13 @@ async fn handle(
         ServerMessage::NameChanged { old_name, new_name } => {
             // Carry any local volume override across the rename, then persist.
             {
-                let c = core.lock().await;
+                let mut c = core.lock().await;
                 c.peer_gains.rename(&old_name, &new_name);
+                for p in c.participants.iter_mut() {
+                    if *p == old_name {
+                        *p = new_name.clone();
+                    }
+                }
                 c.save();
             }
             emit(

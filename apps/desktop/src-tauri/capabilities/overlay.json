@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "Room overlay HUD window — event subscriber only",
+  "windows": ["overlay"],
+  "permissions": ["core:default"]
+}

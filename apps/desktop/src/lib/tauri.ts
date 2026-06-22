@@ -25,6 +25,18 @@ export type AppStatus = {
   close_to_tray: boolean;
   autostart: boolean;
   language: string;
+  participants: string[];
+  overlay_enabled: boolean;
+  overlay_position: OverlayPosition;
+  overlay_visibility: OverlayVisibility;
+};
+
+export type OverlayPosition = "tl" | "tr" | "lc" | "rc" | "bl" | "br";
+export type OverlayVisibility = "always" | "in_call";
+export type OverlayConfigPayload = {
+  enabled: boolean;
+  position: OverlayPosition;
+  visibility: OverlayVisibility;
 };
 
 export type ConnState =
@@ -83,6 +95,12 @@ export const cmd = {
   startEchoTest: () => invoke<void>("start_echo_test"),
   cancelEchoTest: () => invoke<void>("cancel_echo_test"),
   // platform integration
+  setOverlayEnabled: (enabled: boolean) =>
+    invoke<void>("set_overlay_enabled", { enabled }),
+  setOverlayPosition: (position: OverlayPosition) =>
+    invoke<void>("set_overlay_position", { position }),
+  setOverlayVisibility: (visibility: OverlayVisibility) =>
+    invoke<void>("set_overlay_visibility", { visibility }),
   setNotifications: (enabled: boolean) => invoke<void>("set_notifications", { enabled }),
   setAutostart: (enabled: boolean) => invoke<void>("set_autostart", { enabled }),
   setCloseToTray: (enabled: boolean) => invoke<void>("set_close_to_tray", { enabled }),
@@ -209,6 +227,7 @@ export type EventMap = {
   muted_changed: { muted: boolean };
   invite: InvitePayload;
   dev_log: DevLogPayload;
+  overlay_config: OverlayConfigPayload;
 };
 
 export function on<K extends keyof EventMap>(

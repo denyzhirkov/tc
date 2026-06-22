@@ -89,6 +89,15 @@ pub struct ErrorPayload {
     pub message: String,
 }
 
+/// Pushed to the overlay window when its config changes so it can react live
+/// (e.g. show/hide by visibility mode) without polling `app_status`.
+#[derive(Debug, Clone, Serialize)]
+pub struct OverlayConfigPayload {
+    pub enabled: bool,
+    pub position: String,
+    pub visibility: String,
+}
+
 /// Helper: emit and ignore the result (frontend may not have listeners yet).
 pub fn emit<P: Serialize + Clone>(app: &AppHandle, event: &str, payload: P) {
     if let Err(e) = app.emit(event, payload) {

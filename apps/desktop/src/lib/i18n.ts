@@ -51,6 +51,16 @@ const en: Dict = {
   "settings.hotkeys": "hotkeys",
   "settings.about": "about",
 
+  // Room overlay (game HUD)
+  "settings.overlay": "overlay",
+  "settings.overlay_enable": "room overlay over games",
+  "settings.overlay_hint":
+    "a click-through HUD showing the room + who's speaking, on top of borderless-windowed games",
+  "settings.overlay_position": "position",
+  "settings.overlay_visibility": "show",
+  "settings.overlay_vis_in_call": "in a call",
+  "settings.overlay_vis_always": "always",
+
   // Sidebar
   "sidebar.channels": "channels",
   "sidebar.dms": "direct messages",
@@ -177,6 +187,15 @@ const ru: Dict = {
   "settings.language": "язык",
   "settings.hotkeys": "горячие клавиши",
   "settings.about": "о программе",
+
+  "settings.overlay": "оверлей",
+  "settings.overlay_enable": "оверлей комнаты поверх игр",
+  "settings.overlay_hint":
+    "сквозной HUD с участниками и тем, кто говорит, поверх игр в безрамочном окне",
+  "settings.overlay_position": "позиция",
+  "settings.overlay_visibility": "показывать",
+  "settings.overlay_vis_in_call": "в звонке",
+  "settings.overlay_vis_always": "всегда",
 
   "sidebar.channels": "каналы",
   "sidebar.dms": "личные сообщения",

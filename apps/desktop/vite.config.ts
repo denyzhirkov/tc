@@ -19,5 +19,12 @@ export default defineConfig({
     target: "esnext",
     minify: "esbuild",
     sourcemap: true,
+    rollupOptions: {
+      // Two entry points: the main app and the standalone overlay HUD window.
+      input: {
+        main: "index.html",
+        overlay: "overlay.html",
+      },
+    },
   },
 });

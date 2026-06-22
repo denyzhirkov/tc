@@ -11,6 +11,7 @@ mod history;
 mod hotkeys;
 mod level_pump;
 mod notify;
+mod overlay;
 mod server_registry;
 mod settings_cmd;
 mod state;
@@ -101,10 +102,22 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 hotkeys::restore_from_settings(&handle).await;
             });
+
+            // Create the room overlay window if it was left enabled.
+            let handle = app.handle().clone();
+            let core_for_overlay: Arc<Mutex<AppCore>> =
+                app.state::<Arc<Mutex<AppCore>>>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                overlay::sync(&handle, &core_for_overlay).await;
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
             // Intercept the close button: hide instead of quit when close_to_tray.
+            // Only for the main window — the overlay manages its own lifecycle.
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 let core: tauri::State<Arc<Mutex<AppCore>>> = app.state();
@@ -173,6 +186,9 @@ pub fn run() {
             update_check::check_for_update,
             update_check::open_release,
             dev_log::set_dev_logs,
+            overlay::set_overlay_enabled,
+            overlay::set_overlay_position,
+            overlay::set_overlay_visibility,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

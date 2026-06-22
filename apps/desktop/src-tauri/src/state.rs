@@ -68,6 +68,13 @@ pub struct AppCore {
     pub close_to_tray: bool,
     /// UI language: "en" or "ru". Defaults to "en".
     pub language: String,
+    /// Current channel roster (names), maintained by the drain task. Source of
+    /// truth for hydrating the room overlay window when it opens mid-call.
+    pub participants: Vec<String>,
+    /// Room overlay HUD: on/off, position preset, and when it shows.
+    pub overlay_enabled: bool,
+    pub overlay_position: String,
+    pub overlay_visibility: String,
     pub servers: Vec<ServerEntry>,
     pub dm_peers: Vec<DmPeer>,
     /// Atomics shared with the audio capture thread.
@@ -153,6 +160,20 @@ impl AppCore {
                 .filter(|s| matches!(*s, "en" | "ru"))
                 .unwrap_or("en")
                 .to_string(),
+            participants: Vec::new(),
+            overlay_enabled: saved.overlay_enabled.unwrap_or(false),
+            overlay_position: saved
+                .overlay_position
+                .as_deref()
+                .filter(|s| is_overlay_position(s))
+                .unwrap_or("tr")
+                .to_string(),
+            overlay_visibility: saved
+                .overlay_visibility
+                .as_deref()
+                .filter(|s| matches!(*s, "always" | "in_call"))
+                .unwrap_or("in_call")
+                .to_string(),
             servers: saved.servers.clone(),
             dm_peers: saved.dm_peers.clone(),
             muted,
@@ -197,6 +218,9 @@ impl AppCore {
             servers: self.servers.clone(),
             dm_peers: self.dm_peers.clone(),
             peer_volumes: self.peer_gains.pct_map(),
+            overlay_enabled: Some(self.overlay_enabled),
+            overlay_position: Some(self.overlay_position.clone()),
+            overlay_visibility: Some(self.overlay_visibility.clone()),
         };
         s.save();
     }
@@ -240,6 +264,11 @@ impl AppCore {
         self.peer_gains
             .set_pct(name, pct.min(tc_shared::config::PEER_VOL_MAX_PCT));
     }
+}
+
+/// Valid overlay position presets: 4 corners + left/right vertical-center.
+pub fn is_overlay_position(s: &str) -> bool {
+    matches!(s, "tl" | "tr" | "lc" | "rc" | "bl" | "br")
 }
 
 fn pct_to_float(pct: u32) -> f32 {
