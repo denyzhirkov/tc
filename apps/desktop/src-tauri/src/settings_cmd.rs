@@ -50,10 +50,15 @@ pub async fn set_autostart(
 #[cfg(windows)]
 fn set_autostart_windows(app: &AppHandle, enabled: bool) -> std::io::Result<()> {
     use tauri::Manager;
-    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
     use winreg::RegKey;
 
     const RUN_KEY: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    // Task Manager's "Startup" tab records per-entry enable/disable here; a
+    // "disabled" record shadows the Run key, so the app silently won't launch
+    // even though the Run value exists.
+    const APPROVED_KEY: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
     let value_name = app.package_info().name.clone();
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -61,12 +66,38 @@ fn set_autostart_windows(app: &AppHandle, enabled: bool) -> std::io::Result<()> 
     if enabled {
         let exe = std::env::current_exe()?;
         run.set_value(&value_name, &format!("\"{}\"", exe.display()))?;
+        // Clear any prior "disabled" shadow so the entry actually fires. The
+        // user just opted in via our settings, so honour that over a stale
+        // Task Manager toggle. Best-effort: the key/value may not exist.
+        if let Ok(approved) = hkcu.open_subkey_with_flags(APPROVED_KEY, KEY_SET_VALUE) {
+            let _ = approved.delete_value(&value_name);
+        }
     } else if let Err(e) = run.delete_value(&value_name) {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(e);
         }
     }
     Ok(())
+}
+
+/// Re-apply the saved autostart state to the OS at launch so the setting stays
+/// the source of truth. On Windows this self-heals a stale `Run` path (e.g.
+/// written from a different install location, or a now-moved dev build) by
+/// rewriting the current executable path, and re-clears any disabled shadow.
+/// Windows-only: macOS/Linux autostart is persisted by tauri-plugin-autostart
+/// (LaunchAgent / .desktop entry), which survives across launches on its own.
+pub fn reconcile_autostart_at_startup(app: &AppHandle, enabled: bool) {
+    #[cfg(windows)]
+    {
+        match set_autostart_windows(app, enabled) {
+            Ok(()) => tracing::info!(enabled, "autostart reconciled with Run key"),
+            Err(e) => tracing::warn!("autostart reconcile failed: {}", e),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, enabled);
+    }
 }
 
 #[tauri::command]

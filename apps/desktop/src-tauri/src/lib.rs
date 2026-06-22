@@ -110,6 +110,16 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 overlay::sync(&handle, &core_for_overlay).await;
             });
+
+            // Re-apply saved autostart to the OS (Windows self-heals a stale
+            // Run-key path or a Task Manager "disabled" shadow).
+            let handle = app.handle().clone();
+            let core_for_autostart: Arc<Mutex<AppCore>> =
+                app.state::<Arc<Mutex<AppCore>>>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let enabled = core_for_autostart.lock().await.autostart;
+                settings_cmd::reconcile_autostart_at_startup(&handle, enabled);
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
