@@ -103,6 +103,8 @@ const en: Dict = {
   // New release available
   "update.available": "version {version} is available",
   "update.hint": "you're on an older build",
+  "update.macUnsign":
+    "unsigned build — after replacing the app, run this once so macOS lets it open:",
   "update.view": "view release",
   "update.dismiss": "later",
 
@@ -129,6 +131,7 @@ const en: Dict = {
   "common.off": "off",
   "common.add": "add",
   "common.copy": "copy",
+  "common.copied": "copied ✓",
   "common.close": "close",
   "common.appearance": "appearance",
   "settings.composer_hints": "show hotkey hints in composer",
@@ -234,6 +237,8 @@ const ru: Dict = {
 
   "update.available": "доступна версия {version}",
   "update.hint": "у вас более старая сборка",
+  "update.macUnsign":
+    "сборка без подписи — после замены приложения выполните это, чтобы macOS разрешила запуск:",
   "update.view": "открыть релиз",
   "update.dismiss": "позже",
 
@@ -257,6 +262,7 @@ const ru: Dict = {
   "common.off": "выкл",
   "common.add": "добавить",
   "common.copy": "копировать",
+  "common.copied": "скопировано ✓",
   "common.close": "закрыть",
   "common.appearance": "оформление",
   "settings.composer_hints": "подсказки горячих клавиш в поле ввода",
