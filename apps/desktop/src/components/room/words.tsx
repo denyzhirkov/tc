@@ -148,6 +148,29 @@ export function Note(props: { children: JSX.Element }) {
   return <div class="note">{props.children}</div>;
 }
 
+/// Something the app needs an answer to, over the input line. Same shape as
+/// everything else: a sentence, then the answers as words. Unlike the echo it
+/// stays until answered.
+export function Ask(props: {
+  children: JSX.Element;
+  answers: { label: string; onClick: () => void; loud?: boolean }[];
+}) {
+  return (
+    <div class="ask">
+      <span class="ask-text">{props.children}</span>
+      <span class="ask-answers">
+        <For each={props.answers}>
+          {(a) => (
+            <Word tone={a.loud ? "loud" : "quiet"} onClick={a.onClick}>
+              {a.label}
+            </Word>
+          )}
+        </For>
+      </span>
+    </div>
+  );
+}
+
 /// Something worth reading in full — a fingerprint, an empty-state sentence.
 export function Face(props: { children: JSX.Element }) {
   return <div class="face">{props.children}</div>;

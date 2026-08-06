@@ -2,8 +2,6 @@ import { onCleanup, onMount } from "solid-js";
 import Shell from "./components/room/Shell";
 import Palette from "./components/Palette";
 import InviteConfirm from "./components/InviteConfirm";
-import DevicePrompt from "./components/DevicePrompt";
-import UpdateNotification from "./components/UpdateNotification";
 import { drainPendingInvite, fetchInitialStatus, subscribeAll } from "./lib/wire";
 import { pushLog, state, update } from "./lib/store";
 import { cmd } from "./lib/tauri";
@@ -50,11 +48,6 @@ export default function App() {
       <Shell />
       <Palette />
       <InviteConfirm />
-      {/* Corner stack for non-blocking system toasts (newest at the bottom). */}
-      <div class="toasts">
-        <DevicePrompt />
-        <UpdateNotification />
-      </div>
     </div>
   );
 }

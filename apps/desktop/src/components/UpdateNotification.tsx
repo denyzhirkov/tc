@@ -1,80 +1,88 @@
-// Non-blocking toast shown when a newer GitHub release than this build exists.
-// "View release" opens the release page in the default browser; "later"
-// dismisses it for the session (the next launch re-checks).
+// A newer release exists — said in words over the input line, not in a card.
+// "Later" dismisses for the session; the next launch re-checks.
 //
 // On macOS the build is unsigned, so a freshly-installed update is quarantined
-// by Gatekeeper and refuses to launch. We surface the one-liner that clears the
-// quarantine attribute right in the toast so the user isn't stranded after
-// downloading the new version.
+// by Gatekeeper and refuses to launch. The one-liner that clears it is offered
+// here, since being stranded after downloading is worse than a second line.
 
 import { Show, createSignal } from "solid-js";
 import { cmd } from "../lib/tauri";
 import { pushLog, state, update } from "../lib/store";
 import { t } from "../lib/i18n";
 import { isMac } from "../lib/platform";
-import Toast from "./Toast";
-import { Download } from "./Icons";
+import { Ask } from "./room/words";
 
 // `productName` in tauri.conf.json — the installed bundle is /Applications/tc_.app.
 const UNQUARANTINE_CMD = "xattr -dr com.apple.quarantine /Applications/tc_.app";
 
 export default function UpdateNotification() {
-  const dismiss = () => update.updateAvailable(null);
   const [copied, setCopied] = createSignal(false);
 
-  const view = async () => {
-    const info = state.updateAvailable;
+  const dismiss = () => update.updateAvailable(null);
+
+  /// `openRelease` just hands a URL to the OS browser, so the same command
+  /// serves both the release page and a direct asset link.
+  const openUrl = async (url: string) => {
     update.updateAvailable(null);
-    if (!info) return;
     try {
-      await cmd.openRelease(info.url);
+      await cmd.openRelease(url);
     } catch (e) {
-      pushLog(`error: ${e}`, "error");
+      pushLog(`${e}`, "error");
     }
   };
 
-  const copyCmd = async (e: MouseEvent) => {
-    e.stopPropagation();
+  const copyCmd = async () => {
     try {
       await navigator.clipboard.writeText(UNQUARANTINE_CMD);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch (err) {
-      pushLog(`copy failed: ${err}`, "error");
+      setTimeout(() => setCopied(false), 1600);
+    } catch (e) {
+      pushLog(`${e}`, "error");
     }
   };
-
-  const body = (
-    <>
-      {t("update.hint")}
-      <Show when={isMac}>
-        <div class="mt-2">
-          <div class="text-muted">{t("update.macUnsign")}</div>
-          <button
-            type="button"
-            onClick={copyCmd}
-            title={t("common.copy")}
-            class="mt-1 w-full text-left font-mono text-[11px] px-2 py-1.5 rounded-md bg-hover border border-line text-text2 break-all hover:bg-accent-bg transition-colors"
-          >
-            {copied() ? t("common.copied") : UNQUARANTINE_CMD}
-          </button>
-        </div>
-      </Show>
-    </>
-  );
 
   return (
     <Show when={state.updateAvailable}>
       {(info) => (
-        <Toast
-          icon={<Download size={18} />}
-          title={t("update.available", { version: info().version })}
-          body={body}
-          actions={[
-            { label: t("update.dismiss"), onClick: dismiss },
-            { label: t("update.view"), onClick: view, primary: true },
-          ]}
-        />
+        <>
+          <Ask
+            answers={[
+              // The build for *this* machine when the release carries one —
+              // an arm64 Mac shouldn't have to pick its own dmg off a list.
+              ...(info().download_url
+                ? [
+                    {
+                      label: t("update.download"),
+                      onClick: () => openUrl(info().download_url!),
+                      loud: true,
+                    },
+                    { label: t("update.notes"), onClick: () => openUrl(info().url) },
+                  ]
+                : [
+                    {
+                      label: t("update.view"),
+                      onClick: () => openUrl(info().url),
+                      loud: true,
+                    },
+                  ]),
+              { label: t("update.dismiss"), onClick: dismiss },
+            ]}
+          >
+            {t("update.available", { version: info().version })}
+            <Show when={info().download_name}>
+              {" "}
+              <span class="ask-quiet" title={info().download_name!}>
+                {info().download_name}
+              </span>
+            </Show>
+          </Ask>
+          <Show when={isMac}>
+            <Ask answers={[{ label: copied() ? t("common.copied") : t("common.copy"), onClick: copyCmd }]}>
+              <span class="ask-quiet">{t("update.macUnsign")}</span>{" "}
+              <span class="ask-cmd">{UNQUARANTINE_CMD}</span>
+            </Ask>
+          </Show>
+        </>
       )}
     </Show>
   );

@@ -10,6 +10,8 @@ import { state } from "../../lib/store";
 import { toggleMute } from "../../lib/actions";
 import { cmd } from "../../lib/tauri";
 import { followRoom, goto, ground, toggle, view } from "../../lib/scene";
+import DevicePrompt from "../DevicePrompt";
+import UpdateNotification from "../UpdateNotification";
 import Cast from "./Cast";
 import Echo from "./Echo";
 import Falling from "./Falling";
@@ -103,6 +105,12 @@ export default function Shell() {
         <Show when={view() === "history"}>
           <HistoryScene />
         </Show>
+      </div>
+      {/* Things the app needs an answer to sit above the echo: both speak over
+          the input line, but these wait for you. */}
+      <div class="asks">
+        <DevicePrompt />
+        <UpdateNotification />
       </div>
       <Echo />
       <Line />

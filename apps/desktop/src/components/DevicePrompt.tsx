@@ -1,14 +1,13 @@
-// Non-blocking toast for hot-plugged audio devices: "use it now? yes / no".
-// "Yes" selects the device (applies mid-call immediately); "no" is remembered
-// for the session so the same device doesn't nag again.
+// A microphone or a pair of headphones was just plugged in — asked in words
+// over the input line. "No" is remembered for the session so the same device
+// doesn't nag again.
 
 import { Show } from "solid-js";
 import { cmd } from "../lib/tauri";
 import { pushLog, state, update } from "../lib/store";
 import { dismissedDevices } from "../lib/wire";
 import { t } from "../lib/i18n";
-import Toast from "./Toast";
-import { Mic, Speaker } from "./Icons";
+import { Ask } from "./room/words";
 
 export default function DevicePrompt() {
   const decline = () => {
@@ -26,25 +25,24 @@ export default function DevicePrompt() {
       else await cmd.setOutputDevice(p.name);
       pushLog(t("device.switched", { name: p.name }), "system");
     } catch (e) {
-      pushLog(`error: ${e}`, "error");
+      pushLog(`${e}`, "error");
     }
   };
 
   return (
     <Show when={state.devicePrompt}>
       {(p) => (
-        <Toast
-          icon={p().kind === "input" ? <Mic size={18} /> : <Speaker size={18} />}
-          title={t(
-            p().kind === "input" ? "device.added_input" : "device.added_output",
-            { name: p().name },
-          )}
-          body={t("device.use_now")}
-          actions={[
+        <Ask
+          answers={[
+            { label: t("device.yes"), onClick: accept, loud: true },
             { label: t("device.no"), onClick: decline },
-            { label: t("device.yes"), onClick: accept, primary: true },
           ]}
-        />
+        >
+          {t(p().kind === "input" ? "device.added_input" : "device.added_output", {
+            name: p().name,
+          })}{" "}
+          <span class="ask-quiet">{t("device.use_now")}</span>
+        </Ask>
       )}
     </Show>
   );

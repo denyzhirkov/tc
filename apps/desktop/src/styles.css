@@ -22,9 +22,6 @@
   --c-danger: #cc5450;
   --c-warn: #c2862b;
   --c-ok: #4fb583;
-  /* Translucent surface for frosted-glass toasts (color tokens are opaque
-     hex, so Tailwind opacity modifiers can't derive this). */
-  --c-glass: rgba(24, 23, 21, 0.72);
 
   /* Saturation/lightness a peer's hue is resolved through (see lib/tint.ts). */
   --sat: 52%;
@@ -45,7 +42,6 @@
   --c-muted: #7d7d77;
   --c-faint: #b0aea6;
   --c-accent-bg: rgba(98, 114, 255, 0.1);
-  --c-glass: rgba(255, 255, 255, 0.7);
   --sat: 46%;
   --lum: 40%;
 }
@@ -626,42 +622,46 @@ textarea {
   color: var(--c-muted);
 }
 
-/* ── overlays kept from before ───────────────────────────────────────── */
+/* ── things the app needs an answer to ───────────────────────────────── */
 
-.toasts {
-  position: fixed;
-  bottom: 16px;
-  right: 16px;
-  z-index: 40;
+.asks {
+  flex: none;
   display: flex;
-  flex-direction: column-reverse;
-  align-items: flex-end;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
 }
-
-/* Frosted-glass system toast: translucent blurred panel with an accent
-   glow that follows the chosen accent (via color-mix). */
-.toast-card {
-  background: var(--c-glass);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  backdrop-filter: blur(18px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--c-accent) 22%, var(--c-line));
-  border-radius: 1rem;
-  box-shadow:
-    0 1px 0 0 color-mix(in srgb, var(--c-accent) 10%, transparent) inset,
-    0 10px 40px -8px color-mix(in srgb, var(--c-accent) 38%, transparent),
-    0 8px 24px -10px rgba(0, 0, 0, 0.55);
-  animation: toast-in 0.24s cubic-bezier(0.2, 0.85, 0.25, 1);
+.ask {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--c-text2);
+  animation: ask-in 240ms ease-out;
 }
-
-@keyframes toast-in {
+.ask-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ask-quiet {
+  color: var(--c-faint);
+}
+.ask-cmd {
+  color: var(--c-muted);
+  overflow-wrap: anywhere;
+}
+.ask-answers {
+  display: flex;
+  gap: 14px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+@keyframes ask-in {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(4px);
   }
 }
 
@@ -701,7 +701,6 @@ textarea {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast-card,
   .sealed::before {
     animation: none;
   }
