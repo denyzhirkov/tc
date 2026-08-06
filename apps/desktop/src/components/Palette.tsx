@@ -2,12 +2,13 @@
 // settings entries, and acts as a fallback for free-form slash commands.
 
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { state, update } from "../lib/store";
+import { state } from "../lib/store";
 import { joinChannel } from "../lib/actions";
 import { runCommand } from "../lib/commands";
 import { openDm } from "../lib/dm";
 import { cmd, type DmPeerView, type ServerView } from "../lib/tauri";
 import { closePalette, openPalette, paletteOpen } from "../lib/palette";
+import { goto } from "../lib/scene";
 import { Hash, Search, Gear } from "./Icons";
 
 type Item =
@@ -117,7 +118,7 @@ export default function Palette() {
       case "server":
         return runCommand(`/server ${item.addr}`);
       case "command":
-        if (item.cmd === "/settings") return update.showSettings(true);
+        if (item.cmd === "/settings") return goto("settings");
         return runCommand(item.cmd);
       case "raw":
         return runCommand(item.cmd);

@@ -11,13 +11,18 @@ export type Typeface = "inter" | "plex" | "mono";
 // peers; each user sees every avatar in their own chosen style.
 export type AvatarStyle = "weave" | "pixel" | "faces";
 
+/// What a crowded room does with people who aren't talking: keep only the
+/// recent voices on stage, or show everyone however small they get.
+export type Crowd = "recent" | "all";
+
 export type Tweaks = {
   theme: Theme;
   accent: Accent;
   typeface: Typeface;
   avatarStyle: AvatarStyle;
-  /// Show the subtle hotkey-hint strip above the composer input.
+  /// Show the key hints under the input line.
   composerHints: boolean;
+  crowd: Crowd;
 };
 
 const KEY = "tc.tweaks";
@@ -38,12 +43,15 @@ const FONTS: Record<Typeface, string> = {
 
 const AVATAR_STYLES: AvatarStyle[] = ["weave", "pixel", "faces"];
 
+// The room is typeset in one face, and that face is monospace: the terminal
+// heritage is carried by the type rather than by decoration.
 const DEFAULTS: Tweaks = {
   theme: "dark",
   accent: "indigo",
-  typeface: "inter",
+  typeface: "mono",
   avatarStyle: "weave",
   composerHints: true,
+  crowd: "recent",
 };
 
 function load(): Tweaks {

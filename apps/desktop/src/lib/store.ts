@@ -31,9 +31,7 @@ export type AppState = {
   voice: VoiceLevelPayload | null;
   /// Per-peer levels (name → 0..1).
   speakers: Record<string, number>;
-  /// Settings overlay visibility.
-  showSettings: boolean;
-  /// When set, the pane shows a DM thread with this peer instead of the channel log.
+  /// When set, the room holds one person and speech goes to them alone.
   dm: { pubkey_hex: string; name: string } | null;
   /// Lines for the active DM thread. Cleared each time `dm` changes.
   dmLog: LogLine[];
@@ -62,7 +60,6 @@ const [state, setState] = createStore<AppState>({
   log: [],
   voice: null,
   speakers: {},
-  showSettings: false,
   dm: null,
   dmLog: [],
   devLogs: false,
@@ -128,7 +125,6 @@ export const update = {
   // last level forever ("phantom speaking wave"). reconcile diffs and removes.
   speakers: (m: Record<string, number>) =>
     setState("speakers", reconcile(m)),
-  showSettings: (v: boolean) => setState("showSettings", v),
   devLogs: (v: boolean) => setState("devLogs", v),
   invitePrompt: (p: InvitePayload | null) => setState("invitePrompt", p),
   devicePrompt: (p: DeviceAddedPayload | null) => setState("devicePrompt", p),

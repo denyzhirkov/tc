@@ -76,3 +76,56 @@ P6.2 оставил deeplink в состоянии «работает на macOS
 - **`uko25t`** `/invite` (`/i`) в обоих клиентах: `tc_shared::invite_url` (дефолтный порт опускается), desktop копирует в clipboard, TUI печатает; help-тексты обновлены.
 - **`ziitag`** убран `setTimeout(400)` перед join — `connect` резолвится после установления TLS, join упорядочен в том же потоке.
 - **`go7i87`** confirm-диалог (`InviteConfirm.tsx`) для серверов вне registry — защита от drive-by connect (утечка IP/pubkey + TOFU-pin чужого серта); известные сервера коннектятся без трения. i18n en/ru.
+
+## «Room» UI — full frontend replacement (`fhq8x7`, 2026-08-06)
+
+The desktop UI was a Discord clone: 240 px sidebar + message pane + 224 px peer
+panel. Diagnosis before touching anything — voice, the actual product, lived in
+a 100 px strip at the bottom-left while text took 70 % of the screen; voice
+controls were spread over three places (`VoiceStrip`, `ChannelHeader`,
+`Peers`); speaking state was drawn three different ways; and E2E/TOFU — the
+reason the product exists — was a 10 px monospace line nobody reads.
+
+Replaced wholesale with one layout that serves every screen: **a row of
+entities, their details underneath, and a line to type into**. The row holds
+people (a room), rooms (the lobby), or setting groups (settings).
+
+- **People are their names.** No avatars, no tiles, no roster panel. Volume
+  becomes `transform: scale` + opacity, so a speaker grows without pushing
+  neighbours around (changing `font-size` would reflow the rank every frame).
+- **Ranks alternate counts** (4-3-4, not 4-4-3) so neighbouring rows fall into
+  each other's gaps instead of forming a grid. Type shrinks with headcount;
+  past 14 standing, only recent voices stay and the quiet wait in a line below,
+  lifted back the moment they speak (≥2.5 s between swaps, you're never
+  displaced). Toggle: settings → look → "when it's crowded".
+- **Speech falls from the mouth that said it** and fades. Distance and life
+  scale with the crowd (≈14 s across the room alone, ≈7 s one rank down when
+  full); one line per voice at a time.
+- **Colour is identity**, derived from the name via FNV → hue. Caveat: the
+  roster carries names, not pubkeys, so renaming recolours a peer — the
+  fingerprint in settings remains the thing that proves who someone is.
+- **The room's tint follows the loudest voice**, damped hard in JS (hue drifts
+  the short way round the wheel over ~4 s, brightness ~3 s, max 5.5 % alpha,
+  repaint only past a visible delta). A CSS transition can't do this — the var
+  is rewritten every frame, so the transition never gets to start.
+- **All 28 settings** moved into the same grammar: one control, a row of words
+  where the lit one is chosen. Toggles became pairs of antonyms, device pickers
+  and enums the same row, and only gain/volume/VAD kept a continuous control
+  (12 ticks). Fonts are set in their own face, accents in their own colour.
+  Search across every group from the input line, since 28 controls beat memory.
+- **Hotkeys are caught, not typed** — click the combo, press it; ⌫ clears.
+- **The input line doesn't autofocus**: space belongs to push-to-talk, and any
+  printable key hands focus over (Escape hands it back).
+- **Command output is routed** (`runCommand` wraps `execute`): commands whose
+  only result is text open "what was said"; `/list` opens the lobby, because
+  the rooms themselves are the answer; everything else — and every error —
+  echoes for six seconds above the input line. Before this, a mistyped command
+  wrote to a log the new UI never showed.
+
+Removed: `Sidebar`, `ChannelHeader`, `Pane`, `Peers`, `VoiceStrip`,
+`VoiceWave`, `Composer`, `Settings`, `Popover`, `lib/fp.ts`.
+Added: `components/room/*` (Shell, Cast, Falling, TopLine, Lobby,
+SettingsScene, HistoryScene, Line, Echo, words) + `lib/{scene,stage,tint,rooms}.ts`.
+Kept untouched: `Palette` (⌘K), `InviteConfirm`, `DevicePrompt`,
+`UpdateNotification`, `Identicon` (still drawn by the game overlay).
+Rust: not a line — ADR-0001 held.
