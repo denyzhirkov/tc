@@ -15,12 +15,18 @@ type Item =
   | { kind: "channel"; id: string; count: number; label: string }
   | { kind: "dm"; pubkey: string; name: string; label: string }
   | { kind: "server"; addr: string; label: string }
-  | { kind: "command"; cmd: string; label: string; hint?: string }
+  | { kind: "command"; cmd: string; label: string; hint?: string; arg?: boolean }
   | { kind: "raw"; cmd: string; label: string };
 
-const COMMANDS: { cmd: string; label: string; hint?: string }[] = [
+/// `arg: true` means the command is incomplete on its own — choosing it fills
+/// the query instead of running it.
+const COMMANDS: { cmd: string; label: string; hint?: string; arg?: boolean }[] = [
   { cmd: "/list", label: "list channels" },
-  { cmd: "/create", label: "create channel" },
+  // Two entries on purpose: `/create` with a name makes a public room, without
+  // one it makes an unlisted private room. A single "create channel" that ran
+  // straight away silently did the second thing to anyone expecting the first.
+  { cmd: "/create", label: "create a room…", hint: "type a name", arg: true },
+  { cmd: "/create", label: "create a private room", hint: "no name, unlisted" },
   { cmd: "/leave", label: "leave channel" },
   { cmd: "/disconnect", label: "disconnect" },
   { cmd: "/reconnect", label: "reconnect" },
@@ -97,7 +103,13 @@ export default function Palette() {
     }
     for (const c of COMMANDS) {
       if (!q || c.cmd.includes(q) || c.label.toLowerCase().includes(q)) {
-        out.push({ kind: "command", cmd: c.cmd, label: c.label, hint: c.cmd });
+        out.push({
+          kind: "command",
+          cmd: c.cmd,
+          label: c.label,
+          hint: c.hint ?? c.cmd,
+          arg: c.arg,
+        });
       }
     }
     return out.slice(0, 50);
@@ -109,6 +121,12 @@ export default function Palette() {
   });
 
   const choose = async (item: Item) => {
+    // An incomplete command is handed back to the user to finish, not run.
+    if (item.kind === "command" && item.arg) {
+      setQuery(`${item.cmd} `);
+      inputRef?.focus();
+      return;
+    }
     closePalette();
     switch (item.kind) {
       case "channel":
