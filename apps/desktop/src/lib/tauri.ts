@@ -138,8 +138,12 @@ export const cmd = {
 export type UpdateInfo = {
   /** Latest release version, no leading "v" (e.g. "1.9.20"). */
   version: string;
-  /** Browser URL of the release page. */
+  /** Browser URL of the release page — notes, every platform. */
   url: string;
+  /** Direct link to the build for this machine, when the release has one. */
+  download_url: string | null;
+  /** File name of that build (e.g. "tc__1.10.1_aarch64.dmg"). */
+  download_name: string | null;
 };
 
 export type DmPeerView = {

@@ -106,6 +106,8 @@ const en: Dict = {
   "update.macUnsign":
     "unsigned build — after replacing the app, run this once so macOS lets it open:",
   "update.view": "view release",
+  "update.download": "download it",
+  "update.notes": "what's new",
   "update.dismiss": "later",
 
   // Degraded call chips
@@ -377,6 +379,8 @@ const ru: Dict = {
   "update.macUnsign":
     "сборка без подписи — после замены приложения выполните это, чтобы macOS разрешила запуск:",
   "update.view": "открыть релиз",
+  "update.download": "скачать",
+  "update.notes": "что нового",
   "update.dismiss": "позже",
 
   "voice.no_mic": "нет микрофона",
