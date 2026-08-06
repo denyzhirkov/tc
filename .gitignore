@@ -16,3 +16,5 @@ apps/desktop/vite.config.d.ts
 CLAUDE.md
 .claude
 apps/desktop/avatar-preview.html
+# mcpify runtime (pid file)
+.mcpify/
