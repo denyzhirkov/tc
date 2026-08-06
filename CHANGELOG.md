@@ -38,6 +38,74 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 Voice, crypto, protocol and the terminal client are untouched — this release
 changes only how the desktop app looks and is operated. Protocol stays at 3.
 
+## [1.9.27] — 2026-06-30
+
+### Added
+- **Unquarantine command in the update toast.** Builds are unsigned, so macOS
+  refuses to open a freshly downloaded app; the toast now shows the exact
+  `xattr` command to run after replacing it.
+
+## [1.9.26] — 2026-06-22
+
+### Fixed
+- **Windows autostart, again.** The saved setting is re-applied to the OS on
+  every launch, so a stale `Run` path — left behind by a moved dev build or a
+  different install location — heals itself. Task Manager's "disabled" shadow
+  entry, which silently overrode the `Run` value, is cleared as well.
+  macOS/Linux are unchanged.
+
+## [1.9.25] — 2026-06-22
+
+### Added
+- **Room overlay over fullscreen games.** An optional click-through window
+  that floats the roster and who's speaking on top of borderless-windowed
+  games. Off by default; six edge positions, shown in-call or always. It is a
+  pure subscriber to the same events the main window uses — the core gains
+  nothing but a roster snapshot for hydration. Honest limit: borderless
+  windowed only, exclusive fullscreen can't be overlaid without injection.
+
+## [1.9.24] — 2026-06-19
+
+### Changed
+- **Frosted-glass system toasts.** Update and hot-plugged-device
+  notifications share one translucent blurred panel with an accent glow that
+  follows the chosen accent colour, and a fade-and-scale entrance that
+  respects reduced-motion. They now stack in the corner instead of covering
+  each other.
+
+## [1.9.23] — 2026-06-18
+
+### Added
+- **Per-peer volume.** Turn one person up or down (0–200%) without touching
+  anyone else. Applied on your machine before mixing — never sent to the relay
+  or to the peer. Survives a rename, costs nothing at unity gain.
+- Hotkey hints above the composer, with a show/hide toggle in settings.
+
+### Changed
+- Default window size 1200×800 (minimum 640×420).
+
+## [1.9.22] — 2026-06-17
+
+### Added
+- **Command-mode indicator in the composer.** The border, focus ring and a
+  left stripe change colour the moment your text reads as a command — accent
+  for one the app knows, amber for one it doesn't — so you can tell it will be
+  run as a command and not sent as chat.
+
+## [1.9.21] — 2026-06-17
+
+### Added
+- **Avatars with a choice of style:** Truchet weave (default), mirrored pixel
+  sigil, or fun-emoji faces, each in a squircle with a palette derived from
+  the peer's key. The style is your own local preference and is never sent to
+  anyone.
+
+### Fixed
+- **Persistent public channels survived an explicit `/leave`** — `leave_channel`
+  was missing the guard that the other cleanup paths already had, so a
+  pre-created room could be reaped when its last member left. Regression test
+  added.
+
 ## [1.9.20] — 2026-06-16
 
 ### Added
