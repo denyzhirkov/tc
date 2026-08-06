@@ -1,6 +1,8 @@
 // Slash-command parser. Mirrors the TUI vocabulary so muscle memory carries over.
 import { cmd } from "./tauri";
 import { pushLog, state, update } from "./store";
+import { toggleSettings } from "./actions";
+import { goto } from "./scene";
 import { isMac } from "./platform";
 
 // Every recognised command head (incl. aliases). Keep in sync with the switch
@@ -33,7 +35,34 @@ export function classifyInput(raw: string): InputKind {
   return KNOWN_COMMANDS.has(head) ? "command" : "unknown-command";
 }
 
+/// Commands whose entire result is text in the log. Running one of these and
+/// staying on the stage would mean the answer is printed somewhere the user
+/// isn't looking, so afterwards we show them what was said.
+const PRINTS_TEXT = new Set<string>([
+  "/help", "/h", "/devices", "/dev", "/servers", "/srv",
+  "/invite", "/i", "/backup", "/show_dev_logs", "/devlogs",
+]);
+
 export async function runCommand(raw: string) {
+  const input = raw.trim();
+  await execute(input);
+
+  const [head, ...rest] = input.split(/\s+/);
+  const arg = rest.join(" ").trim();
+
+  // "which rooms are there" is answered by the lobby — the rooms themselves,
+  // with headcounts — not by a line of text about them.
+  if (head === "/list" || head === "/ls") return goto("lobby");
+  if (PRINTS_TEXT.has(head)) return goto("history");
+  // Re-printing the log only helps if you can see the log; `clear` is a
+  // one-line confirmation and belongs in the echo instead.
+  if (head === "/history" && arg !== "clear") return goto("history");
+  // `/hotkey` with no verb lists the bindings; set/unset just confirm.
+  if ((head === "/hotkey" || head === "/hk") && (!rest.length || rest[0] === "list"))
+    return goto("history");
+}
+
+async function execute(raw: string) {
   const input = raw.trim();
   if (!input) return;
 
@@ -245,7 +274,7 @@ export async function runCommand(raw: string) {
     }
     case "/settings":
     case "/set":
-      update.showSettings(!state.showSettings);
+      toggleSettings();
       return;
     case "/show_dev_logs":
     case "/devlogs": {

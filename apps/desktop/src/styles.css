@@ -3,43 +3,640 @@
 @tailwind utilities;
 
 :root {
-  --font-ui: "Inter Tight", "Inter", ui-sans-serif, -apple-system, system-ui,
-    sans-serif;
+  --font-ui: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas,
+    monospace;
 
   /* dark default */
-  --c-bg: #16171a;
-  --c-surface: #1c1d20;
-  --c-surface2: #222428;
-  --c-hover: #26282d;
-  --c-line: #2a2c30;
-  --c-line2: #222428;
-  --c-text: #e8e8e6;
-  --c-text2: #bcbdba;
-  --c-muted: #797a76;
-  --c-faint: #5a5b58;
-  --c-accent: #5b6cff;
-  --c-accent-bg: rgba(91, 108, 255, 0.16);
-  --c-danger: #c44a4a;
+  --c-bg: #100f0e;
+  --c-surface: #1a1917;
+  --c-surface2: #211f1d;
+  --c-hover: #26241f;
+  --c-line: #2b2925;
+  --c-line2: #211f1d;
+  --c-text: #eae8e3;
+  --c-text2: #bcbab4;
+  --c-muted: #7f807b;
+  --c-faint: #4f4e49;
+  --c-accent: #6272ff;
+  --c-accent-bg: rgba(98, 114, 255, 0.16);
+  --c-danger: #cc5450;
   --c-warn: #c2862b;
-  --c-ok: #3a8a5e;
+  --c-ok: #4fb583;
   /* Translucent surface for frosted-glass toasts (color tokens are opaque
      hex, so Tailwind opacity modifiers can't derive this). */
-  --c-glass: rgba(24, 25, 28, 0.72);
+  --c-glass: rgba(24, 23, 21, 0.72);
+
+  /* Saturation/lightness a peer's hue is resolved through (see lib/tint.ts). */
+  --sat: 52%;
+  --lum: 68%;
+  /* The room's ambient wash — written each frame by Cast, damped hard. */
+  --room: transparent;
 }
 
 :root[data-theme="light"] {
-  --c-bg: #fafaf8;
+  --c-bg: #f3f1ec;
   --c-surface: #ffffff;
-  --c-surface2: #f4f4f1;
-  --c-hover: #efefec;
-  --c-line: #ececea;
-  --c-line2: #f0f0ee;
-  --c-text: #1a1a19;
-  --c-text2: #3a3a37;
-  --c-muted: #8a8a86;
-  --c-faint: #b3b3af;
-  --c-accent-bg: rgba(91, 108, 255, 0.10);
+  --c-surface2: #f2f1ec;
+  --c-hover: #eae8e2;
+  --c-line: #e0ded7;
+  --c-line2: #ebe9e3;
+  --c-text: #171614;
+  --c-text2: #3d3d3a;
+  --c-muted: #7d7d77;
+  --c-faint: #b0aea6;
+  --c-accent-bg: rgba(98, 114, 255, 0.1);
   --c-glass: rgba(255, 255, 255, 0.7);
+  --sat: 46%;
+  --lum: 40%;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-ui);
+  background: var(--c-bg);
+  color: var(--c-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Reset native form chrome — we style everything ourselves. */
+input,
+button,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+/* ══ the room ═══════════════════════════════════════════════════════════ */
+
+.app {
+  height: 100%;
+  position: relative;
+  isolation: isolate;
+}
+
+/* The wash follows whoever is speaking — wide, faint, and slower than you. */
+.app::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(150% 96% at 50% 34%, var(--room), transparent 78%);
+}
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 20px 12px;
+  gap: 0;
+}
+
+/* ── the one control: a word ─────────────────────────────────────────── */
+
+.word {
+  font: inherit;
+  letter-spacing: inherit;
+  padding: 0;
+  cursor: pointer;
+  color: var(--c-text2);
+  text-align: left;
+  transition: color 180ms ease;
+}
+.word:hover {
+  color: var(--c-text);
+}
+.word:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+.word-quiet {
+  color: var(--c-faint);
+}
+.word-quiet:hover {
+  color: var(--c-muted);
+}
+.word-loud {
+  color: var(--c-text);
+}
+.word-danger:hover {
+  color: var(--c-danger);
+}
+.word-on,
+.word-quiet.word-on {
+  color: var(--c-text);
+}
+
+/* ── top line: rooms are words too ───────────────────────────────────── */
+
+.top {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--c-muted);
+}
+/* Rooms you're not in sit well back, so the one you're in reads at a glance.
+   --c-text2 was nearly as bright as --c-text and they blurred together. */
+.top .word {
+  color: var(--c-muted);
+}
+.top .word:hover {
+  color: var(--c-text2);
+}
+.top .word-on {
+  color: var(--c-text);
+}
+.top-spacer {
+  flex: 1;
+}
+/* Not inline-flex: a flex box takes its baseline from its first child, which
+   here is the dot — so the word rode above the rest of the line. Plain text
+   flow with an inline-block dot keeps it on the same baseline as its
+   neighbours. */
+.sealed {
+  color: var(--c-ok);
+}
+.sealed.off {
+  color: var(--c-warn);
+}
+.sealed::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: breathe 3.4s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ── stage ───────────────────────────────────────────────────────────── */
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.cast {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  --nameSize: 30px;
+}
+
+.ranks {
+  flex: none;
+  margin-top: clamp(14px, 5vh, 54px);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--nameSize) * 0.62);
+}
+.rank {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: calc(var(--nameSize) * 1.15);
+  flex-wrap: wrap;
+}
+/* Equal neighbouring ranks would stack into columns — offset every other one. */
+.rank.shift {
+  transform: translateX(calc(var(--nameSize) * 0.85));
+}
+
+.person {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.name {
+  font-size: var(--nameSize);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
+  cursor: pointer;
+  transform-origin: center bottom;
+  will-change: transform, opacity;
+}
+.name:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 6px;
+  border-radius: 3px;
+}
+.name.hushed {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.name.dim {
+  color: var(--c-faint) !important;
+}
+.name-tail {
+  font-size: 0.44em;
+  letter-spacing: 0.06em;
+  opacity: 0.5;
+  margin-left: 0.4em;
+}
+
+.acts {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+/* Leaving a call must be findable without hunting for it: these read at rest
+   and only brighten on hover, rather than appearing on hover. */
+.acts .word {
+  color: var(--c-muted);
+}
+.acts .word:hover {
+  color: var(--c-text);
+}
+.acts .word-danger:hover {
+  color: var(--c-danger);
+}
+
+.who {
+  font-size: 10.5px;
+  color: var(--c-faint);
+}
+
+/* Those who haven't spoken lately, in a crowd. */
+.quiet {
+  flex: none;
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: center;
+  font-size: 10.5px;
+  line-height: 1.9;
+  color: var(--c-faint);
+  padding: 0 10px;
+}
+
+/* ── speech falls from the mouth that said it ────────────────────────── */
+
+.fall {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.said {
+  position: absolute;
+  max-width: min(340px, 62vw);
+  font-size: 12.5px;
+  line-height: 1.55;
+  text-align: center;
+  text-wrap: balance;
+  transform: translate(-50%, 0);
+  animation: fall var(--life, 14s) linear forwards;
+}
+.said.tight {
+  font-size: 11px;
+  max-width: min(230px, 46vw);
+}
+@keyframes fall {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  9% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  70% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, var(--drop, 200px));
+  }
+}
+
+/* ── details under the row (settings) ────────────────────────────────── */
+
+.detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* The group row above is set at name size — the details need real air under
+     it, or they read as a caption to the last group rather than a section. */
+  margin-top: clamp(30px, 7vh, 66px);
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 0 4px 10px;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 4px 18px;
+  align-items: baseline;
+}
+.field-label {
+  font-size: 11px;
+  color: var(--c-faint);
+  letter-spacing: 0.04em;
+  text-align: right;
+  padding-top: 2px;
+}
+.field-from {
+  display: block;
+  font-size: 9px;
+  opacity: 0.7;
+  letter-spacing: 0.08em;
+}
+.field-hint {
+  grid-column: 2;
+  font-size: 10px;
+  color: var(--c-faint);
+  line-height: 1.6;
+}
+
+.opts {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: 12.5px;
+}
+.opts-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.opts-glyphs {
+  font-size: 15px;
+  gap: 12px;
+}
+.fixed {
+  font-size: 12.5px;
+  color: var(--c-muted);
+}
+.mono-break {
+  word-break: break-all;
+}
+
+.meter {
+  display: inline-flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 15px;
+  cursor: ew-resize;
+}
+.meter i {
+  width: 4px;
+  display: block;
+  background: var(--c-faint);
+  transition: background 120ms ease;
+}
+.meter i.on {
+  background: var(--c-text);
+}
+.meter:focus-visible {
+  outline: 1px solid var(--c-muted);
+  outline-offset: 4px;
+}
+.meter-val {
+  font-size: 11px;
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+}
+
+.note {
+  font-size: 10.5px;
+  color: var(--c-faint);
+  text-align: center;
+  line-height: 1.8;
+}
+.face {
+  font-size: clamp(14px, 2.2vw, 19px);
+  letter-spacing: 0.12em;
+  color: var(--c-text);
+  text-align: center;
+  line-height: 1.7;
+  word-break: break-all;
+}
+.lobby-foot {
+  margin-top: auto;
+  padding-bottom: 6px;
+}
+
+.settings-foot {
+  flex: none;
+  padding: 8px 4px 2px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--c-faint);
+}
+
+/* The one line that says you're between rooms rather than in one. */
+.standing-out {
+  flex: none;
+  margin-top: clamp(12px, 4vh, 34px);
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--c-muted);
+}
+.standing-out + .ranks {
+  margin-top: clamp(10px, 3vh, 26px);
+}
+
+/* ── history ─────────────────────────────────────────────────────────── */
+
+.history {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 18px;
+  padding: 0 clamp(4px, 6vw, 90px) 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.day {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--c-faint);
+  text-align: center;
+  padding: 6px 0 2px;
+}
+.sys {
+  font-size: 10.5px;
+  color: var(--c-muted);
+  line-height: 1.6;
+  padding-left: 10px;
+  border-left: 1px solid var(--c-line);
+}
+.sys.bad {
+  color: var(--c-danger);
+  border-left-color: var(--c-danger);
+}
+.turn-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.turn-who {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.turn-at {
+  font-size: 9.5px;
+  color: var(--c-faint);
+  font-variant-numeric: tabular-nums;
+}
+.turn-said {
+  margin: 0 0 2px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--c-text2);
+  overflow-wrap: anywhere;
+}
+
+/* ── the line you type into ──────────────────────────────────────────── */
+
+/* The app's last word, over the input line, on its way out. */
+.echo {
+  flex: none;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 4px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--c-muted);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: echo-in 220ms ease-out;
+}
+.echo:hover {
+  color: var(--c-text);
+}
+.echo.bad {
+  color: var(--c-danger);
+}
+.echo:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 3px;
+}
+@keyframes echo-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+.line-wrap {
+  flex: none;
+  position: relative;
+  padding-top: 12px;
+}
+.line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.caret {
+  font-size: 13px;
+  color: var(--c-muted);
+  white-space: nowrap;
+}
+.caret b {
+  font-weight: 500;
+  color: var(--c-faint);
+}
+.line input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
+  padding: 4px 0;
+  color: var(--c-text);
+}
+.line input::placeholder {
+  color: var(--c-faint);
+}
+
+.mentions {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  padding-bottom: 6px;
+}
+
+.keys {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--c-faint);
+  transition: color 300ms ease;
+}
+.shell:focus-within .keys {
+  color: var(--c-muted);
+}
+.keys b {
+  font-weight: 500;
+  color: var(--c-muted);
+}
+
+/* ── overlays kept from before ───────────────────────────────────────── */
+
+.toasts {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 /* Frosted-glass system toast: translucent blurred panel with an accent
@@ -68,35 +665,6 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .toast-card {
-    animation: none;
-  }
-}
-
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-}
-
-body {
-  font-feature-settings: "ss01", "cv11";
-}
-
-/* Reset native form chrome — we style everything ourselves. */
-input,
-button,
-select,
-textarea {
-  font: inherit;
-  color: inherit;
-  background: transparent;
-  border: none;
-  outline: none;
-}
-
 /* Native-looking scrollbars, subdued */
 ::-webkit-scrollbar {
   width: 10px;
@@ -115,4 +683,30 @@ textarea {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@media (max-width: 700px) {
+  .field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .field-label {
+    text-align: left;
+  }
+  .field-hint {
+    grid-column: 1;
+  }
+  .keys {
+    gap: 6px 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-card,
+  .sealed::before {
+    animation: none;
+  }
+  .said {
+    animation-duration: 0.01ms;
+    animation-fill-mode: none;
+  }
 }

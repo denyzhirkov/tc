@@ -1,9 +1,5 @@
-import { Show, onCleanup, onMount } from "solid-js";
-import Sidebar from "./components/Sidebar";
-import ChannelHeader from "./components/ChannelHeader";
-import Pane from "./components/Pane";
-import Peers from "./components/Peers";
-import Settings from "./components/Settings";
+import { onCleanup, onMount } from "solid-js";
+import Shell from "./components/room/Shell";
 import Palette from "./components/Palette";
 import InviteConfirm from "./components/InviteConfirm";
 import DevicePrompt from "./components/DevicePrompt";
@@ -12,16 +8,25 @@ import { drainPendingInvite, fetchInitialStatus, subscribeAll } from "./lib/wire
 import { pushLog, state, update } from "./lib/store";
 import { cmd } from "./lib/tauri";
 import { installTheme } from "./lib/theme";
+import { goto } from "./lib/scene";
 import { shortcut } from "./lib/platform";
 
 export default function App() {
   installTheme();
 
   onMount(async () => {
-    pushLog(`tc_ — press ${shortcut("k")} to jump`, "system");
+    pushLog(`tc_ — ${shortcut("k")}`, "system");
     const unlisten = await subscribeAll();
     onCleanup(() => unlisten.forEach((u) => u()));
     await fetchInitialStatus();
+    goto(state.channel || state.dm ? "room" : "lobby");
+
+    // `wire` asks for the channel list when the connection *flips* to
+    // connected. If the backend was already connected when this window came
+    // up — a reload, a reopened window, HMR in dev — that flip never happens
+    // and the lobby would sit empty next to a server full of rooms.
+    if (state.conn === "connected") cmd.listChannels().catch(() => {});
+
     // A cold-start tc:// invite takes priority over auto-connect.
     const invited = await drainPendingInvite();
     if (!invited && state.conn === "disconnected") {
@@ -31,11 +36,9 @@ export default function App() {
         pushLog(`auto-connect failed: ${e}`, "error");
       }
     }
-    // The sidebar's channel list is now refreshed by `wire.ts` whenever the
-    // connection_state flips to "connected".
 
-    // Update check is best-effort and out-of-band: offline / API hiccups are
-    // swallowed by the backend (returns null) so they never surface as errors.
+    // Best-effort and out-of-band: offline / API hiccups are swallowed by the
+    // backend (returns null) so they never surface as errors.
     cmd
       .checkForUpdate()
       .then((info) => info && update.updateAvailable(info))
@@ -43,24 +46,12 @@ export default function App() {
   });
 
   return (
-    <div class="h-full flex bg-bg text-text">
-      <Sidebar />
-      <main class="flex-1 min-w-0 flex flex-col">
-        <ChannelHeader />
-        <div class="flex-1 min-h-0 flex">
-          <Pane />
-          <Show when={state.channel && !state.dm}>
-            <Peers />
-          </Show>
-        </div>
-      </main>
-      <Show when={state.showSettings}>
-        <Settings />
-      </Show>
+    <div class="app">
+      <Shell />
       <Palette />
       <InviteConfirm />
       {/* Corner stack for non-blocking system toasts (newest at the bottom). */}
-      <div class="fixed bottom-4 right-4 z-40 flex flex-col-reverse items-end gap-2">
+      <div class="toasts">
         <DevicePrompt />
         <UpdateNotification />
       </div>

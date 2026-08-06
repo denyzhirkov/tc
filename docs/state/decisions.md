@@ -120,3 +120,42 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
 - **Persistence is guarded in exactly two reap paths** — both must stay in sync: `remove_client` (last-leaver empty-removal) and `cleanup_with` (maintenance sweep). A persistent id is excluded from both; everything else (peer cache, token expiry) is unchanged.
 - **Persistent channels rotate their voice key on the 0→1 occupancy transition (`join_channel`).** Ephemeral channels get forward secrecy for free (destroyed+recreated → new key); persistent ones outlive their occupants, so the first joiner into an empty persistent channel mints a fresh 32-byte key. Persistence covers the channel's *existence/name*, not a long-lived static key — without this, anyone who ever joined `pub-lobby` would hold a key decrypting all of its past/future traffic.
 - **`sanitize_channel_name` now lives in `tc-shared` (was client-only).** The valid-name rule is a wire contract — server (`create_persistent_channel`) and both clients must agree — so it's canon in `protocol.rs`, not duplicated.
+
+## Desktop «Room» UI (typographic shell)
+
+- **One layout, four casts.** Room, lobby, settings and history are the same
+  shape — a row of entities, details under them, an input line. Adding a screen
+  means adding a cast, not a layout. `lib/scene.ts` holds the single source of
+  truth for which one is showing; `showSettings` was deleted from the store
+  because a flag and a view could disagree.
+- **One control.** A row of words, lit = chosen. No checkbox, select, slider or
+  chip exists in this UI. The exception is deliberately narrow: three
+  continuous values (mic gain, output volume, VAD threshold) get 12 ticks.
+  Adding a widget type is a design change, not a convenience.
+- **Voice is painted, not stored.** Levels arrive many times a second; `Cast`
+  writes `transform`/`opacity` straight to DOM nodes from one rAF loop. A store
+  write per frame per peer would re-run every dependent memo for no visual
+  gain. `lib/stage.ts` holds the name→element map that `Falling` reads for
+  geometry.
+- **`scale`, never `font-size`.** Growing a speaker must not reflow the rank.
+- **Ambient tint must be damped at the source.** `--room` is rewritten each
+  frame, so a CSS `transition` never starts and the background tracks the voice
+  envelope frame-for-frame. The damping (hue ~4 s, brightness ~3 s, 5.5 % max)
+  lives in JS, and repaints are gated on a visible delta.
+- **A crowd is a UI problem, not a scroll problem.** Past 14 standing names the
+  room shows the conversation, not the roster: recent voices stand, the quiet
+  wait in a line and are lifted on speaking. Swap rate is capped so names don't
+  jump. Beyond ~40 people the metaphor stops working — that's accepted, `tc_`
+  isn't for webinars.
+- **Command results must be visible where the user is looking.** `runCommand`
+  is a router over `execute`: text-only commands open the history, `/list`
+  opens the lobby, and single-line confirmations plus all errors surface in the
+  echo above the input line. Silence after a mistyped command was the worst bug
+  the redesign introduced, and the echo is the general fix.
+- **`pub-` is wire detail.** `lib/rooms.ts` renders `pub-lobby` as `lobby` and a
+  private room as `·<id>`; ids passed to commands stay whole.
+- **Private rooms are absent from the list by design** (`tcp.rs`: only public
+  creations broadcast `ChannelList`). A private room you're in appears as your
+  current room only — this is the feature, not a sync bug.
+- **The room list is refreshed on connect, on `left_channel`, and by the
+  server's own broadcast** when a public room is created. Don't add polling.

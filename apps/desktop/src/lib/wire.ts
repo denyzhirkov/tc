@@ -81,6 +81,11 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
       update.channel(null);
       update.voice(null);
       pushLog(t("log.left_channel"), "system");
+      // Leaving lands you back among the rooms, so ask what's there now —
+      // counts have moved and rooms may have come and gone while you were in
+      // the call. Fires wherever the leave came from: the word under your
+      // name, /leave, or the server dropping you.
+      cmd.listChannels().catch(() => {});
     }),
     on("peer_joined", (p) => {
       update.addParticipant(p.name);

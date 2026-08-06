@@ -3,6 +3,7 @@
 
 import { cmd, type VoiceMode } from "./tauri";
 import { pushLog, state, update } from "./store";
+import { goto, ground, toggle } from "./scene";
 
 export async function refreshStatus() {
   try {
@@ -82,9 +83,9 @@ export async function connectTo(addr: string) {
 }
 
 export function toggleSettings() {
-  update.showSettings(!state.showSettings);
+  toggle("settings");
 }
 
 export function closeSettings() {
-  update.showSettings(false);
+  goto(ground());
 }
