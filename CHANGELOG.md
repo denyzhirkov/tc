@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.1] — 2026-08-06
+
+### Added
+- **Updates offer the build for your machine.** "Download" now points at the
+  file for the system you're on — the arm64 or Intel disk image on a Mac, the
+  installer on Windows, the AppImage on Linux — instead of leaving you to pick
+  one off a list of fourteen. "What's new" still opens the release page, so a
+  direct download doesn't skip the notes. If a release has nothing for your
+  platform, you get the release page as before.
+
+### Changed
+- **Update and new-device messages** are no longer cards floating in the
+  corner: they appear as a line over the input line, in the same words-only
+  language as the rest of the app, and no longer cover the key hints.
+
+### Fixed
+- **"Create channel" in ⌘K made a private room without saying so.** It ran
+  `/create` with no name, which is how the server makes an unlisted room —
+  invisible to everyone else. There are now two entries: "create a room…",
+  which waits for you to type a name, and "create a private room", which says
+  what it does.
+
 ## [1.10.0] — 2026-08-06
 
 ### Changed
