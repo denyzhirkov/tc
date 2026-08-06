@@ -643,7 +643,15 @@ export default function SettingsScene() {
     {
       group: "key",
       bare: true,
-      render: () => <Note>{t("set.fingerprint_note")}</Note>,
+      keys: "fingerprint отпечаток copy скопировать",
+      render: () => (
+        <Note>
+          {t("set.fingerprint_note")}{" "}
+          {/* Copying belongs next to the thing you'd send someone, not two
+              rows down under "server". */}
+          <CopyWord value={st()?.fingerprint} />
+        </Note>
+      ),
     },
     {
       group: "key",
@@ -677,7 +685,9 @@ export default function SettingsScene() {
       render: () => (
         <span class="opts">
           <span class="fixed">{state.serverAddr}</span>
-          <CopyWord value={st()?.fingerprint} />
+          {/* The server's own TOFU fingerprint isn't in app_status, so there is
+              nothing of the server's to copy here — only its address. */}
+          <CopyWord value={state.serverAddr} />
           <Word tone="quiet" onClick={() => fill(`/forget ${state.serverAddr}`)}>
             {t("set.forget")}
           </Word>
