@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.2] — 2026-08-06
+
+### Fixed
+- **Copying your fingerprint.** The copy action sat in the "server" row and
+  copied *your* fingerprint, so anyone using it to check the server got the
+  wrong thing — while the fingerprint shown at the top of the section, the one
+  you send a peer to prove it's you, couldn't be copied at all. Copying now
+  sits under that fingerprint; the server row copies its address.
+
 ## [1.10.1] — 2026-08-06
 
 ### Added
