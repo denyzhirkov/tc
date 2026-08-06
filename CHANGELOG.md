@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.0] — 2026-08-06
+
+### Changed
+- **The desktop interface is new.** The sidebar, message pane and participant
+  panel are gone. One layout now serves every screen — a row of entities,
+  their details underneath, and a line to type into — with people (a room),
+  rooms (the lobby) or setting groups standing in that row.
+  - **People are their names.** No avatars or tiles: whoever speaks grows and
+    brightens, everyone else recedes. Rows of names stagger so they never form
+    a grid, and the type shrinks as the room fills. Past fourteen people only
+    the recent voices stand; the quiet wait in a line below and are lifted back
+    the moment they speak (switch it off in settings → look).
+  - **What people say falls from them** and fades — across the room when it's
+    quiet, one row down and faster when it's busy. The full log is still there
+    under "what was said" (⌘J).
+  - **Settings speak the same language.** Every control is a row of words where
+    the lit one is chosen; fonts are shown in their own face, accent colours in
+    their own colour. Global hotkeys are now caught — click the combo and press
+    it, instead of typing `Alt+M` by hand. Typing in the input line searches all
+    28 settings at once.
+  - **Commands answer where you're looking.** `/help`, `/devices`, `/servers`
+    and friends open the log; `/list` opens the lobby, since the rooms
+    themselves are the answer; everything else — including errors from a
+    mistyped command, which used to vanish silently — appears above the input
+    line for a few seconds.
+  - Rooms are shown by name: the wire's `pub-` prefix is hidden, and a private
+    room carries a leading dot. Private rooms are still absent from the public
+    list by design.
+  - The input line no longer takes focus on its own, so space stays with
+    push-to-talk; any letter you type hands focus over, Escape hands it back.
+
+Voice, crypto, protocol and the terminal client are untouched — this release
+changes only how the desktop app looks and is operated. Protocol stays at 3.
+
 ## [1.9.20] — 2026-06-16
 
 ### Added
