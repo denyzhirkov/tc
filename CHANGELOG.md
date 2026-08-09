@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.11.0] — 2026-08-10
+
+### Added
+- **You can see a voice, not just hear it.** While someone speaks, a thin
+  string hangs under their name and a wave runs down it, away from them — wide
+  when they're loud, calming toward the far end, carrying the last couple of
+  seconds of what they said. It arrives as they start and is gone three seconds
+  after they stop, so a quiet room stays quiet. Words still fall from the same
+  place, along the string of the voice that said them. In a crowded room the
+  string shortens and recedes, the same way falling speech already does, and
+  with reduced motion turned on it never appears.
+
 ## [1.10.2] — 2026-08-06
 
 ### Fixed
