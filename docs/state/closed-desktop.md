@@ -129,3 +129,52 @@ SettingsScene, HistoryScene, Line, Echo, words) + `lib/{scene,stage,tint,rooms}.
 Kept untouched: `Palette` (⌘K), `InviteConfirm`, `DevicePrompt`,
 `UpdateNotification`, `Identicon` (still drawn by the game overlay).
 Rust: not a line — ADR-0001 held.
+
+## Voice trace — a string under every name (`n4vpum`, 2026-08-10)
+
+Speech already fell from the mouth that said it; the voice itself did not. A
+speaking person only grew and brightened, which reads as presence but carries
+no history — you could not see that someone had just finished a sentence.
+
+Now a thin string hangs under each name, and speaking sends a wave down it,
+away from the mouth: wide when loud, always calming toward the far end, ~2.4 s
+of voice on the string at once. It hangs in the same column as the falling
+text, below it in paint order, so words fall along the string of the voice that
+said them.
+
+- **The sine is the carrier, the voice is the amplitude.** Levels reach the
+  frontend five times a second (`level_pump.rs`, `TICK = 200 ms`) and are
+  smoothed again by `Cast`'s frame loop. Drawing that as an oscilloscope would
+  have meant inventing oscillation the data never had; driving a wave with it
+  is honest and reads as sound at a glance.
+- **Phase is bound to the sample, not to the clock.** Each committed sample
+  carries phase `commits · DPHI`, so as it moves down the ring its crest moves
+  with it — a burst of voice leaves as one travelling crest. A clock-driven
+  sine would have made every string wobble in place, which reads as decoration.
+- **Fed from the one loop that already knows.** `Cast`'s rAF loop passes each
+  peer's smoothed level into a `Trace`; a second rAF, or a second reading of
+  `state.speakers`, would have created a rival source of truth about how loud
+  someone is.
+- **The string exists only while a voice is on it.** It arrives in 240 ms and
+  leaves over three seconds — long enough for the wave still in flight to ride
+  out, so it is gone before it would hang straight. Presence is a CSS
+  transition on the path's opacity, toggled by one class; the frame loop only
+  says *when*, never animates the fade itself. The 0.4 s delay before the fade
+  doubles as hysteresis, so a pause between words barely dims it.
+- **Zero while quiet, smooth while speaking.** `Trace.step()` returns `null`
+  once the string has settled, so a silent room costs nothing; while audible it
+  returns a fresh path every frame, interpolated between the 100 ms samples —
+  without that sub-tick term the wave advanced in ten visible steps a second.
+- **`vector-effect="non-scaling-stroke"` is load-bearing.** The viewBox is
+  normalised (`-1 0 2 1`) and stretched to the element, so pixel size — and
+  therefore the crowd rule — stays CSS's business; a scaled stroke would smear
+  into a wedge.
+- **Crowd and reduced-motion follow the existing rules.** Past 8 standing the
+  string drops a rank (44 px), narrows and recedes, mirroring how falling text
+  shortens; with `prefers-reduced-motion` the frame loop never runs, so no path
+  is ever drawn (a CSS rule states it anyway).
+- **A DM has no string** — `levelOf` returns 0 there, and a DM is a written
+  room.
+
+Added `lib/trace.ts`; touched `components/room/Cast.tsx` (three inserts) and
+`styles.css`. No new dependency, no Rust, no wire change.

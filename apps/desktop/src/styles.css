@@ -233,6 +233,7 @@ textarea {
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  position: relative;
 }
 
 .name {
@@ -268,6 +269,9 @@ textarea {
   gap: 12px;
   font-size: 10px;
   letter-spacing: 0.05em;
+  /* Positioned, so it paints over the ribbon behind it: the voice is the
+     background of a person, never the thing you click through. */
+  position: relative;
 }
 /* Leaving a call must be findable without hunting for it: these read at rest
    and only brighten on hover, rather than appearing on hover. */
@@ -298,6 +302,43 @@ textarea {
   line-height: 1.9;
   color: var(--c-faint);
   padding: 0 10px;
+}
+
+/* ── a string hangs from every name; a voice runs down it ────────────── */
+
+.trace {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 50%;
+  width: calc(var(--nameSize) * 1.05);
+  height: clamp(48px, 14vh, 140px);
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 0.32;
+  /* The string dissolves rather than ending, and it costs nothing per frame. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 8%, transparent 94%);
+  mask-image: linear-gradient(to bottom, #000 8%, transparent 94%);
+}
+
+/* A string only exists while there is a voice on it. It arrives quickly and
+   leaves over three seconds — long enough for the wave still in flight to ride
+   out first, so the string is gone by the time it would hang straight. The
+   delay doubles as hysteresis: a pause between words barely dims it. */
+.trace path {
+  opacity: 0;
+  transition: opacity 2.6s ease 0.4s;
+}
+.trace path.live {
+  opacity: 1;
+  transition: opacity 240ms ease;
+}
+
+/* In a crowd the string drops a rank and recedes, exactly as speech does —
+   fourteen full-length voices would read as weather, not as people. */
+.cast.crowded .trace {
+  height: 44px;
+  width: calc(var(--nameSize) * 0.8);
+  opacity: 0.24;
 }
 
 /* ── speech falls from the mouth that said it ────────────────────────── */
@@ -707,5 +748,10 @@ textarea {
   .said {
     animation-duration: 0.01ms;
     animation-fill-mode: none;
+  }
+  /* The frame loop is already off here, so no path is ever drawn — this only
+     makes the intent explicit. */
+  .trace {
+    display: none;
   }
 }

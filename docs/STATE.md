@@ -6,6 +6,8 @@
 
 ## Recently closed (newest first)
 
+- Voice trace (`n4vpum`, unreleased, desktop UI only): speaking hangs a thin string under a name and sends a wave down it, away from the mouth; three seconds of silence and the string is gone — the visual sibling of speech falling as text, in the same column, below the words in paint order. The sine is the carrier, the voice is the amplitude: levels arrive at 5 Hz from `level_pump.rs`, so an oscilloscope would be invented data. Phase is bound to the sample index, not the clock, so a burst leaves as one travelling crest instead of wobbling in place. Fed from `Cast`'s existing rAF loop (no second source of truth about loudness); 24-sample ring → one normalised SVG path (`lib/trace.ts`, `non-scaling-stroke`), fade by static CSS mask, a path per audible peer per frame and exactly zero once the string settles. Crowd (>8 standing) and reduced-motion follow the rules the falling text already set. No Rust, no dependency, no wire change. See `closed-desktop.md` → "Voice trace" and `decisions.md` → "A string hangs from every name".
+
 - Desktop «Room» UI — full frontend replacement (`fhq8x7`, unreleased): the Discord-clone shell (sidebar + pane + peer panel) is gone. One layout serves every screen — **a row of entities, details underneath, a line to type into** — with people (room), rooms (lobby) or setting groups (settings) standing in that row. People *are* their names: volume is `scale`+opacity, ranks alternate counts so rows never form a grid, past 14 standing only recent voices stay and the quiet wait in a line below. Speech falls from the speaker and fades. All 28 settings speak the same grammar (one control: a row of words, lit = chosen; hotkeys are caught, not typed) with search across groups. Command output is routed — text-only commands open the history, `/list` opens the lobby, everything else echoes above the input line. Removed 9 components, added `components/room/*` + `lib/{scene,stage,tint,rooms}.ts`; `Palette`/`InviteConfirm`/`DevicePrompt`/`UpdateNotification`/`Identicon` kept. **No Rust changed** (ADR-0001 held). See `closed-desktop.md` → "«Room» UI" and `decisions.md` → "Desktop «Room» UI".
 
 - Windows autostart fix + version surfacing (**v1.9.19**): autostart toggle threw `os error 2` on Windows — bundled `auto-launch` 0.5 *opens* `HKCU\…\Run` instead of creating it; Windows now writes the Run value directly via `winreg` (`create_subkey` idempotent, delete tolerates absent, quoted exe path), plugin kept for mac/linux. Client version shown at the bottom of desktop Settings + `/version` in both clients. See `decisions.md` → "Windows autostart".
@@ -51,4 +53,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-06-11 (tc:// invite pack)._
+_Last updated: 2026-08-10 (voice trace)._

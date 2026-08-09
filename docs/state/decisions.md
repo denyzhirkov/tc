@@ -142,6 +142,22 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   frame, so a CSS `transition` never starts and the background tracks the voice
   envelope frame-for-frame. The damping (hue ~4 s, brightness ~3 s, 5.5 % max)
   lives in JS, and repaints are gated on a visible delta.
+- **A string hangs from every name, and a voice runs down it.** A speaking name
+  grows; under it (`lib/trace.ts`) a wave travels away from the mouth, wide
+  when loud, calming toward the far end. What travels is the loudness envelope
+  — levels arrive at 5 Hz from `level_pump.rs`, so an oscilloscope would be
+  invented data; the sine is the *carrier*, the voice is the amplitude.
+  **Phase is bound to the sample index, not to the clock** — each committed
+  sample carries its own phase, so a burst leaves as one crest instead of the
+  whole string wobbling in place. Fed from the same rAF loop that paints
+  `scale`/`opacity`, because a second loop would be a second opinion on how
+  loud someone is. Cost: one path per *audible* peer per frame (sub-tick
+  interpolation, or the wave would advance in ten visible steps a second), and
+  exactly zero while the room is quiet — a settled string reports "nothing
+  moved" and stops being drawn. **The string itself is only there while a voice
+  is:** 240 ms in, three seconds out, as a CSS transition the loop merely
+  toggles — the wave in flight rides out under the fade, so nothing is ever
+  seen hanging straight.
 - **A crowd is a UI problem, not a scroll problem.** Past 14 standing names the
   room shows the conversation, not the roster: recent voices stand, the quiet
   wait in a line and are lifted on speaking. Swap rate is capped so names don't

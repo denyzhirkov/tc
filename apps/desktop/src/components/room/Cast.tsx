@@ -8,7 +8,9 @@
 //
 // Voice is painted straight onto the DOM from a rAF loop rather than through
 // signals: levels arrive many times a second and a store write per frame per
-// peer would re-run every dependent memo for no visual gain.
+// peer would re-run every dependent memo for no visual gain. That same loop
+// feeds each name's falling ribbon (`lib/trace.ts`) — one place knows how loud
+// anyone is, and it stays this one.
 
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { state } from "../../lib/store";
@@ -18,6 +20,7 @@ import { closeDm } from "../../lib/dm";
 import { tweaks } from "../../lib/theme";
 import { t } from "../../lib/i18n";
 import { nameNodes } from "../../lib/stage";
+import { Trace } from "../../lib/trace";
 import { Word } from "./words";
 
 /// Most names that ever stand at once. Past this the room stops being a room.
@@ -45,6 +48,12 @@ export default function Cast() {
   const [width, setWidth] = createSignal(920);
   const spokeAt = new Map<string, number>();
   const nodes = nameNodes;
+  /// The string under each standing name — fed from the frame loop below, so
+  /// there is still exactly one place that knows how loud anyone is.
+  const traces = new Map<
+    string,
+    { trace: Trace; el: SVGPathElement; lit: boolean }
+  >();
   let lastSwap = 0;
   let host: HTMLDivElement | undefined;
 
@@ -157,6 +166,16 @@ export default function Cast() {
         levels.set(name, next);
         el.style.transform = `scale(${(0.88 + next * swing).toFixed(3)})`;
         el.style.opacity = (floor + next * (1 - floor)).toFixed(3);
+        const tr = traces.get(name);
+        if (tr) {
+          const d = tr.trace.step(next, now);
+          if (d) tr.el.setAttribute("d", d);
+          // Showing and hiding the string is CSS's job — this only says when.
+          if (tr.trace.audible !== tr.lit) {
+            tr.lit = tr.trace.audible;
+            tr.el.classList.toggle("live", tr.lit);
+          }
+        }
         if (next > 0.1) spokeAt.set(name, t);
         if (next > loudLevel) {
           loudLevel = next;
@@ -214,8 +233,18 @@ export default function Cast() {
     onCleanup(() => nodes.delete(name));
   };
 
+  const bindTrace = (name: string) => (el: SVGPathElement) => {
+    traces.set(name, { trace: new Trace(), el, lit: false });
+    onCleanup(() => traces.delete(name));
+  };
+
   return (
-    <div class="cast" ref={host} style={{ "--nameSize": `${size().toFixed(1)}px` }}>
+    <div
+      class="cast"
+      ref={host}
+      classList={{ crowded: standing().length > CROWD_AT }}
+      style={{ "--nameSize": `${size().toFixed(1)}px` }}
+    >
       <Show
         when={roster().length}
         fallback={<div class="note">{t("room.alone")}</div>}
@@ -249,6 +278,26 @@ export default function Cast() {
                           <span class="name-tail">{t("room.you_tail")}</span>
                         </Show>
                       </button>
+                      {/* The string the voice runs down. `non-scaling-stroke`
+                          is load-bearing: the viewBox is stretched to the
+                          element, so a scaled stroke would smear. */}
+                      <svg
+                        class="trace"
+                        viewBox="-1 0 2 1"
+                        preserveAspectRatio="none"
+                        style={{ color: tint(name) }}
+                        aria-hidden="true"
+                      >
+                        <path
+                          ref={bindTrace(name)}
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.25"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          vector-effect="non-scaling-stroke"
+                        />
+                      </svg>
                       <Show when={name === anchor()}>
                         <div class="acts">
                           {/* No microphone in a DM — it's a written room. */}
