@@ -2,11 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.12.1**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.12.2**, protocol **3**.
 
 ## Recently closed (newest first)
 
-- The window you couldn't get back (`z9wczl`, unreleased, desktop): closing the window on macOS left a running app showing nothing and unrecallable. Measured on the installed build — process alive, 0 windows, `open -a` inert. With `close_to_tray = true` the window was *hidden*, correctly; what was missing is that `.run()` had no `RunEvent` handler, so `RunEvent::Reopen` (Dock click) was ignored and only the tray could bring it back. Behind it, the default `false` path destroyed the window while the process lived on, after which even the tray's "Show window" no-ops (it resolves by label). Now: `CloseRequested` always `prevent_close` then hide-or-exit, so the main window is never destroyed while the app lives; `Reopen` handled on macOS; `close_to_tray` moved to `Arc<AtomicBool>` + a `CloseToTray` state because the main-thread handler cannot await the core mutex. Default is now **hide on macOS**, quit elsewhere. All three branches verified against a dev build. See `closed-desktop.md` → "The window you couldn't get back".
+- The window you couldn't get back (`z9wczl`, **v1.12.2**, desktop): closing the window on macOS left a running app showing nothing and unrecallable. Measured on the installed build — process alive, 0 windows, `open -a` inert. With `close_to_tray = true` the window was *hidden*, correctly; what was missing is that `.run()` had no `RunEvent` handler, so `RunEvent::Reopen` (Dock click) was ignored and only the tray could bring it back. Behind it, the default `false` path destroyed the window while the process lived on, after which even the tray's "Show window" no-ops (it resolves by label). Now: `CloseRequested` always `prevent_close` then hide-or-exit, so the main window is never destroyed while the app lives; `Reopen` handled on macOS; `close_to_tray` moved to `Arc<AtomicBool>` + a `CloseToTray` state because the main-thread handler cannot await the core mutex. Default is now **hide on macOS**, quit elsewhere. All three branches verified against a dev build. See `closed-desktop.md` → "The window you couldn't get back".
 
 - Room-shell fixes (`5x7lo4`, `cygn5s`, **v1.12.1**, frontend only): falling speech no longer cut short — a new line from the same voice used to remove the previous one, so a second message wiped the first out of the air; lines now stack and each finishes its fall, a newcomer starting below the previous one when their boxes overlap (geometry, not age — in a crowded room a line covers its start point for seconds). And settings values stopped landing on their own action words: `.fixed` in `styles.css` collided with **Tailwind's `.fixed` utility**, both rules applied, `position: fixed` took the value out of flow; renamed `.value`. Diagnosed by rebuilding the row against the built stylesheet in a browser. See `closed-desktop.md` → "Falling text lives out its fall" and `decisions.md` → "A hand-written class shares a namespace with every Tailwind utility".
 
@@ -60,4 +60,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-10 (window recall on macOS, unreleased)._
+_Last updated: 2026-08-10 (window recall on macOS, v1.12.2)._

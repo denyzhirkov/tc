@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.12.2] — 2026-08-10
+
+### Fixed
+- **The window comes back.** On macOS, closing the window left the app running
+  with nothing to show and no way to return to it — clicking its icon in the
+  Dock did nothing, and only the menu-bar icon could bring the window back. The
+  Dock icon now reopens it, and closing the window can no longer leave the app
+  running invisibly behind you.
+
+### Changed
+- **On macOS the close button hides the window instead of quitting.** The red
+  button closes a window on this platform rather than quitting the app, and
+  ending a call because of a stray click is the wrong surprise. Quit from the
+  menu-bar icon or with ⌘Q. If you have already chosen what closing should do,
+  your choice stands.
+
 ## [1.12.1] — 2026-08-10
 
 ### Fixed
