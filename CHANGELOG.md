@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.12.0] — 2026-08-10
+
+### Fixed
+- **The crackle on the first syllable.** Whenever someone started talking, the
+  phrase arrived with a faint click on its first moment. The client holds back a
+  fraction of a second of sound from just *before* you started, so quiet first
+  consonants aren't lost — but that head start arrived all at once, more than
+  the playback buffer was allowed to hold, and cutting it back to size sliced
+  the waveform mid-swing. The cut is now blended, and the instants where sound
+  starts and stops are eased rather than switched. Phrase endings came out
+  cleaner for the same reason.
+
+### Removed
+- **Prebuilt terminal clients.** Releases now carry the desktop app and the
+  server. The terminal client is still part of the project and builds from
+  source (`cargo build --release -p tc-client`); the Windows install script,
+  which only ever fetched that one binary, is gone, and the macOS/Linux script
+  now installs the server.
+
 ## [1.11.0] — 2026-08-10
 
 ### Added

@@ -2,9 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.9.27**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.12.0**, protocol **3**.
 
 ## Recently closed (newest first)
+
+- Onset click (`kfx6og`, **v1.12.0**, client-only): every phrase started with a click, and the cause was a chain of compensations — the RMS gate clips onsets → `VadPreroll` compensates → its flush sends `VAD_PREROLL_FRAMES + 1` packets as one burst → the receive path decodes them immediately (the jitter buffer delays nothing) → `playback_buf` overshoots `MAX_PLAYBACK_BUF` on **every** talkspurt → the latency trim spliced the waveform mid-swing. `PlaybackQueue` (`client/audio.rs`) now owns every edit to the playback timeline and ramps both over `PLAYBACK_FADE_MS`: crossfade across the trim, fade at the silence↔data boundary (phrase endings improved too). Latency cap left at 100 ms by choice. Codec state ruled out — encoder and decoder freeze on the same frame and resume consistently. Follow-ups `4rg56x` (comfort noise) and `ta0vu0` (continuous DTX timeline, the NetEq-style structural fix). Same release drops prebuilt terminal-client binaries: releases carry the desktop app and the server, `install.ps1` removed, `install.sh` installs the server. See `closed-cli-core.md` → "Playback timeline" and `decisions.md` → "Voice quality".
 
 - Voice trace (`n4vpum`, unreleased, desktop UI only): speaking hangs a thin string under a name and sends a wave down it, away from the mouth; three seconds of silence and the string is gone — the visual sibling of speech falling as text, in the same column, below the words in paint order. The sine is the carrier, the voice is the amplitude: levels arrive at 5 Hz from `level_pump.rs`, so an oscilloscope would be invented data. Phase is bound to the sample index, not the clock, so a burst leaves as one travelling crest instead of wobbling in place. Fed from `Cast`'s existing rAF loop (no second source of truth about loudness); 24-sample ring → one normalised SVG path (`lib/trace.ts`, `non-scaling-stroke`), fade by static CSS mask, a path per audible peer per frame and exactly zero once the string settles. Crowd (>8 standing) and reduced-motion follow the rules the falling text already set. No Rust, no dependency, no wire change. See `closed-desktop.md` → "Voice trace" and `decisions.md` → "A string hangs from every name".
 
@@ -35,6 +37,7 @@
 
 ## Up next
 
+- Playback timeline follow-ups: comfort noise instead of zero-fill on underrun (`4rg56x`); continuous DTX timeline instead of the RMS gate-and-flush (`ta0vu0`, needs its own intake — touches both clients, the wire cadence and paranoid mode)
 - EPIC 15 — Forward secrecy for voice keys (`66b9lj`: KeyRotation message, periodic server rotation, dual-key transition)
 - Масштабируемость сервера (`aw76wp`)
 - Аутентификация и авторизация (`r8td09`)
@@ -53,4 +56,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-10 (voice trace)._
+_Last updated: 2026-08-10 (onset click, v1.12.0)._
