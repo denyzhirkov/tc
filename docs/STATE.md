@@ -2,9 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.12.2**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.13.0**, protocol **3**.
 
 ## Recently closed (newest first)
+
+- Chosen colour (`la6ylw`, **v1.13.0**, desktop): the accent setting wrote `--c-accent` and **no rule read it** — dead since `cfe2d9b` removed the frosted-glass toasts. Rebuilt as the colour of *chosen*: the room in the top line, the lit settings group, the picked word in any control. Hue can't carry that state alone — unselected words sit at 4.81:1 (over 4.5 by a hair), so selected had to be near-white; plain scores 3.25 against the unselected grey, a real hue 1.46–2.31, and a hue held to 3.05 collapses to an invisible 5% tint. So **weight carries the state and hue rides on top** (600 words / 700 group names); `plain` is the default and changes nothing. People and rooms exempt (identity colour, set inline). `slate` dropped — grey is indistinguishable from plain. All 8 theme×accent combos verified in a browser against the built stylesheet. See `closed-desktop.md` → "The accent gets a job" and `decisions.md` → "A hue cannot carry «chosen» on its own here".
 
 - The window you couldn't get back (`z9wczl`, **v1.12.2**, desktop): closing the window on macOS left a running app showing nothing and unrecallable. Measured on the installed build — process alive, 0 windows, `open -a` inert. With `close_to_tray = true` the window was *hidden*, correctly; what was missing is that `.run()` had no `RunEvent` handler, so `RunEvent::Reopen` (Dock click) was ignored and only the tray could bring it back. Behind it, the default `false` path destroyed the window while the process lived on, after which even the tray's "Show window" no-ops (it resolves by label). Now: `CloseRequested` always `prevent_close` then hide-or-exit, so the main window is never destroyed while the app lives; `Reopen` handled on macOS; `close_to_tray` moved to `Arc<AtomicBool>` + a `CloseToTray` state because the main-thread handler cannot await the core mutex. Default is now **hide on macOS**, quit elsewhere. All three branches verified against a dev build. See `closed-desktop.md` → "The window you couldn't get back".
 
@@ -60,4 +62,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-10 (window recall on macOS, v1.12.2)._
+_Last updated: 2026-08-10 (chosen colour, v1.13.0)._

@@ -251,3 +251,49 @@ Verified end to end against a dev build, all three branches: setting on → wind
 hides and a Dock-tile click brings it back (window count 0 → 1); setting off →
 process exits cleanly on close; no saved value on macOS → hides. The owner's
 settings were restored afterwards.
+
+## The accent gets a job: the colour of "chosen" (`la6ylw`, v1.13.0, 2026-08-10)
+
+Began as a question — what does the colour choice in settings give us? — and the
+answer was: nothing. `theme.ts` wrote `--c-accent` on every change and **no rule
+read it**. `git log -S 'var(--c-accent'` put the death at `cfe2d9b`, where the
+frosted-glass toasts were deleted; the knob outlived what it drove. The only
+pixels it moved were the four option words in its own row, painted by `Opts`.
+
+Deleted it first, then the owner proposed painting the selected item in the top
+line. Right place, wrong mechanism. Right because rooms are chrome rather than
+people, so an accent there does not compete with identity colour, and the room
+wash is capped at 5.5% alpha so it does not interfere. Wrong because the
+contrast budget was already spent: unselected words sit at **4.81:1** against
+the background, barely over the 4.5 that 11px text needs, so "selected" was
+obliged to be near-white. Measured, plain text scores **3.25** against the
+unselected grey, a real hue scores **1.46–2.31**, and a hue held to 3.05
+collapses to a 5% tint (`#e2e1e4` for indigo — a colour nobody can see). Dimming
+the unselected words to buy room drops them to 3.36:1 or 2.30:1, below
+legibility. The obstacle was arithmetic, not taste.
+
+Resolution: the hue does not carry the state — **weight** does, and the hue
+rides on top. Choosing an accent adds `font-weight: 600` to chosen words and
+`700` to the lit settings group. Colour-blind readers keep a non-colour signal,
+unselected words keep their legibility, and the accent gets to be an actual
+colour. `plain` is the default and adds no weight, because it trades nothing
+away.
+
+Applied at the three places the interface says *chosen*: `.top .word-on`,
+`.word-on` in every control, and `.settings .name:not(.dim)` — the settings root
+gained a `settings` class so the rule cannot reach the room or the lobby. People
+and rooms are exempt by construction: their colour is identity, set inline from
+the name, and inline wins. `slate` was dropped, since a grey accent cannot be
+told from plain text however it is tuned — the very defect that got the old
+setting deleted.
+
+Shipped hues, each clearing 4.5:1 against its own background: dark `#8a97ea`,
+`#5fd39b`, `#ef8b5c`; light `#2a3a9e`, `#1d6b46`, `#9c4a1e`.
+
+Verified in Chrome against the built stylesheet — all eight theme×accent
+combinations reporting colour and weight on freshly created nodes, plus
+screenshots of dark/indigo and light/rust. Two harness traps cost time and are
+worth remembering: a stale cached `app.css` (cache-bust the link), and CSSOM
+walking — in Chrome a plain style rule exposes an **empty `cssRules`** because of
+CSS nesting, so recursing before reading `selectorText` silently finds nothing
+and makes a working stylesheet look broken.

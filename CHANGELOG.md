@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.13.0] — 2026-08-10
+
+### Added
+- **A colour for whatever you have chosen.** Under look, "chosen colour" now
+  paints the room you are in, the settings group you are reading and the word
+  you have picked — in indigo, forest or rust. Picking one also sets those words
+  in bolder type, so the choice still reads when the colour is hard to tell
+  apart, and everything unchosen keeps its quiet grey. "Plain" is the default
+  and looks exactly as before.
+
+### Fixed
+- **The old "highlight" setting did nothing at all.** It changed a colour the
+  interface had stopped reading, so choosing one had no visible effect anywhere
+  in the app. It is the setting above now. Its "slate" option is gone: a grey
+  highlight cannot be told apart from ordinary text, whichever way it is tuned.
+
 ## [1.12.2] — 2026-08-10
 
 ### Fixed
