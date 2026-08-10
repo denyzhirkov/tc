@@ -15,16 +15,18 @@ Minimal voice + text chat that runs in the terminal. Built with Rust, Opus codec
 
 ## Install
 
-**macOS / Linux:**
+**Desktop app** — download the bundle for your platform from [Releases](https://github.com/denyzhirkov/tc/releases/latest).
+
+**Server** (macOS / Linux):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/denyzhirkov/tc/master/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Terminal client** — not shipped as a prebuilt binary; build it from source:
 
-```powershell
-irm https://raw.githubusercontent.com/denyzhirkov/tc/master/install.ps1 | iex
+```sh
+cargo build --release -p tc-client   # target/release/tc-client
 ```
 
 ## Usage

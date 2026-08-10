@@ -43,7 +43,7 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude tc-desktop
 
-  build-cli:
+  build-server:
     needs: [test]
     strategy:
       matrix:
@@ -89,26 +89,24 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} -p tc-client -p tc-server
+            cross build --release --target ${{ matrix.target }} -p tc-server
           else
-            cargo build --release --target ${{ matrix.target }} -p tc-client -p tc-server
+            cargo build --release --target ${{ matrix.target }} -p tc-server
           fi
 
       - name: Package binaries
         run: |
           mkdir -p artifacts
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/${{ matrix.target }}/release/tc-client.exe "artifacts/tc-client-${{ matrix.suffix }}.exe"
             cp target/${{ matrix.target }}/release/tc-server.exe "artifacts/tc-server-${{ matrix.suffix }}.exe"
           else
-            cp target/${{ matrix.target }}/release/tc-client "artifacts/tc-client-${{ matrix.suffix }}"
             cp target/${{ matrix.target }}/release/tc-server "artifacts/tc-server-${{ matrix.suffix }}"
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: cli-${{ matrix.suffix }}
+          name: server-${{ matrix.suffix }}
           path: artifacts/*
 
   build-desktop:
@@ -214,7 +212,7 @@ jobs:
           path: desktop-artifacts/*
 
   release:
-    needs: [build-cli, build-desktop]
+    needs: [build-server, build-desktop]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
