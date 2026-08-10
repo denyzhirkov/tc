@@ -137,6 +137,99 @@ impl SincResampler {
     }
 }
 
+/// Device-rate playback queue with click-free edges.
+///
+/// Everything the output callback does to the sample timeline other than
+/// copying it lives here, because both edits it makes are audible if done as a
+/// hard splice:
+///
+/// * **Trimming to the latency cap.** The sender flushes its VAD pre-roll as a
+///   burst (`VAD_PREROLL_FRAMES` + 1 packets), which lands in one go and
+///   overshoots `MAX_PLAYBACK_BUF` by a frame on every talkspurt. Dropping
+///   those samples outright splices two unrelated points of the waveform
+///   together — the click heard at the start of each phrase.
+/// * **Running dry.** Between phrases the queue empties and the callback pads
+///   with zeros; without a ramp, both leaving and re-entering silence are
+///   steps in the signal.
+///
+/// Both are ramped linearly over `PLAYBACK_FADE_MS`. Allocation-free: the
+/// deque keeps its capacity and the ramps are computed in place.
+struct PlaybackQueue {
+    buf: VecDeque<f32>,
+    /// Ramp length in device-rate samples.
+    fade: usize,
+    /// The previous fill ended in padding zeros, so the next one ramps back in.
+    silent: bool,
+}
+
+impl PlaybackQueue {
+    fn new(device_rate: u32) -> Self {
+        let fade = (device_rate * config::PLAYBACK_FADE_MS / 1000) as usize;
+        Self {
+            buf: VecDeque::with_capacity(config::MAX_PLAYBACK_BUF * 2),
+            fade: fade.max(1),
+            silent: true,
+        }
+    }
+
+    fn extend(&mut self, samples: &[f32]) {
+        self.buf.extend(samples.iter().copied());
+    }
+
+    /// Drop the oldest samples down to `cap`, crossfading across the splice so
+    /// the discarded stretch doesn't leave a step. The outgoing head is faded
+    /// into the incoming one over `fade` samples, so the first sample after the
+    /// trim still continues whatever was played last.
+    fn trim_to(&mut self, cap: usize) {
+        if self.buf.len() <= cap {
+            return;
+        }
+        let excess = self.buf.len() - cap;
+        let f = self.fade.min(excess).min(cap);
+        for i in 0..f {
+            let t = (i + 1) as f32 / (f + 1) as f32;
+            let outgoing = self.buf[i];
+            let incoming = self.buf[excess + i];
+            self.buf[excess + i] = outgoing * (1.0 - t) + incoming * t;
+        }
+        self.buf.drain(..excess);
+    }
+
+    /// Fill one device buffer, ramping the silence boundaries. `channels > 1`
+    /// upmixes mono to interleaved. Short reads are padded with zeros, and the
+    /// samples leading into that padding are faded out.
+    fn fill(&mut self, data: &mut [f32], channels: usize) {
+        let needed = data.len() / channels.max(1);
+        let available = self.buf.len().min(needed);
+        let fade_in = self.silent && available > 0;
+        let fade_out = available < needed && available > 0;
+
+        for (i, sample) in self.buf.drain(..available).enumerate() {
+            let mut s = sample;
+            if fade_in && i < self.fade {
+                s *= (i + 1) as f32 / (self.fade + 1) as f32;
+            }
+            if fade_out {
+                let remaining = available - 1 - i;
+                if remaining < self.fade {
+                    s *= (remaining + 1) as f32 / (self.fade + 1) as f32;
+                }
+            }
+            if channels > 1 {
+                for c in 0..channels {
+                    data[i * channels + c] = s;
+                }
+            } else {
+                data[i] = s;
+            }
+        }
+        for sample in &mut data[available * channels..] {
+            *sample = 0.0;
+        }
+        self.silent = available < needed;
+    }
+}
+
 pub struct DeviceInfo {
     pub index: usize,
     pub name: String,
@@ -382,8 +475,9 @@ pub fn start_playback(
     let rb = HeapRb::<f32>::new(config::FRAME_SIZE * RING_BUF_FRAMES);
     let (prod, mut cons) = rb.split();
 
-    // Buffer holds mono samples at device sample rate (VecDeque for O(1) front drain)
-    let mut playback_buf: VecDeque<f32> = VecDeque::with_capacity(config::MAX_PLAYBACK_BUF);
+    // Holds mono samples at device sample rate and owns the ramps that keep
+    // the latency trim and the silence boundaries from clicking.
+    let mut playback_buf = PlaybackQueue::new(device_rate);
     // Reusable buffer for playback resampling (avoids per-frame allocation)
     let mut resample_out = if need_resample {
         Vec::with_capacity(config::FRAME_SIZE * 2)
@@ -414,9 +508,9 @@ pub fn start_playback(
                         device_rate,
                         &mut resample_out,
                     );
-                    playback_buf.extend(resample_out.iter().copied());
+                    playback_buf.extend(&resample_out);
                 } else {
-                    playback_buf.extend(temp_frame[..n].iter().copied());
+                    playback_buf.extend(&temp_frame[..n]);
                 }
             }
 
@@ -427,34 +521,8 @@ pub fn start_playback(
             } else {
                 cap48
             };
-            if playback_buf.len() > cap {
-                let excess = playback_buf.len() - cap;
-                playback_buf.drain(..excess);
-            }
-
-            // Fill output buffer
-            if device_channels > 1 {
-                // Upmix mono to interleaved multi-channel
-                let ch = device_channels as usize;
-                let mono_needed = data.len() / ch;
-                let available = playback_buf.len().min(mono_needed);
-                for (i, sample) in playback_buf.drain(..available).enumerate() {
-                    for c in 0..ch {
-                        data[i * ch + c] = sample;
-                    }
-                }
-                for sample in &mut data[available * ch..] {
-                    *sample = 0.0;
-                }
-            } else {
-                let available = playback_buf.len().min(data.len());
-                for (i, sample) in playback_buf.drain(..available).enumerate() {
-                    data[i] = sample;
-                }
-                for sample in &mut data[available..] {
-                    *sample = 0.0;
-                }
-            }
+            playback_buf.trim_to(cap);
+            playback_buf.fill(data, device_channels as usize);
         },
         move |err| {
             tracing::error!("output stream error: {}", err);
@@ -477,6 +545,145 @@ mod tests {
         let mut output = Vec::new();
         resample_into(&input, 48000, 48000, &mut output);
         assert_eq!(output, input);
+    }
+
+    /// Largest jump between consecutive samples — the measurable proxy for a
+    /// click. A clean waveform steps by roughly its own slope; a splice steps
+    /// by the distance between two unrelated points of the signal.
+    fn max_step(samples: &[f32]) -> f32 {
+        samples
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    /// A rising ramp: any dropped stretch shows up directly as a step of the
+    /// same size, so the splice is impossible to hide behind waveform shape.
+    fn ramp(n: usize) -> Vec<f32> {
+        (0..n).map(|i| i as f32 / n as f32).collect()
+    }
+
+    #[test]
+    fn trim_crossfade_removes_the_splice_step() {
+        let n = config::FRAME_SIZE * 6;
+        let cap = config::MAX_PLAYBACK_BUF;
+        let mut q = PlaybackQueue::new(config::SAMPLE_RATE);
+        q.extend(&ramp(n));
+        q.trim_to(cap);
+
+        assert_eq!(q.buf.len(), cap, "trim must land exactly on the cap");
+        let out: Vec<f32> = q.buf.iter().copied().collect();
+        // A hard drain would leave a step of (n - cap) / n ≈ 0.167 here.
+        assert!(
+            max_step(&out) < 0.001,
+            "crossfaded trim left an audible step: {}",
+            max_step(&out)
+        );
+    }
+
+    /// The regression this whole path exists for: the VAD pre-roll flush
+    /// (VAD_PREROLL_FRAMES + 1 packets) arrives as one burst and overshoots the
+    /// latency cap on every talkspurt, so the trim runs at the start of each
+    /// phrase — exactly where a click is most audible.
+    #[test]
+    fn vad_preroll_burst_overshoots_the_cap_without_clicking() {
+        let burst = config::FRAME_SIZE * (config::VAD_PREROLL_FRAMES + 1);
+        assert!(
+            burst > config::MAX_PLAYBACK_BUF,
+            "pre-roll burst is expected to overshoot the cap; if it no longer \
+             does, the onset trim is gone and this guard is stale"
+        );
+
+        let mut q = PlaybackQueue::new(config::SAMPLE_RATE);
+        q.extend(&ramp(burst));
+        q.trim_to(config::MAX_PLAYBACK_BUF);
+
+        let mut out = vec![0.0f32; config::FRAME_SIZE];
+        q.fill(&mut out, 1);
+        // A hard drain splices in a step of (burst - cap) / burst ≈ 0.167 in a
+        // single sample. What is left here is the deliberate ramp-in spread
+        // over PLAYBACK_FADE_MS, two orders of magnitude gentler.
+        assert!(
+            max_step(&out) < 0.01,
+            "onset of a talkspurt still steps: {}",
+            max_step(&out)
+        );
+    }
+
+    #[test]
+    fn first_fill_after_silence_ramps_in() {
+        let mut q = PlaybackQueue::new(config::SAMPLE_RATE);
+        q.extend(&vec![1.0f32; config::FRAME_SIZE]);
+
+        let mut out = vec![0.0f32; config::FRAME_SIZE];
+        q.fill(&mut out, 1);
+
+        assert!(
+            out[0] < 0.05,
+            "playback must not start at full amplitude: {}",
+            out[0]
+        );
+        assert!(
+            out[q.fade] > 0.99,
+            "ramp must reach full amplitude within the fade window: {}",
+            out[q.fade]
+        );
+        // Stepping straight from silence to 1.0 is the click being prevented.
+        assert!(max_step(&out) < 0.05, "ramp-in stepped: {}", max_step(&out));
+    }
+
+    #[test]
+    fn running_dry_ramps_out_instead_of_cutting_to_zero() {
+        let mut q = PlaybackQueue::new(config::SAMPLE_RATE);
+        let half = config::FRAME_SIZE / 2;
+        q.extend(&vec![1.0f32; half]);
+        q.silent = false; // mid-phrase: no ramp-in, only the underrun edge
+
+        let mut out = vec![0.0f32; config::FRAME_SIZE];
+        q.fill(&mut out, 1);
+
+        assert!(
+            out[half - 1] < 0.05,
+            "last sample before the padding must be faded: {}",
+            out[half - 1]
+        );
+        assert_eq!(out[half], 0.0, "short read must pad with silence");
+        assert!(
+            max_step(&out) < 0.05,
+            "ramp-out stepped: {}",
+            max_step(&out)
+        );
+        assert!(q.silent, "a short read must arm the ramp-in for next time");
+    }
+
+    #[test]
+    fn steady_state_passes_samples_through_untouched() {
+        let mut q = PlaybackQueue::new(config::SAMPLE_RATE);
+        let signal = ramp(config::FRAME_SIZE * 3);
+        q.extend(&signal);
+        q.silent = false; // mid-phrase, buffer under the cap
+
+        let mut out = vec![0.0f32; config::FRAME_SIZE];
+        q.fill(&mut out, 1);
+
+        assert_eq!(
+            out,
+            signal[..config::FRAME_SIZE],
+            "no ramp may touch a fully-served mid-phrase buffer"
+        );
+        assert!(!q.silent);
+    }
+
+    #[test]
+    fn fill_upmixes_mono_to_every_channel() {
+        let mut q = PlaybackQueue::new(config::SAMPLE_RATE);
+        q.extend(&[0.5f32; 4]);
+        q.silent = false;
+
+        let mut out = vec![0.0f32; 8];
+        q.fill(&mut out, 2);
+
+        assert_eq!(out, vec![0.5f32; 8]);
     }
 
     #[test]

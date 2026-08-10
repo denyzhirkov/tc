@@ -79,6 +79,12 @@ pub const AUDIO_CHANNELS: u16 = 1;
 pub const MAX_OPUS_PACKET: usize = 4000;
 /// Max playback buffer in samples (~100ms). Excess is dropped to cap latency.
 pub const MAX_PLAYBACK_BUF: usize = FRAME_SIZE * 5;
+/// Length of the click-avoiding ramps on the playback path, in milliseconds.
+/// Two discontinuities are audible on every phrase and both are ramped over
+/// this window: the splice made when trimming back to the latency cap (the VAD
+/// pre-roll flush overshoots it once per talkspurt), and the silence↔data
+/// boundary when the queue runs dry between phrases.
+pub const PLAYBACK_FADE_MS: u32 = 5;
 /// Jitter buffer min/max capacity (packets) for adaptive sizing.
 pub const JITTER_BUF_MIN: usize = 2;
 pub const JITTER_BUF_MAX: usize = 15;
