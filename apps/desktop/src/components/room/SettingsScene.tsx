@@ -541,7 +541,7 @@ export default function SettingsScene() {
       group: "keys",
       label: t("set.in_window"),
       keys: "shortcuts local",
-      render: () => <span class="fixed">{t("set.in_window_list")}</span>,
+      render: () => <span class="value">{t("set.in_window_list")}</span>,
     },
 
     // ── window ───────────────────────────────────────────────
@@ -671,7 +671,7 @@ export default function SettingsScene() {
       keys: "pubkey ключ ed25519",
       render: () => (
         <span class="opts">
-          <span class="fixed mono-break">
+          <span class="value mono-break">
             {st()?.pubkey ? st()!.pubkey!.slice(0, 32) + "…" : t("common.none")}
           </span>
           <CopyWord value={st()?.pubkey} />
@@ -684,7 +684,7 @@ export default function SettingsScene() {
       keys: "server tofu сервер отпечаток",
       render: () => (
         <span class="opts">
-          <span class="fixed">{state.serverAddr}</span>
+          <span class="value">{state.serverAddr}</span>
           {/* The server's own TOFU fingerprint isn't in app_status, so there is
               nothing of the server's to copy here — only its address. */}
           <CopyWord value={state.serverAddr} />
