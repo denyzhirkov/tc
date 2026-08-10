@@ -1,5 +1,6 @@
 //! User-toggleable platform integration: notifications, autostart, close-to-tray.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
@@ -102,8 +103,8 @@ pub fn reconcile_autostart_at_startup(app: &AppHandle, enabled: bool) {
 
 #[tauri::command]
 pub async fn set_close_to_tray(state: CoreState<'_>, enabled: bool) -> Result<(), String> {
-    let mut c = state.lock().await;
-    c.close_to_tray = enabled;
+    let c = state.lock().await;
+    c.close_to_tray.store(enabled, Ordering::Relaxed);
     c.save();
     Ok(())
 }

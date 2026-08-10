@@ -44,6 +44,12 @@ impl VoiceMode {
     }
 }
 
+/// The close-to-tray flag, managed as Tauri state in its own right so the
+/// window-close handler can read it from the main thread without awaiting the
+/// core mutex. Shares the `Arc` with `AppCore::close_to_tray` — one value, two
+/// handles, so the setting can never be half-applied.
+pub struct CloseToTray(pub Arc<AtomicBool>);
+
 /// Top-level mutable state. Behind a `tokio::sync::Mutex` so commands can
 /// hold the lock across .await (e.g. while connecting).
 pub struct AppCore {
@@ -65,7 +71,12 @@ pub struct AppCore {
     pub hotkeys: std::collections::HashMap<String, String>,
     pub notifications: bool,
     pub autostart: bool,
-    pub close_to_tray: bool,
+    /// Atomic because the window-close handler reads it on the main thread,
+    /// where it cannot await this mutex. Reading it through `try_lock` was the
+    /// old approach and it silently fell back to `false` under contention —
+    /// harmless when `false` merely destroyed the window, dangerous now that it
+    /// means "quit".
+    pub close_to_tray: Arc<AtomicBool>,
     /// UI language: "en" or "ru". Defaults to "en".
     pub language: String,
     /// Current channel roster (names), maintained by the drain task. Source of
@@ -153,7 +164,13 @@ impl AppCore {
             hotkeys: saved.hotkeys.clone(),
             notifications: saved.notifications.unwrap_or(true),
             autostart: saved.autostart.unwrap_or(false),
-            close_to_tray: saved.close_to_tray.unwrap_or(false),
+            // Default per platform: on macOS the red button closes a window,
+            // it does not quit the app, and a voice chat that ends the call on
+            // a stray click is the wrong surprise. Elsewhere closing the last
+            // window does mean quitting. An explicit choice always wins.
+            close_to_tray: Arc::new(AtomicBool::new(
+                saved.close_to_tray.unwrap_or(cfg!(target_os = "macos")),
+            )),
             language: saved
                 .language
                 .as_deref()
@@ -212,7 +229,7 @@ impl AppCore {
             hotkeys: self.hotkeys.clone(),
             notifications: Some(self.notifications),
             autostart: Some(self.autostart),
-            close_to_tray: Some(self.close_to_tray),
+            close_to_tray: Some(self.close_to_tray.load(Ordering::Relaxed)),
             language: Some(self.language.clone()),
             trusted_servers: self.tofu.trusted_map(),
             servers: self.servers.clone(),

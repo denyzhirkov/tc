@@ -65,7 +65,7 @@ pub async fn app_status(state: CoreState<'_>) -> Result<AppStatus, String> {
         paranoid: c.paranoid.load(Ordering::Relaxed),
         denoise: c.denoise.load(Ordering::Relaxed),
         notifications: c.notifications,
-        close_to_tray: c.close_to_tray,
+        close_to_tray: c.close_to_tray.load(Ordering::Relaxed),
         autostart: c.autostart,
         language: c.language.clone(),
         participants: c.participants.clone(),
@@ -312,7 +312,7 @@ pub async fn export_settings(state: CoreState<'_>) -> Result<String, String> {
         hotkeys: c.hotkeys.clone(),
         notifications: Some(c.notifications),
         autostart: Some(c.autostart),
-        close_to_tray: Some(c.close_to_tray),
+        close_to_tray: Some(c.close_to_tray.load(Ordering::Relaxed)),
         language: Some(c.language.clone()),
         trusted_servers: c.tofu.trusted_map(),
         servers: c.servers.clone(),
@@ -363,7 +363,7 @@ pub async fn import_settings(state: CoreState<'_>, json: String) -> Result<(), S
         c.autostart = v;
     }
     if let Some(v) = s.close_to_tray {
-        c.close_to_tray = v;
+        c.close_to_tray.store(v, Ordering::Relaxed);
     }
     if let Some(v) = s.language.as_deref() {
         if matches!(v, "en" | "ru") {

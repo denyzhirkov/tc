@@ -19,6 +19,7 @@ mod tray;
 mod update_check;
 mod voice_actor;
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tauri::Manager;
@@ -89,6 +90,11 @@ pub fn run() {
             dev_log::set_app(app.handle().clone());
 
             let core = Arc::new(Mutex::new(AppCore::new()));
+            // The close-button handler runs on the main thread and cannot await
+            // the core mutex, so the one flag it needs is managed alongside it.
+            app.manage(state::CloseToTray(
+                core.blocking_lock().close_to_tray.clone(),
+            ));
             app.manage(core.clone());
             level_pump::spawn(app.handle().clone(), core);
 
@@ -123,22 +129,29 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Intercept the close button: hide instead of quit when close_to_tray.
-            // Only for the main window — the overlay manages its own lifecycle.
+            // Intercept the close button. Only for the main window — the
+            // overlay manages its own lifecycle.
+            //
+            // The main window is never destroyed while the app lives: it either
+            // hides, or the app exits with it. Letting it be destroyed left a
+            // running app with no window and no way back — on macOS the process
+            // outlives its last window, the Dock icon does nothing, and the
+            // tray's "Show window" is a no-op because it looks the window up by
+            // label and no longer finds it.
             if window.label() != "main" {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
-                let core: tauri::State<Arc<Mutex<AppCore>>> = app.state();
-                let core_arc = (*core).clone();
-                let close_to_tray = core_arc
-                    .try_lock()
-                    .map(|c| c.close_to_tray)
-                    .unwrap_or(false);
+                let flag: tauri::State<state::CloseToTray> = app.state();
+                let close_to_tray = flag.0.load(Ordering::Relaxed);
+                api.prevent_close();
                 if close_to_tray {
-                    api.prevent_close();
                     let _ = window.hide();
+                } else {
+                    // The setting says closing the window quits; make that true
+                    // rather than leaving an invisible process behind.
+                    app.exit(0);
                 }
             }
         })
@@ -200,6 +213,19 @@ pub fn run() {
             overlay::set_overlay_position,
             overlay::set_overlay_visibility,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // macOS: clicking the Dock icon is how people expect a hidden app
+            // to come back. Without handling it, a window hidden to the tray is
+            // reachable only from the menu bar — which is not where anyone
+            // looks first.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                if let Some(w) = _app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        });
 }

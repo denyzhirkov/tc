@@ -212,3 +212,42 @@ rule. Every hand-written class in `styles.css` was then checked against the
 built sheet; this was the only genuine collision, the rest being the project's
 own media-query overrides. **Standing lesson: a hand-written class here shares a
 namespace with every Tailwind utility, and a collision merges silently.**
+
+## The window you couldn't get back (`z9wczl`, 2026-08-10)
+
+Closing the window on macOS left an app that was running, showed nothing, and
+could not be recalled — "as if the system is showing an invisible window".
+
+Diagnosed on the installed build rather than from the code: the process was
+alive, `System Events` reported **0 windows**, and `open -a` changed neither.
+The owner's saved setting is `close_to_tray = true`, so the window was **hidden,
+not destroyed** — the app was behaving as configured. What was missing is that
+`.run(generate_context!())` carried no `RunEvent` handler, so
+`RunEvent::Reopen` (Dock click, `open -a`) was ignored and the only route back
+was the tray icon, which is not where anyone looks first.
+
+A second gap sat behind it, waiting for anyone on the default setting: with
+`close_to_tray = false` the close was never intercepted, the window was
+destroyed, and on macOS the process outlives its last window — after which the
+tray's "Show window" is a no-op too, because it resolves the window by label and
+no longer finds one. The setting promised "closing the window quits" and
+produced a zombie instead.
+
+Fix, three parts. `CloseRequested` on `main` always calls `prevent_close` and
+then either hides or exits, so the main window is never destroyed while the app
+lives. `RunEvent::Reopen` is handled on macOS. And `close_to_tray` became an
+`Arc<AtomicBool>` shared with a `CloseToTray` Tauri state, because the close
+handler runs on the main thread and cannot await the core mutex — the previous
+`try_lock().unwrap_or(false)` degraded to `false` under contention, which was
+survivable when `false` only destroyed the window and would have been an
+unexplained quit once `false` means exit.
+
+The default also moved: `close_to_tray` now defaults to **hide on macOS**, quit
+elsewhere. The red button closes a window on macOS, it does not quit an app, and
+a voice chat that ends the call on a stray click is the wrong surprise. An
+explicitly saved choice still wins.
+
+Verified end to end against a dev build, all three branches: setting on → window
+hides and a Dock-tile click brings it back (window count 0 → 1); setting off →
+process exits cleanly on close; no saved value on macOS → hides. The owner's
+settings were restored afterwards.
