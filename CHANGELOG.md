@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.12.1] — 2026-08-10
+
+### Fixed
+- **A sentence no longer vanishes when you send the next one.** Words fall from
+  the name that said them, but a second message used to wipe the first out of
+  the air mid-fall. Every line now lives out its fall to the bottom of the room,
+  and lines sent in quick succession queue under one another instead of landing
+  on the same spot.
+- **Settings rows printed on top of themselves.** In the key section the value
+  and the words next to it — your server address and "copy it", your key and its
+  "copy it" — were drawn over each other into one unreadable line.
+
 ## [1.12.0] — 2026-08-10
 
 ### Fixed

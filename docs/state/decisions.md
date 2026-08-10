@@ -171,6 +171,7 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   opens the lobby, and single-line confirmations plus all errors surface in the
   echo above the input line. Silence after a mistyped command was the worst bug
   the redesign introduced, and the echo is the general fix.
+- **A hand-written class shares a namespace with every Tailwind utility.** `styles.css` is compiled together with `@tailwind utilities`, so a custom class whose name matches a utility does not override it — both rules apply and merge silently. `.fixed` cost us exactly this: it set font-size and colour, inherited `position: fixed` from Tailwind, and dropped settings values on top of the words beside them, while the modals that genuinely wanted the utility quietly inherited the font-size. It is `.value` now. Before naming a class, check it isn't a utility; a collision shows up as layout that no rule in this file can explain.
 - **`pub-` is wire detail.** `lib/rooms.ts` renders `pub-lobby` as `lobby` and a
   private room as `·<id>`; ids passed to commands stay whole.
 - **Private rooms are absent from the list by design** (`tcp.rs`: only public

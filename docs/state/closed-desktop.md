@@ -178,3 +178,37 @@ said them.
 
 Added `lib/trace.ts`; touched `components/room/Cast.tsx` (three inserts) and
 `styles.css`. No new dependency, no Rust, no wire change.
+
+## Falling text lives out its fall + a Tailwind name collision (`5x7lo4`, `cygn5s`, v1.12.1, 2026-08-10)
+
+Two owner-reported bugs in the room shell, both frontend-only.
+
+**Every line finishes its fall** (`5x7lo4`). Sending a second message wiped the
+first out of the air: `drop()` did `live.get(who)?.remove()`, the "one line per
+voice at a time" rule set out when the «Room» UI landed. Overruled — a sentence
+vanishing the instant you send the next reads as loss, not as motion. Lines from
+one voice now stack, each running its animation to the end. A newcomer starts
+below the voice's previous line when their boxes would overlap, compared as
+**geometry rather than elapsed time**: in a crowded room a line drops one rank
+over ~7 s, so it keeps covering its starting point far longer than a lone
+speaker's does, and an age threshold tuned for the open-room case would fail
+exactly where lines are tightest. The new line is appended, measured and
+corrected inside one synchronous task, so nothing paints between insert and
+correction and the line never visibly jumps. `--drop` is measured from where the
+line actually starts, so a queued line still lands inside the room; cleanup
+clears the host element, since stacked lines outlive their `live` entry.
+
+**`.fixed` was Tailwind's** (`cygn5s`). Settings rows in the key group drew the
+value on top of the words beside it — server address over "copy it", key over
+its "copy it". Not a layout bug: `styles.css` defined `.fixed { font-size;
+color }` for a non-interactive value, Tailwind's utilities compile into the same
+sheet, and `.fixed { position: fixed }` is one of them. Both rules applied and
+the value left the flow. Diagnosed by rebuilding the row markup against the
+*built* stylesheet in a browser and reading computed styles — `position` came
+back `fixed`. The collision ran both ways: `Palette` and `InviteConfirm` want
+the utility (`class="fixed inset-0 …"`) and were silently inheriting the custom
+font-size and muted colour. Renamed to `.value` with the reason recorded at the
+rule. Every hand-written class in `styles.css` was then checked against the
+built sheet; this was the only genuine collision, the rest being the project's
+own media-query overrides. **Standing lesson: a hand-written class here shares a
+namespace with every Tailwind utility, and a collision merges silently.**

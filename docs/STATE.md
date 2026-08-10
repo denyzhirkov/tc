@@ -2,9 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.12.0**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.12.1**, protocol **3**.
 
 ## Recently closed (newest first)
+
+- Room-shell fixes (`5x7lo4`, `cygn5s`, **v1.12.1**, frontend only): falling speech no longer cut short — a new line from the same voice used to remove the previous one, so a second message wiped the first out of the air; lines now stack and each finishes its fall, a newcomer starting below the previous one when their boxes overlap (geometry, not age — in a crowded room a line covers its start point for seconds). And settings values stopped landing on their own action words: `.fixed` in `styles.css` collided with **Tailwind's `.fixed` utility**, both rules applied, `position: fixed` took the value out of flow; renamed `.value`. Diagnosed by rebuilding the row against the built stylesheet in a browser. See `closed-desktop.md` → "Falling text lives out its fall" and `decisions.md` → "A hand-written class shares a namespace with every Tailwind utility".
 
 - Onset click (`kfx6og`, **v1.12.0**, client-only): every phrase started with a click, and the cause was a chain of compensations — the RMS gate clips onsets → `VadPreroll` compensates → its flush sends `VAD_PREROLL_FRAMES + 1` packets as one burst → the receive path decodes them immediately (the jitter buffer delays nothing) → `playback_buf` overshoots `MAX_PLAYBACK_BUF` on **every** talkspurt → the latency trim spliced the waveform mid-swing. `PlaybackQueue` (`client/audio.rs`) now owns every edit to the playback timeline and ramps both over `PLAYBACK_FADE_MS`: crossfade across the trim, fade at the silence↔data boundary (phrase endings improved too). Latency cap left at 100 ms by choice. Codec state ruled out — encoder and decoder freeze on the same frame and resume consistently. Follow-ups `4rg56x` (comfort noise) and `ta0vu0` (continuous DTX timeline, the NetEq-style structural fix). Same release drops prebuilt terminal-client binaries: releases carry the desktop app and the server, `install.ps1` removed, `install.sh` installs the server. See `closed-cli-core.md` → "Playback timeline" and `decisions.md` → "Voice quality".
 
@@ -56,4 +58,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-10 (onset click, v1.12.0)._
+_Last updated: 2026-08-10 (room-shell fixes, v1.12.1)._
