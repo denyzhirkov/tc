@@ -5,7 +5,10 @@ import { createEffect } from "solid-js";
 import { createStore } from "solid-js/store";
 
 export type Theme = "dark" | "light";
-export type Accent = "indigo" | "forest" | "rust" | "slate";
+/// Colour of the chosen word. "plain" is the original look — brightness
+/// alone. The named hues cost luminance against the unselected grey, which
+/// is why picking one also adds weight (see --chosen-weight in styles.css).
+export type Accent = "plain" | "indigo" | "forest" | "rust";
 export type Typeface = "inter" | "plex" | "mono";
 // How this client draws identicons. Purely local presentation — never sent to
 // peers; each user sees every avatar in their own chosen style.
@@ -27,13 +30,6 @@ export type Tweaks = {
 
 const KEY = "tc.tweaks";
 
-const ACCENTS: Record<Accent, string> = {
-  indigo: "#5b6cff",
-  forest: "#3a8a5e",
-  rust: "#c2562b",
-  slate: "#7a7d83",
-};
-
 const FONTS: Record<Typeface, string> = {
   inter:
     "'Inter Tight','Inter',ui-sans-serif,-apple-system,system-ui,sans-serif",
@@ -45,9 +41,11 @@ const AVATAR_STYLES: AvatarStyle[] = ["weave", "pixel", "faces"];
 
 // The room is typeset in one face, and that face is monospace: the terminal
 // heritage is carried by the type rather than by decoration.
+const ACCENTS: Accent[] = ["plain", "indigo", "forest", "rust"];
+
 const DEFAULTS: Tweaks = {
   theme: "dark",
-  accent: "indigo",
+  accent: "plain",
   typeface: "mono",
   avatarStyle: "weave",
   composerHints: true,
@@ -65,6 +63,9 @@ function load(): Tweaks {
     if (!(merged.typeface in FONTS)) merged.typeface = DEFAULTS.typeface;
     if (!AVATAR_STYLES.includes(merged.avatarStyle))
       merged.avatarStyle = DEFAULTS.avatarStyle;
+    // The old accent set (indigo/forest/rust/slate) drove a variable nothing
+    // read; "slate" is gone because a grey accent cannot be told from plain.
+    if (!ACCENTS.includes(merged.accent)) merged.accent = DEFAULTS.accent;
     return merged;
   } catch {
     return { ...DEFAULTS };
@@ -88,7 +89,7 @@ export function installTheme() {
   const root = document.documentElement;
   createEffect(() => {
     root.dataset.theme = tweaks.theme;
-    root.style.setProperty("--c-accent", ACCENTS[tweaks.accent]);
+    root.dataset.accent = tweaks.accent;
     root.style.setProperty("--font-ui", FONTS[tweaks.typeface]);
   });
 }

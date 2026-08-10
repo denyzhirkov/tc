@@ -17,7 +17,9 @@
   --c-text2: #bcbab4;
   --c-muted: #7f807b;
   --c-faint: #4f4e49;
-  --c-accent: #6272ff;
+  /* Backs the highlighted row in the command palette and the confirm button in
+     the invite dialog (Tailwind `bg-accent-bg`). Fixed — it was never part of
+     the accent setting, which is why it outlived it. */
   --c-accent-bg: rgba(98, 114, 255, 0.16);
   --c-danger: #cc5450;
   --c-warn: #c2862b;
@@ -44,6 +46,40 @@
   --c-accent-bg: rgba(98, 114, 255, 0.1);
   --sat: 46%;
   --lum: 40%;
+}
+
+/* ── the chosen word ─────────────────────────────────────────────────────
+   "Chosen" was said with brightness alone, which is why colour had nowhere to
+   go: the unselected grey already sits at 4.81:1 against the background, so
+   anything brighter is reserved and a hue that keeps the same distance can
+   only be a 5% tint — a colour you cannot see. Measured against the
+   unselected grey, plain text scores 3.25 and these hues score 1.46–2.31.
+
+   So the hue does not carry the state; weight does, and the hue rides on top.
+   Colour-blind readers keep a signal, the unselected words keep their
+   legibility, and the accent gets to be an actual colour. Every hue below
+   clears 4.5:1 against its own background. `plain` is the original look and
+   adds no weight, because it trades nothing away. */
+:root {
+  --c-chosen: var(--c-text);
+}
+:root[data-accent="indigo"] {
+  --c-chosen: #8a97ea;
+}
+:root[data-accent="forest"] {
+  --c-chosen: #5fd39b;
+}
+:root[data-accent="rust"] {
+  --c-chosen: #ef8b5c;
+}
+:root[data-theme="light"][data-accent="indigo"] {
+  --c-chosen: #2a3a9e;
+}
+:root[data-theme="light"][data-accent="forest"] {
+  --c-chosen: #1d6b46;
+}
+:root[data-theme="light"][data-accent="rust"] {
+  --c-chosen: #9c4a1e;
 }
 
 html,
@@ -131,7 +167,15 @@ textarea {
 }
 .word-on,
 .word-quiet.word-on {
-  color: var(--c-text);
+  color: var(--c-chosen);
+}
+/* The weight only appears when a hue does — it is what pays for the luminance
+   the hue costs. In `plain` nothing is owed, so nothing changes. */
+:root:not([data-accent="plain"]) .word-on {
+  font-weight: 600;
+}
+:root:not([data-accent="plain"]) .settings .name:not(.dim) {
+  font-weight: 700;
 }
 
 /* ── top line: rooms are words too ───────────────────────────────────── */
@@ -155,7 +199,7 @@ textarea {
   color: var(--c-text2);
 }
 .top .word-on {
-  color: var(--c-text);
+  color: var(--c-chosen);
 }
 .top-spacer {
   flex: 1;
@@ -256,6 +300,12 @@ textarea {
 }
 .name.dim {
   color: var(--c-faint) !important;
+}
+/* Settings groups are the third place this interface says "chosen", so they
+   say it the same way. People and rooms are exempt: their colour is identity,
+   set inline from the name, and inline wins over this. */
+.settings .name:not(.dim) {
+  color: var(--c-chosen);
 }
 .name-tail {
   font-size: 0.44em;

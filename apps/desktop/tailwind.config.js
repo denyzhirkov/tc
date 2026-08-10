@@ -26,7 +26,6 @@ export default {
         text2: "var(--c-text2)",
         muted: "var(--c-muted)",
         faint: "var(--c-faint)",
-        accent: "var(--c-accent)",
         "accent-bg": "var(--c-accent-bg)",
         danger: "var(--c-danger)",
         warn: "var(--c-warn)",

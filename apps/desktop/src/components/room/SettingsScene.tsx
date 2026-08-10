@@ -58,12 +58,6 @@ type Entry = {
   bare?: boolean;
 };
 
-const ACCENT_HEX: Record<Accent, string> = {
-  indigo: "#6272ff",
-  forest: "#4fa877",
-  rust: "#c2703b",
-  slate: "#8b8e94",
-};
 const FONT_STACK: Record<Typeface, string> = {
   inter: "'Inter Tight', Inter, system-ui, sans-serif",
   plex: "'IBM Plex Sans', system-ui, sans-serif",
@@ -422,14 +416,14 @@ export default function SettingsScene() {
     {
       group: "look",
       label: t("set.highlight"),
-      keys: "accent colour цвет акцент подсветка",
+      keys: "accent colour цвет акцент подсветка выбранное",
+      hint: t("set.highlight_hint"),
       render: () => (
         <Opts<Accent>
-          opts={["indigo", "forest", "rust", "slate"]}
+          opts={["plain", "indigo", "forest", "rust"]}
           label={(v) => t(`set.accent_${v}`)}
           current={(v) => tweaks.accent === v}
           pick={(v) => setTweak("accent", v)}
-          paint={(v, on) => ({ color: on ? ACCENT_HEX[v] : undefined })}
         />
       ),
     },
@@ -742,7 +736,7 @@ export default function SettingsScene() {
   };
 
   return (
-    <div class="cast" style={{ "--nameSize": "26px" }}>
+    <div class="cast settings" style={{ "--nameSize": "26px" }}>
       <div class="ranks">
         <div class="rank">
           <For each={GROUPS}>
