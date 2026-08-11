@@ -87,6 +87,8 @@ struct Downmix {
     /// Which channels are counted. All of them until the signal says otherwise.
     carries: Vec<bool>,
     active: usize,
+    /// Whether the first real measurement has been reported yet.
+    measured: bool,
 }
 
 impl Downmix {
@@ -96,6 +98,7 @@ impl Downmix {
             sums: vec![0.0; channels],
             carries: vec![true; channels],
             active: channels.max(1),
+            measured: false,
         }
     }
 
@@ -146,11 +149,32 @@ impl Downmix {
             active += *c as usize;
         }
         let active = active.max(1);
-        if active == self.active {
-            return None;
-        }
+        let changed = active != self.active;
         self.active = active;
-        Some(active)
+
+        // Report the first real measurement even when nothing changed: "2ch"
+        // alone does not say whether the spare channel is silent or a copy of
+        // the first, and that is the whole difference between losing 6 dB and
+        // losing nothing. One line per stream, off the back of a decision that
+        // is only reached once there is signal to measure.
+        if !self.measured || changed {
+            self.measured = true;
+            let mut levels = String::with_capacity(ch * 6);
+            for (i, e) in self.energy.iter().enumerate() {
+                if i > 0 {
+                    levels.push_str(", ");
+                }
+                let rel = if loudest > 0.0 { *e / loudest } else { 0.0 };
+                levels.push_str(&format!("{:.2}", rel));
+            }
+            tracing::info!(
+                "capture channels: {} of {} carry signal (relative levels: {})",
+                active,
+                ch,
+                levels
+            );
+        }
+        changed.then_some(active)
     }
 }
 
@@ -482,14 +506,9 @@ pub fn start_capture(
     let stream = device.build_input_stream(
         &params.stream_config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            // 1. Downmix to mono (if needed)
-            if let Some(active) = downmix.push(data, &mut accumulator) {
-                tracing::info!(
-                    "capture downmix: {} of {} channels carry signal",
-                    active,
-                    device_channels
-                );
-            }
+            // 1. Downmix to mono (if needed). It reports its own findings — the
+            // first measurement and any change after it.
+            downmix.push(data, &mut accumulator);
 
             // 2. Drain in device-frame-sized chunks, resample to 48 kHz, push to ring buffer
             while accumulator.len() >= device_frame_size {
