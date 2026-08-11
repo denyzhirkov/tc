@@ -99,9 +99,17 @@ async function execute(raw: string) {
   switch (head) {
     // Server connection
     case "/server":
-    case "/s":
+    case "/s": {
       if (!arg) return pushLog(`server: ${state.serverAddr}`, "system");
-      return safe(() => cmd.connect(arg));
+      // An invitation names a room as well as a server, and pasting the whole
+      // thing should land you in it — the backend takes the address out of the
+      // link either way, but only this layer can also walk you through.
+      const room = arg.startsWith("tc://") ? arg.slice(5).split("/")[1] : null;
+      return safe(async () => {
+        await cmd.connect(arg);
+        if (room) await cmd.joinChannel(room);
+      });
+    }
     case "/reconnect":
     case "/r":
       return safe(() => cmd.connect(state.serverAddr));

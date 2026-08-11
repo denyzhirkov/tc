@@ -11,7 +11,6 @@
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager};
-use url::Url;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Invite {
@@ -42,22 +41,10 @@ pub fn take_pending_invite(gate: tauri::State<'_, Gate>) -> Option<Invite> {
 }
 
 pub fn parse_invite(raw: &str) -> Option<Invite> {
-    let url = Url::parse(raw).ok()?;
-    if url.scheme() != "tc" {
-        return None;
-    }
-    let host = url.host_str()?.to_string();
-    let port = url.port().unwrap_or(tc_shared::config::TCP_PORT);
-    let addr = format!("{}:{}", host, port);
-
-    // Path looks like "/lobby" — strip the leading slash and any trailing one.
-    let trimmed = url.path().trim_matches('/').to_string();
-    let channel = if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    };
-
+    // The grammar lives beside the builder in `tc_shared::invite`, so a link
+    // clicked in the OS and a link pasted into an address field cannot drift
+    // apart.
+    let (addr, channel) = tc_shared::invite::parse_link(raw)?;
     Some(Invite { addr, channel })
 }
 

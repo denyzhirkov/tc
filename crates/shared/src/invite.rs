@@ -96,6 +96,58 @@ mod tests {
         );
     }
 
+    /// The trap this parser exists for: pasting a link the app itself produced
+    /// into an address field used to reach `ToSocketAddrs`, which splits on the
+    /// last colon and reports "invalid port value" for `7100/pub-room`.
+    #[test]
+    fn parses_a_link_back_into_an_address_and_a_channel() {
+        assert_eq!(
+            parse_link("tc://13.140.128.194:7100/pub-room"),
+            Some(("13.140.128.194:7100".into(), Some("pub-room".into())))
+        );
+    }
+
+    #[test]
+    fn parses_a_link_without_a_channel() {
+        assert_eq!(
+            parse_link("tc://example.com:9000"),
+            Some(("example.com:9000".into(), None))
+        );
+    }
+
+    #[test]
+    fn fills_the_default_port_when_a_link_omits_it() {
+        assert_eq!(
+            parse_link("tc://example.com/lobby"),
+            Some((format!("example.com:{}", TCP_PORT), Some("lobby".into())))
+        );
+    }
+
+    #[test]
+    fn parses_a_bracketed_ipv6_link() {
+        assert_eq!(
+            parse_link("tc://[::1]:9000/lobby"),
+            Some(("[::1]:9000".into(), Some("lobby".into())))
+        );
+    }
+
+    #[test]
+    fn refuses_anything_that_is_not_a_link() {
+        assert_eq!(parse_link("example.com:7100"), None);
+        assert_eq!(parse_link("https://example.com"), None);
+        assert_eq!(parse_link("tc://"), None);
+    }
+
+    /// Round-trip: whatever we hand out must come back as what it named.
+    #[test]
+    fn a_built_link_parses_back_to_its_own_address() {
+        let link = invite_url("13.140.128.194:7100", Some("pub-room"));
+        assert_eq!(
+            parse_link(&link),
+            Some(("13.140.128.194:7100".into(), Some("pub-room".into())))
+        );
+    }
+
     #[test]
     fn leaves_a_bracketed_ipv6_with_a_port_alone() {
         assert_eq!(invite_url("[::1]:9000", None), "tc://[::1]:9000");
@@ -108,4 +160,43 @@ mod tests {
             format!("tc://[fe80::1]:{}", TCP_PORT)
         );
     }
+}
+
+/// Split a `tc://host[:port][/channel]` link into a dialable `host:port` and
+/// the channel it names, if any. Returns `None` for anything that is not a
+/// `tc://` link.
+///
+/// This lives here rather than in the desktop's deep-link handler because a
+/// link is not only clicked: people paste it into `/server`, and an address
+/// field that chokes on the very string this app hands out is a trap of our own
+/// making. Hand-rolled rather than pulled from a URL crate — `tc_shared` is
+/// linked into the server too, and this is a scheme, a host and one path
+/// segment.
+pub fn parse_link(raw: &str) -> Option<(String, Option<String>)> {
+    let rest = raw
+        .strip_prefix("tc://")
+        .or_else(|| raw.strip_prefix("TC://"))?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i + 1..]),
+        None => (rest, ""),
+    };
+    if authority.is_empty() {
+        return None;
+    }
+    let addr = if has_port(authority) {
+        authority.to_string()
+    } else if authority.contains(':') && !authority.starts_with('[') {
+        format!("[{}]:{}", authority, TCP_PORT)
+    } else {
+        format!("{}:{}", authority, TCP_PORT)
+    };
+    let channel = path.trim_matches('/');
+    Some((
+        addr,
+        if channel.is_empty() {
+            None
+        } else {
+            Some(channel.to_string())
+        },
+    ))
 }

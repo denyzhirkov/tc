@@ -517,11 +517,21 @@ async fn cmd_server(
         app.add_message(format!("current server: {}", app.server_addr));
         return;
     };
-    app.server_addr = if addr.contains(':') {
-        addr.to_string()
-    } else {
-        format!("{}:{}", addr, config::TCP_PORT)
+    // A `tc://` link is a perfectly reasonable thing to paste here — it is
+    // what /invite hands out — and it must not reach the socket verbatim.
+    let mut named_channel = None;
+    app.server_addr = match tc_shared::invite::parse_link(addr) {
+        Some((dialable, channel)) => {
+            named_channel = channel;
+            dialable
+        }
+        None if addr.contains(':') => addr.to_string(),
+        None => format!("{}:{}", addr, config::TCP_PORT),
     };
+    if let Some(c) = named_channel {
+        app.rejoin_channel = Some(c.clone());
+        app.add_message(format!("will join {} once connected", c));
+    }
     save_settings(app);
     app.add_message(format!("server address set to {}", app.server_addr));
     if app.conn_state.is_disconnected() {

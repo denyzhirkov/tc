@@ -90,10 +90,13 @@ pub async fn invite_link(state: CoreState<'_>) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn connect(app: AppHandle, state: CoreState<'_>, addr: String) -> Result<(), String> {
-    let addr = if addr.contains(':') {
-        addr
-    } else {
-        format!("{}:{}", addr, tc_shared::config::TCP_PORT)
+    // People paste the link this app hands out. Left alone it reaches
+    // ToSocketAddrs, which splits on the last colon and calls
+    // "7100/pub-room" an invalid port — an error of our own making.
+    let addr = match tc_shared::invite::parse_link(&addr) {
+        Some((dialable, _channel)) => dialable,
+        None if addr.contains(':') => addr,
+        None => format!("{}:{}", addr, tc_shared::config::TCP_PORT),
     };
 
     emit(&app, "connection_state", ConnState::Connecting);
