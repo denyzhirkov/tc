@@ -13,6 +13,14 @@ export default function App() {
   installTheme();
 
   onMount(async () => {
+    // Right-click otherwise reaches the webview and it answers with a browser's
+    // menu — on Windows the full "Back / Reload / Save as / Inspect", which is
+    // the technology showing through an interface that has no buttons in it at
+    // all. Nothing here wants a second mouse button yet.
+    const noMenu = (e: Event) => e.preventDefault();
+    window.addEventListener("contextmenu", noMenu);
+    onCleanup(() => window.removeEventListener("contextmenu", noMenu));
+
     pushLog(`tc_ — ${shortcut("k")}`, "system");
     const unlisten = await subscribeAll();
     onCleanup(() => unlisten.forEach((u) => u()));
