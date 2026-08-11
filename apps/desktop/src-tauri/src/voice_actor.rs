@@ -83,6 +83,10 @@ pub struct VoiceSnapshot {
     pub playback_ok: bool,
     /// Hot-plugged devices detected since the last snapshot (drained on read).
     pub new_devices: Vec<NewDevice>,
+    /// The set of available devices changed in either direction since the last
+    /// snapshot (drained on read). `new_devices` only carries arrivals, and a
+    /// device that goes away must still stop being offered in settings.
+    pub devices_changed: bool,
 }
 
 impl VoiceSnapshot {
@@ -100,6 +104,7 @@ impl VoiceSnapshot {
             capture_ok: true,
             playback_ok: true,
             new_devices: Vec::new(),
+            devices_changed: false,
         }
     }
 }
@@ -231,6 +236,9 @@ struct Supervisor {
     known_outputs: Option<std::collections::HashSet<String>>,
     rebuilds: u32,
     pending_new_devices: Vec<NewDevice>,
+    /// Set when the available devices changed at all — arrivals *or*
+    /// departures. Drained into the snapshot.
+    devices_changed: bool,
 }
 
 impl Supervisor {
@@ -245,6 +253,7 @@ impl Supervisor {
             known_outputs: None,
             rebuilds: 0,
             pending_new_devices: Vec::new(),
+            devices_changed: false,
         }
     }
 
@@ -336,6 +345,11 @@ impl Supervisor {
             }
             for name in outputs.difference(&known_out) {
                 self.on_new_device("output", name, handle.as_deref_mut());
+            }
+            // A device leaving asks the user nothing, so it raises no prompt —
+            // but the settings list must stop offering what is no longer there.
+            if inputs != known_in || outputs != known_out {
+                self.devices_changed = true;
             }
         }
         self.known_inputs = Some(inputs);
@@ -498,6 +512,7 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                             capture_ok: h.capture_state() == voice::HalfState::Ok,
                             playback_ok: h.playback_state() == voice::HalfState::Ok,
                             new_devices: std::mem::take(&mut sup.pending_new_devices),
+                            devices_changed: std::mem::take(&mut sup.devices_changed),
                         }
                     }
                     None => {
@@ -505,6 +520,7 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                         // Hot-plug prompts work outside calls too ("yes" just
                         // selects the device for future joins).
                         s.new_devices = std::mem::take(&mut sup.pending_new_devices);
+                        s.devices_changed = std::mem::take(&mut sup.devices_changed);
                         s
                     }
                 };

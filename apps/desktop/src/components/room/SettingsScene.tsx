@@ -70,13 +70,29 @@ const shortDevice = (name: string) =>
   name.length > 28 ? name.slice(0, 27) + "…" : name;
 
 function DeviceRow(props: { kind: "input" | "output" }) {
-  const [devices] = createResource<DeviceInfo[]>(() =>
+  const [devices, { refetch }] = createResource<DeviceInfo[]>(() =>
     props.kind === "input" ? cmd.listInputDevices() : cmd.listOutputDevices(),
   );
+  // The list is a snapshot of hardware, and hardware moves while you are
+  // looking at it. The supervisor notices within ~2s either way.
+  onMount(async () => {
+    const off = await on("devices_changed", () => void refetch());
+    onCleanup(off);
+  });
+
   const current = () =>
     props.kind === "input"
       ? state.status?.input_device ?? null
       : state.status?.output_device ?? null;
+
+  /// The device you chose, now unplugged. Kept in sight rather than dropped:
+  /// the choice still stands and the backend switches back to it silently when
+  /// it returns, and a row with nothing lit at all reads as broken.
+  const absent = () => {
+    const c = current();
+    if (!c) return null;
+    return (devices() ?? []).some((d) => d.name === c) ? null : c;
+  };
 
   const apply = async (name: string | null) => {
     try {
@@ -105,6 +121,14 @@ function DeviceRow(props: { kind: "input" | "output" }) {
           </Word>
         )}
       </For>
+      <Show when={absent()}>
+        {(name) => (
+          <Word tone="quiet" current disabled title={name()}>
+            {shortDevice(name())}
+            <span class="gone-tail">{t("set.device_gone")}</span>
+          </Word>
+        )}
+      </Show>
     </span>
   );
 }

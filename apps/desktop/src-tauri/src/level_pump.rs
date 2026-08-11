@@ -44,6 +44,12 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
                     },
                 );
             }
+            // Before the idle `continue` below: a device list goes stale just
+            // as easily with no call running, and that is exactly when someone
+            // is sitting in settings picking one.
+            if snap.devices_changed {
+                emit(&app, "devices_changed", serde_json::json!({}));
+            }
             if !snap.active {
                 // The frontend must learn that voice stopped, or it keeps
                 // animating the last speaker levels forever (phantom waves).

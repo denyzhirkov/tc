@@ -226,6 +226,8 @@ export type EventMap = {
   echo_test_started: Record<string, never>;
   echo_test_result: EchoResult;
   device_added: DeviceAddedPayload;
+  /// The set of available devices moved in either direction — re-read the lists.
+  devices_changed: Record<string, never>;
   quick_join: Record<string, never>;
   log: { text: string };
   muted_changed: { muted: boolean };
