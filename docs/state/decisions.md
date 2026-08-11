@@ -214,3 +214,26 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   preview of an rAF-driven effect that is sampled through `setTimeout` will
   report a dead animation for perfectly working code. Screenshot the visible
   tab; don't diff the DOM from a timer.
+- **Per-peer volume is a listener-side gain and lives only in the client.**
+  `client/peer_gain.rs` scales each sender's decoded PCM before mixing, keyed by
+  display name (a voice packet carries no pubkey, and the roster is names-only —
+  `PeerGains::rename` follows `NameChanged` so an adjustment survives a rename).
+  It is never sent anywhere: the relay holds no key and could not apply it. Any
+  future "make X louder" idea belongs on this path, not on the wire.
+- **A device list is a snapshot of hardware, so it needs an invalidation
+  signal.** `createResource` at mount is right for anything the backend owns
+  statically and wrong for anything the world can change underneath it. The
+  supervisor's 2s device poll now reports movement in *either* direction
+  (`devices_changed`), and `level_pump` emits it before its idle `continue` —
+  the moment a list matters most is when there is no call and someone is
+  choosing a device.
+- **A choice that outlives its object is kept and marked, not silently reset.**
+  An unplugged-but-chosen device stays in the row, disabled, marked "not here
+  now"; a peer whose volume is off 100% carries a mark on their name. Both
+  settings persist across restarts, and a persisted setting the user cannot see
+  is one they will eventually mistake for a fault in the hardware or in someone
+  else's microphone.
+- **Centre a form as a block, never per row.** `.field` rows share one bounded
+  width with auto margins so the label/value boundary is identical down the
+  column. Per-row centring (`align-items: center` on the flex column) makes that
+  boundary jitter with the content, and that seam is the line the eye follows.

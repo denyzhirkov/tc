@@ -2,9 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.14.0**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.15.0**, protocol **3**.
 
 ## Recently closed (newest first)
+
+- Sound settings you can aim + a device that leaves (`75xum2`, `4kwyen`, `s4evgw`, **v1.15.0**, desktop): four items from one screenshot. The tick meter went 12 → 20 ticks (row 81 → 137px) with `−`/`+` ends moving 2 pts, arrow keys taking the same fine step, and the height ramp derived from the tallest tick so a longer row doesn't grow upward. `.field` bounded to 680px and centred **as a block** — per-row centring would jitter the label/value seam. Unplugged devices stayed listed forever: `Supervisor::tick` only iterated the arrival direction of the set diff, *and* `DeviceRow` never refetched its `createResource` — two sufficient causes; now `devices_changed` rides the snapshot and `level_pump` emits it before the idle `continue`, with the chosen-but-absent device kept in place, disabled and marked. Per-peer volume turned out to be **UI-only**: `peer_gain.rs`, persistence, commands and the store were all shipped already, only the knob was missing — a click on a name opens the meter under that person, `°` marks anyone off 100%. See `closed-desktop.md` → "Sound settings you can actually aim" and `decisions.md` → "Per-peer volume is a listener-side gain…".
 
 - A voice can be liquid (`t77mj3`, **v1.14.0**, desktop UI only): a second look for the voice under a name — *drops* instead of the string, shed from the speaking name to sink, sway and dissolve (`set.voice_look`, localStorage, default unchanged). Cost one module and one `<Show>` because the shape was already right: one slot under a name, one frame loop that knows loudness. `lib/lava.ts` decides only *when* a drop is born and how big; the rest is a keyframed CSS animation removing itself on `animationend` — the trick `Falling.tsx` already used, so fourteen liquid names cost what fourteen strings cost. Merging is the drop's own fading rim + 0.6px blur, not a gooey SVG filter (a per-element filter pass on HTML in WKWebView is a portability bet for decoration, and heavy blur washes out identity colour). Same release doubles the voice column (~140 → ~300px, shared by both looks) — which forced `SAMPLES` 24 → 40 in `trace.ts`, because a longer string must **hold more voice**, not the same wave stretched thin. See `closed-desktop.md` → "A voice can be liquid" and `decisions.md` → "A voice has two looks, one slot, one loop".
 
@@ -64,4 +66,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-11 (a voice can be liquid, v1.14.0)._
+_Last updated: 2026-08-11 (sound settings + per-peer volume, v1.15.0)._

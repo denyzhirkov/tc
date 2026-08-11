@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.15.0] — 2026-08-11
+
+### Added
+- **Every person has their own volume.** Click someone's name in the room and a
+  scale opens under them: 0–200%, for your ears only. Turn one person down and
+  another up without touching anyone else's sound — it is never sent to the
+  server, and it does not change how anybody else hears them. The setting is
+  remembered between calls, and a name that is not at 100% carries a small mark
+  so you don't forget you turned someone down.
+- **The scales have a "−" and a "+".** Every tick row in settings now has ends
+  that move the value by two percent, for the last bit of adjustment that
+  clicking never quite lands. The arrow keys move by two as well.
+
+### Changed
+- **The scales are longer.** Half again as long, so one tick is a tenth of the
+  range instead of a sixth and the number you want is where you click.
+- **Settings sit in the middle of the window** instead of pressed against the
+  left edge with the space to the right unused.
+
+### Fixed
+- **An unplugged device leaves the list.** Disconnect a headset and it stayed in
+  "hears me" / "plays in" until the app was restarted, so you could pick a
+  device that was not there. The lists now follow the hardware within about two
+  seconds. If the device you had chosen is the one that went away, it stays in
+  sight, greyed out and marked "not here now" — your choice is kept, and
+  plugging it back in returns you to it as before.
+
 ## [1.14.0] — 2026-08-11
 
 ### Added

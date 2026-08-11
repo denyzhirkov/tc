@@ -345,3 +345,51 @@ localhost, with both looks side by side under a synthetic voice envelope. Worth
 remembering — `requestAnimationFrame` does not run in a background tab, so a
 preview that samples the DOM from `setTimeout` reports "nothing is happening"
 for a page that is working perfectly.
+
+## Sound settings you can actually aim, and a device that leaves (`75xum2`, `4kwyen`, `s4evgw`, v1.15.0, 2026-08-11)
+
+Three complaints from one screenshot of the sound settings, plus a question
+that turned out to be a UI gap rather than a feature request.
+
+**The scale could not be aimed.** Twelve ticks over 0–200 is 16.7% a tick, so
+any particular percentage was luck. Twenty ticks (row 81 → 137px, ~69%) puts a
+tick at a tenth, and `−`/`+` at the ends move two at a time; the arrow keys took
+the same fine step, since jumping a whole tick was the same defect by another
+route. The height ramp is now derived from the tallest tick rather than the
+index — otherwise a longer row also grows upward.
+
+**Rows hugged the left.** `.field` is a `160px | 1fr` grid inside a full-width
+`.detail`, so every row spanned the window and the content sat left of centre
+with dead space to the right. Bounded to 680px and centred with auto margins —
+as a *block*, not per row: centring each row on its own content moves the
+label/value boundary from row to row, and that seam is what the eye reads down.
+
+**A device that goes away.** Unplug a headset and it stayed in the list until
+restart. Two independent causes, either sufficient: `Supervisor::tick` diffed
+the device name sets every 2s but only iterated `difference(&known)` in the
+arrival direction, so departures were computed and discarded; and `DeviceRow`
+read the list through `createResource` once at mount with no refetch, so an
+event would not have reached it anyway. Now the snapshot carries
+`devices_changed` for movement in either direction and `level_pump` emits it
+**before** the idle `continue` — a list goes stale just as easily with no call
+running, and that is precisely when someone is in settings choosing one. The
+chosen-but-absent device is kept in the row, disabled and marked: `on_new_device`
+already re-selects a configured device silently when it returns, so resetting to
+the system default would have made that behaviour pointless, and a row with
+nothing lit reads as broken.
+
+**"Can we have per-person volume?"** — it existed everywhere except within
+reach. `peer_gain.rs` applies a per-sender factor on the receive path before
+mixing (ArcSwap: lock-free reads on the drain round, copy-on-write on the rare
+write), `peer_volumes` persists, `set_peer_volume`/`list_peer_volumes` were
+registered, `state.peerVolumes` was already hydrated in `wire.ts` — and nothing
+rendered or wrote it. The TUI had `/volume <name> <pct>`; the desktop had no
+door. So the whole story is UI: a click on a name opens the same meter under
+that person, one at a time, self-closing 6s after the last touch (each nudge
+resets it). Own name and DMs excluded. A name off 100% carries a `°`, because
+the setting outlives the room and the app — without the mark you forget you
+turned someone down and conclude their microphone is bad.
+
+Worth keeping: **before building a feature in this repo, check whether the core
+already does it.** Three of the four items above were UI-only, and the fourth
+was two missing lines in a poller that had been diffing the right data all along.
