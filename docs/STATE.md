@@ -2,9 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.13.0**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.14.0**, protocol **3**.
 
 ## Recently closed (newest first)
+
+- A voice can be liquid (`t77mj3`, **v1.14.0**, desktop UI only): a second look for the voice under a name — *drops* instead of the string, shed from the speaking name to sink, sway and dissolve (`set.voice_look`, localStorage, default unchanged). Cost one module and one `<Show>` because the shape was already right: one slot under a name, one frame loop that knows loudness. `lib/lava.ts` decides only *when* a drop is born and how big; the rest is a keyframed CSS animation removing itself on `animationend` — the trick `Falling.tsx` already used, so fourteen liquid names cost what fourteen strings cost. Merging is the drop's own fading rim + 0.6px blur, not a gooey SVG filter (a per-element filter pass on HTML in WKWebView is a portability bet for decoration, and heavy blur washes out identity colour). Same release doubles the voice column (~140 → ~300px, shared by both looks) — which forced `SAMPLES` 24 → 40 in `trace.ts`, because a longer string must **hold more voice**, not the same wave stretched thin. See `closed-desktop.md` → "A voice can be liquid" and `decisions.md` → "A voice has two looks, one slot, one loop".
 
 - Chosen colour (`la6ylw`, **v1.13.0**, desktop): the accent setting wrote `--c-accent` and **no rule read it** — dead since `cfe2d9b` removed the frosted-glass toasts. Rebuilt as the colour of *chosen*: the room in the top line, the lit settings group, the picked word in any control. Hue can't carry that state alone — unselected words sit at 4.81:1 (over 4.5 by a hair), so selected had to be near-white; plain scores 3.25 against the unselected grey, a real hue 1.46–2.31, and a hue held to 3.05 collapses to an invisible 5% tint. So **weight carries the state and hue rides on top** (600 words / 700 group names); `plain` is the default and changes nothing. People and rooms exempt (identity colour, set inline). `slate` dropped — grey is indistinguishable from plain. All 8 theme×accent combos verified in a browser against the built stylesheet. See `closed-desktop.md` → "The accent gets a job" and `decisions.md` → "A hue cannot carry «chosen» on its own here".
 
@@ -62,4 +64,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-10 (chosen colour, v1.13.0)._
+_Last updated: 2026-08-11 (a voice can be liquid, v1.14.0)._

@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.14.0] — 2026-08-11
+
+### Added
+- **A voice can look like drops instead of a string.** Under look, "a voice
+  looks like" now offers *drops*: instead of a string with a wave running down
+  it, the speaking name sheds drops that sink, sway and dissolve — a lava lamp
+  running the wrong way round, because in this room everything a person says
+  falls. Loudness decides how big they are and how often they come; they carry
+  the speaker's own colour, and drops that touch read as one body of liquid.
+  *A string* is still the default and looks as it did.
+
+### Changed
+- **A voice reaches further down the room.** The column under each name is
+  about twice as long, and a longer string now holds more voice rather than the
+  same wave stretched thin — four seconds of it, with the crests keeping their
+  spacing on screen. Both looks share that length, so switching between them
+  never changes how much of the room a voice takes up.
+
 ## [1.13.0] — 2026-08-10
 
 ### Added

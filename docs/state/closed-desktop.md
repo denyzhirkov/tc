@@ -297,3 +297,51 @@ worth remembering: a stale cached `app.css` (cache-bust the link), and CSSOM
 walking — in Chrome a plain style rule exposes an **empty `cssRules`** because of
 CSS nesting, so recursing before reading `selectorText` silently finds nothing
 and makes a working stylesheet look broken.
+
+## A voice can be liquid (`t77mj3`, v1.14.0, 2026-08-11)
+
+The string had been the only way a voice could look since `n4vpum`. The owner
+wanted a second: a lava lamp, with the drops falling out of the speaking name
+the way spoken words already fall.
+
+It cost one module and one `<Show>`, because the shape was already right. The
+slot under a name was a single element (`.trace`), fed by the single frame loop
+in `Cast` that knows how loud everyone is. Swapping the medium inside that slot
+is a setting; growing a second animation loop, or a second reading of
+`state.speakers`, would have been the mistake.
+
+- **The drops are CSS, not a simulation.** `lib/lava.ts` decides only *when* a
+  drop is shed and how big it is — from the same smoothed level the string
+  gets. Everything after birth is one keyframed animation per drop, removed on
+  `animationend`; nothing about a drop is computed per frame. This is the same
+  trick the falling text has always used (`Falling.tsx`), and it is why fourteen
+  liquid names cost what fourteen strings cost.
+- **A lava lamp that falls.** Real ones rise. Here they sink, because in this
+  room everything a person says falls — drops in the same column as the words,
+  under the same mask, in the same identity colour.
+- **Merging without a filter graph.** The signature of liquid is two bodies
+  running together. A gooey SVG filter (`feGaussianBlur` + alpha contrast) does
+  that properly but is a per-element filter pass on HTML in WKWebView — a
+  portability bet for decoration. Instead the softness lives in the drop's own
+  rim (a radial gradient fading to transparent) with 0.6px of blur on the
+  column. Enough blur to merge outright would have washed the identity colour
+  out, and colour is who is speaking.
+- **The painter is owned, not shared.** Switching the setting disposes one
+  branch and creates the other, and Solid does not order the two — so each
+  painter only retires its own entry in the map (`if (painters.get(name) ===
+  paint)`). Without the guard, flipping the setting silently unregisters the
+  painter that just registered, and the voice goes dead until the next re-render.
+- **Lengthening the column is not a CSS-only change.** The reach went from
+  ~140px to ~300px, shared by both looks so switching never changes how much of
+  the room a voice takes. For the drops that is one variable. For the string it
+  is not: 2.4 s of voice stretched over twice the distance is the same three
+  crests, spaced twice as far apart and travelling twice as fast. `SAMPLES` went
+  24 → 40, so **a longer string holds more voice** rather than the same voice
+  drawn thin; the fade-out followed (2.6 s → 3.8 s) to keep the promise that a
+  wave in flight rides out before the string disappears.
+
+Verified the way `cygn5s` established: the real `styles.css`, built, served over
+localhost, with both looks side by side under a synthetic voice envelope. Worth
+remembering — `requestAnimationFrame` does not run in a background tab, so a
+preview that samples the DOM from `setTimeout` reports "nothing is happening"
+for a page that is working perfectly.
