@@ -121,6 +121,22 @@ pub const SENDER_STREAM_TTL_SECS: u64 = 10;
 pub const PEER_VOL_DEFAULT_PCT: u32 = 100;
 pub const PEER_VOL_MAX_PCT: u32 = 200;
 
+// ── Capture downmix ──────────────────────────────────────────────────────
+// A capture device we did not get to choose the format of (WASAPI shared mode
+// hands us the mixer format or nothing) often presents a mono microphone as a
+// multi-channel stream with silence in the spare channels. Averaging across the
+// raw channel count then throws away 6 dB per silent channel, which no gain
+// slider should have to pay back.
+/// A channel counts as carrying signal while its smoothed magnitude is within
+/// this fraction of the loudest channel's — about −30 dB.
+pub const DOWNMIX_ACTIVE_RATIO: f32 = 0.03;
+/// Below this smoothed magnitude the whole stream is treated as silent and the
+/// previous decision is kept, so a pause between words cannot flip the divisor.
+pub const DOWNMIX_SILENCE_FLOOR: f32 = 1.0e-5;
+/// Weight of each callback in the per-channel magnitude envelope. Slow on
+/// purpose: this answers "how is this device wired", not "who is talking now".
+pub const DOWNMIX_SMOOTHING: f32 = 0.05;
+
 // ── VAD ──────────────────────────────────────────────────────────────────
 
 /// RMS energy threshold for voice activity detection.

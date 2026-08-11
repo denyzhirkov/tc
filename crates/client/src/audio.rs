@@ -67,6 +67,93 @@ fn resolve_stream_params(device: &cpal::Device, is_input: bool) -> Result<Device
     }
 }
 
+/// Mono downmix that only counts the channels actually carrying something.
+///
+/// We do not always get to choose the capture format: WASAPI shared mode hands
+/// us the device's mixer format or nothing, and that is routinely two channels
+/// for a microphone that is physically mono — the second one silent. Averaging
+/// across the raw channel count halves every sample, a clean 6 dB the user then
+/// tries to buy back with the gain slider, paying in noise and headroom.
+///
+/// So the divisor is the number of channels that carry signal, decided from a
+/// slow per-channel magnitude envelope. When every channel does — a real stereo
+/// input, or any device on macOS/Linux where we ask for mono outright — this is
+/// arithmetically identical to the plain average it replaces.
+struct Downmix {
+    /// Smoothed magnitude per channel.
+    energy: Vec<f32>,
+    /// Scratch: summed magnitude per channel over one callback.
+    sums: Vec<f32>,
+    /// Which channels are counted. All of them until the signal says otherwise.
+    carries: Vec<bool>,
+    active: usize,
+}
+
+impl Downmix {
+    fn new(channels: usize) -> Self {
+        Self {
+            energy: vec![0.0; channels],
+            sums: vec![0.0; channels],
+            carries: vec![true; channels],
+            active: channels.max(1),
+        }
+    }
+
+    /// Append one callback's worth of interleaved input as mono samples.
+    fn push(&mut self, data: &[f32], out: &mut VecDeque<f32>) -> Option<usize> {
+        let ch = self.energy.len();
+        if ch <= 1 {
+            out.extend(data.iter().copied());
+            return None;
+        }
+
+        let inv = 1.0 / self.active as f32;
+        for s in self.sums.iter_mut() {
+            *s = 0.0;
+        }
+        let mut frames = 0usize;
+        for chunk in data.chunks_exact(ch) {
+            let mut sum = 0.0;
+            for (i, s) in chunk.iter().enumerate() {
+                self.sums[i] += s.abs();
+                // A silent channel would contribute nothing anyway; skipping it
+                // also keeps its noise floor out of the mix.
+                if self.carries[i] {
+                    sum += *s;
+                }
+            }
+            out.push_back(sum * inv);
+            frames += 1;
+        }
+        if frames == 0 {
+            return None;
+        }
+
+        let n = frames as f32;
+        for (e, s) in self.energy.iter_mut().zip(&self.sums) {
+            *e += (*s / n - *e) * config::DOWNMIX_SMOOTHING;
+        }
+        let loudest = self.energy.iter().copied().fold(0.0f32, f32::max);
+        // In silence there is nothing to learn, and re-deciding on a pause
+        // between words is how a divisor starts flapping mid-sentence.
+        if loudest < config::DOWNMIX_SILENCE_FLOOR {
+            return None;
+        }
+        let floor = loudest * config::DOWNMIX_ACTIVE_RATIO;
+        let mut active = 0;
+        for (c, e) in self.carries.iter_mut().zip(&self.energy) {
+            *c = *e >= floor;
+            active += *c as usize;
+        }
+        let active = active.max(1);
+        if active == self.active {
+            return None;
+        }
+        self.active = active;
+        Some(active)
+    }
+}
+
 /// Linear-interpolation resampler writing into a provided buffer (zero allocation).
 fn resample_into(input: &[f32], from_rate: u32, to_rate: u32, output: &mut Vec<f32>) {
     output.clear();
@@ -363,6 +450,7 @@ pub fn start_capture(
 
     // Accumulate mono samples at device sample rate (VecDeque for O(1) front drain)
     let mut accumulator: VecDeque<f32> = VecDeque::with_capacity(device_frame_size * 2);
+    let mut downmix = Downmix::new(device_channels as usize);
     // Reusable buffer for a device-rate chunk (avoids per-frame allocation)
     let mut chunk_buf = vec![0.0f32; device_frame_size];
     // Sinc resampler for high-quality capture resampling (if needed)
@@ -395,14 +483,12 @@ pub fn start_capture(
         &params.stream_config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
             // 1. Downmix to mono (if needed)
-            if device_channels > 1 {
-                let ch = device_channels as usize;
-                for chunk in data.chunks_exact(ch) {
-                    let mono: f32 = chunk.iter().sum::<f32>() / ch as f32;
-                    accumulator.push_back(mono);
-                }
-            } else {
-                accumulator.extend(data.iter().copied());
+            if let Some(active) = downmix.push(data, &mut accumulator) {
+                tracing::info!(
+                    "capture downmix: {} of {} channels carry signal",
+                    active,
+                    device_channels
+                );
             }
 
             // 2. Drain in device-frame-sized chunks, resample to 48 kHz, push to ring buffer
@@ -538,6 +624,77 @@ pub fn start_playback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape that costs 6 dB on Windows: a mono microphone presented as a
+    /// stereo stream with nothing in the second channel.
+    #[test]
+    fn a_silent_second_channel_does_not_halve_the_signal() {
+        let mut d = Downmix::new(2);
+        let mut out = VecDeque::new();
+        // Loud enough, and long enough, for the envelope to make up its mind.
+        let block: Vec<f32> = (0..4800)
+            .flat_map(|i| [((i % 100) as f32) * 0.01, 0.0])
+            .collect();
+        for _ in 0..80 {
+            out.clear();
+            d.push(&block, &mut out);
+        }
+        assert_eq!(d.active, 1, "the silent channel must stop counting");
+        out.clear();
+        d.push(&[0.5, 0.0, 0.25, 0.0], &mut out);
+        assert_eq!(out, VecDeque::from(vec![0.5, 0.25]));
+    }
+
+    /// A real stereo input must keep behaving exactly as the plain average did.
+    #[test]
+    fn a_true_stereo_input_is_still_averaged() {
+        let mut d = Downmix::new(2);
+        let mut out = VecDeque::new();
+        let block: Vec<f32> = (0..4800)
+            .flat_map(|i| {
+                let v = ((i % 100) as f32) * 0.01;
+                [v, v * 0.8]
+            })
+            .collect();
+        for _ in 0..80 {
+            out.clear();
+            d.push(&block, &mut out);
+        }
+        assert_eq!(d.active, 2, "both channels carry signal");
+        out.clear();
+        d.push(&[1.0, 0.5], &mut out);
+        assert_eq!(out, VecDeque::from(vec![0.75]));
+    }
+
+    #[test]
+    fn a_mono_device_passes_straight_through() {
+        let mut d = Downmix::new(1);
+        let mut out = VecDeque::new();
+        d.push(&[0.1, -0.2, 0.3], &mut out);
+        assert_eq!(out, VecDeque::from(vec![0.1, -0.2, 0.3]));
+    }
+
+    /// Silence must not re-open the question — otherwise the divisor flips
+    /// between words and the level pumps.
+    #[test]
+    fn silence_keeps_the_previous_decision() {
+        let mut d = Downmix::new(2);
+        let mut out = VecDeque::new();
+        let block: Vec<f32> = (0..4800)
+            .flat_map(|i| [((i % 100) as f32) * 0.01, 0.0])
+            .collect();
+        for _ in 0..80 {
+            out.clear();
+            d.push(&block, &mut out);
+        }
+        assert_eq!(d.active, 1);
+        let quiet = vec![0.0f32; 9600];
+        for _ in 0..200 {
+            out.clear();
+            d.push(&quiet, &mut out);
+        }
+        assert_eq!(d.active, 1, "a pause is not evidence about the wiring");
+    }
 
     #[test]
     fn resample_identity() {
