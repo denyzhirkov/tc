@@ -354,29 +354,42 @@ textarea {
   padding: 0 10px;
 }
 
-/* ── a string hangs from every name; a voice runs down it ────────────── */
+/* ── a voice hangs under every name, as a string or as drops ─────────── */
 
-.trace {
+/* One slot, two media (see lib/trace.ts and lib/lava.ts). Position, reach and
+   the dissolve at the bottom belong to the slot, so the setting only ever
+   changes what is drawn inside it. */
+.trace,
+.bubbles {
+  /* One length for both media: how far a voice reaches down the room is a
+     property of the room, not of the look you picked for it. */
+  --fall: clamp(120px, 32vh, 300px);
   position: absolute;
   top: calc(100% + 2px);
   left: 50%;
-  width: calc(var(--nameSize) * 1.05);
-  height: clamp(48px, 14vh, 140px);
+  height: var(--fall);
   transform: translateX(-50%);
   pointer-events: none;
-  opacity: 0.32;
-  /* The string dissolves rather than ending, and it costs nothing per frame. */
+  /* A voice dissolves rather than ending, and it costs nothing per frame. */
   -webkit-mask-image: linear-gradient(to bottom, #000 8%, transparent 94%);
   mask-image: linear-gradient(to bottom, #000 8%, transparent 94%);
 }
 
+/* Wider than the name, because a longer string needs room to swing: the
+   amplitude is a fraction of this width, so keeping it narrow would flatten
+   the wave into a wire as the column grew. */
+.trace {
+  width: calc(var(--nameSize) * 1.5);
+  opacity: 0.32;
+}
+
 /* A string only exists while there is a voice on it. It arrives quickly and
-   leaves over three seconds — long enough for the wave still in flight to ride
+   leaves over four seconds — long enough for the wave still in flight to ride
    out first, so the string is gone by the time it would hang straight. The
    delay doubles as hysteresis: a pause between words barely dims it. */
 .trace path {
   opacity: 0;
-  transition: opacity 2.6s ease 0.4s;
+  transition: opacity 3.8s ease 0.4s;
 }
 .trace path.live {
   opacity: 1;
@@ -385,10 +398,79 @@ textarea {
 
 /* In a crowd the string drops a rank and recedes, exactly as speech does —
    fourteen full-length voices would read as weather, not as people. */
+.cast.crowded .trace,
+.cast.crowded .bubbles {
+  --fall: 70px;
+}
 .cast.crowded .trace {
-  height: 44px;
-  width: calc(var(--nameSize) * 0.8);
+  width: calc(var(--nameSize) * 1.1);
   opacity: 0.24;
+}
+
+/* ── or the voice is liquid: drops shed from the name and sink ───────── */
+
+.bubbles {
+  width: calc(var(--nameSize) * 2.2);
+  /* Just enough to let two drops that touch read as one body of liquid. The
+     softness itself lives in the drop's own rim below — blur strong enough to
+     merge them outright would wash the identity colour out. */
+  filter: blur(0.6px);
+}
+.cast.crowded .bubbles {
+  width: calc(var(--nameSize) * 1.6);
+}
+
+.bub {
+  position: absolute;
+  top: 0;
+  left: var(--x);
+  width: var(--r);
+  height: var(--r);
+  margin-left: calc(var(--r) / -2);
+  /* Measured from the drop's own size, so a big one still clears the column
+     instead of stopping short of the fade. */
+  --drop: calc(var(--fall) - var(--r));
+  /* Slowing on the way down is what separates liquid from a falling object. */
+  animation: sink var(--life, 3s) cubic-bezier(0.28, 0.5, 0.35, 1) forwards;
+  will-change: transform, opacity;
+}
+.bub-skin {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  /* Identity colour, one light on it so the drop reads as a body rather than
+     a dot, and a rim that fades instead of ending — that soft edge is what
+     makes two of them look like they run together. */
+  background:
+    radial-gradient(circle at 36% 30%, rgb(255 255 255 / 0.42), transparent 55%),
+    radial-gradient(circle, currentColor 42%, transparent 72%);
+  /* A negative delay lands each drop mid-swing: shared phase reads as a
+     machine, and this is meant to read as a lamp. */
+  animation: swing var(--swayTime, 2s) ease-in-out infinite alternate;
+  animation-delay: calc(var(--swayTime, 2s) * var(--phase, 0) * -1);
+}
+
+@keyframes sink {
+  0% {
+    transform: translateY(0) scale(0.25);
+    opacity: 0;
+  }
+  14% {
+    transform: translateY(calc(var(--drop) * 0.1)) scale(1);
+    opacity: var(--peak, 0.5);
+  }
+  100% {
+    transform: translateY(var(--drop)) scale(0.7);
+    opacity: 0;
+  }
+}
+@keyframes swing {
+  from {
+    transform: translateX(calc(var(--sway, 5px) * -1));
+  }
+  to {
+    transform: translateX(var(--sway, 5px));
+  }
 }
 
 /* ── speech falls from the mouth that said it ────────────────────────── */
@@ -804,9 +886,10 @@ textarea {
     animation-duration: 0.01ms;
     animation-fill-mode: none;
   }
-  /* The frame loop is already off here, so no path is ever drawn — this only
-     makes the intent explicit. */
-  .trace {
+  /* The frame loop is already off here, so no path is drawn and no drop is
+     ever shed — this only makes the intent explicit. */
+  .trace,
+  .bubbles {
     display: none;
   }
 }

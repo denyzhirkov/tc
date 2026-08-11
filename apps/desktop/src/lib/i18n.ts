@@ -225,6 +225,11 @@ const en: Dict = {
   "set.face_mono": "JetBrains Mono",
   "set.face_inter": "Inter",
   "set.face_plex": "IBM Plex",
+  "set.voice_look": "a voice looks like",
+  "set.voice_string": "a string",
+  "set.voice_lava": "drops",
+  "set.voice_look_hint":
+    "under every name: a string with the voice running down it, or drops shed from the name that sink and dissolve",
   "set.crowd": "when it's crowded",
   "set.crowd_recent": "hide the quiet ones",
   "set.crowd_all": "show everyone",
@@ -496,6 +501,11 @@ const ru: Dict = {
   "set.face_mono": "JetBrains Mono",
   "set.face_inter": "Inter",
   "set.face_plex": "IBM Plex",
+  "set.voice_look": "голос выглядит как",
+  "set.voice_string": "верёвочка",
+  "set.voice_lava": "капли",
+  "set.voice_look_hint":
+    "под каждым именем: верёвочка, по которой бежит голос, или капли, которые срываются с имени, тонут и растворяются",
   "set.crowd": "когда людей много",
   "set.crowd_recent": "прятать молчащих",
   "set.crowd_all": "показывать всех",

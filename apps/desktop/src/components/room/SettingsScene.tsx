@@ -38,6 +38,7 @@ import {
   type Crowd,
   type Theme,
   type Typeface,
+  type VoiceLook,
 } from "../../lib/theme";
 import { formatAccel } from "../../lib/platform";
 import { SUPPORTED_LANGS, t, type Lang } from "../../lib/i18n";
@@ -438,6 +439,20 @@ export default function SettingsScene() {
           current={(v) => tweaks.typeface === v}
           pick={(v) => setTweak("typeface", v)}
           paint={(v) => ({ "font-family": FONT_STACK[v] })}
+        />
+      ),
+    },
+    {
+      group: "look",
+      label: t("set.voice_look"),
+      keys: "voice string lava bubbles drops голос верёвочка лава капли пузыри",
+      hint: t("set.voice_look_hint"),
+      render: () => (
+        <Opts<VoiceLook>
+          opts={["string", "lava"]}
+          label={(v) => t(`set.voice_${v}`)}
+          current={(v) => tweaks.voiceLook === v}
+          pick={(v) => setTweak("voiceLook", v)}
         />
       ),
     },

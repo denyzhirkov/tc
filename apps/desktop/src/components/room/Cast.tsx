@@ -21,6 +21,7 @@ import { tweaks } from "../../lib/theme";
 import { t } from "../../lib/i18n";
 import { nameNodes } from "../../lib/stage";
 import { Trace } from "../../lib/trace";
+import { Lava } from "../../lib/lava";
 import { Word } from "./words";
 
 /// Most names that ever stand at once. Past this the room stops being a room.
@@ -48,12 +49,10 @@ export default function Cast() {
   const [width, setWidth] = createSignal(920);
   const spokeAt = new Map<string, number>();
   const nodes = nameNodes;
-  /// The string under each standing name — fed from the frame loop below, so
-  /// there is still exactly one place that knows how loud anyone is.
-  const traces = new Map<
-    string,
-    { trace: Trace; el: SVGPathElement; lit: boolean }
-  >();
+  /// What paints the voice under each standing name — a string or the drops,
+  /// depending on the setting. Either way it is fed from the frame loop below,
+  /// so there is still exactly one place that knows how loud anyone is.
+  const painters = new Map<string, (level: number, now: number) => void>();
   let lastSwap = 0;
   let host: HTMLDivElement | undefined;
 
@@ -166,16 +165,7 @@ export default function Cast() {
         levels.set(name, next);
         el.style.transform = `scale(${(0.88 + next * swing).toFixed(3)})`;
         el.style.opacity = (floor + next * (1 - floor)).toFixed(3);
-        const tr = traces.get(name);
-        if (tr) {
-          const d = tr.trace.step(next, now);
-          if (d) tr.el.setAttribute("d", d);
-          // Showing and hiding the string is CSS's job — this only says when.
-          if (tr.trace.audible !== tr.lit) {
-            tr.lit = tr.trace.audible;
-            tr.el.classList.toggle("live", tr.lit);
-          }
-        }
+        painters.get(name)?.(next, now);
         if (next > 0.1) spokeAt.set(name, t);
         if (next > loudLevel) {
           loudLevel = next;
@@ -233,9 +223,32 @@ export default function Cast() {
     onCleanup(() => nodes.delete(name));
   };
 
+  /// Swapping the look disposes one branch and creates the other, and the two
+  /// are not ordered — so a painter only ever retires its own entry.
+  const own = (name: string, paint: (level: number, now: number) => void) => {
+    painters.set(name, paint);
+    onCleanup(() => {
+      if (painters.get(name) === paint) painters.delete(name);
+    });
+  };
+
   const bindTrace = (name: string) => (el: SVGPathElement) => {
-    traces.set(name, { trace: new Trace(), el, lit: false });
-    onCleanup(() => traces.delete(name));
+    const trace = new Trace();
+    let lit = false;
+    own(name, (level, now) => {
+      const d = trace.step(level, now);
+      if (d) el.setAttribute("d", d);
+      // Showing and hiding the string is CSS's job — this only says when.
+      if (trace.audible !== lit) {
+        lit = trace.audible;
+        el.classList.toggle("live", lit);
+      }
+    });
+  };
+
+  const bindLava = (name: string) => (el: HTMLDivElement) => {
+    const lava = new Lava(el);
+    own(name, (level, now) => lava.step(level, now));
   };
 
   return (
@@ -278,26 +291,41 @@ export default function Cast() {
                           <span class="name-tail">{t("room.you_tail")}</span>
                         </Show>
                       </button>
-                      {/* The string the voice runs down. `non-scaling-stroke`
-                          is load-bearing: the viewBox is stretched to the
-                          element, so a scaled stroke would smear. */}
-                      <svg
-                        class="trace"
-                        viewBox="-1 0 2 1"
-                        preserveAspectRatio="none"
-                        style={{ color: tint(name) }}
-                        aria-hidden="true"
+                      <Show
+                        when={tweaks.voiceLook === "lava"}
+                        fallback={
+                          /* The string the voice runs down. `non-scaling-stroke`
+                             is load-bearing: the viewBox is stretched to the
+                             element, so a scaled stroke would smear. */
+                          <svg
+                            class="trace"
+                            viewBox="-1 0 2 1"
+                            preserveAspectRatio="none"
+                            style={{ color: tint(name) }}
+                            aria-hidden="true"
+                          >
+                            <path
+                              ref={bindTrace(name)}
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.25"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              vector-effect="non-scaling-stroke"
+                            />
+                          </svg>
+                        }
                       >
-                        <path
-                          ref={bindTrace(name)}
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.25"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          vector-effect="non-scaling-stroke"
+                        {/* The same slot, filled by drops instead. They are
+                            born, animated and removed by CSS — this is only
+                            where they live. */}
+                        <div
+                          class="bubbles"
+                          ref={bindLava(name)}
+                          style={{ color: tint(name) }}
+                          aria-hidden="true"
                         />
-                      </svg>
+                      </Show>
                       <Show when={name === anchor()}>
                         <div class="acts">
                           {/* No microphone in a DM — it's a written room. */}

@@ -186,3 +186,31 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   current room only — this is the feature, not a sync bug.
 - **The room list is refreshed on connect, on `left_channel`, and by the
   server's own broadcast** when a public room is created. Don't add polling.
+- **A voice has two looks, one slot, one loop.** The string (`lib/trace.ts`) and
+  the drops (`lib/lava.ts`) are alternative media inside the same element under
+  a name, chosen by `tweaks.voiceLook` and both fed by `Cast`'s single frame
+  loop. Reach (`--fall`) is shared, so switching the look never changes how much
+  of the room a voice occupies. Any third look goes in that slot too — a second
+  animation loop, or a second reading of `state.speakers`, is the thing to
+  refuse.
+- **Motion that isn't driven by live data belongs to CSS.** The drops, like the
+  falling text, are keyframed animations that remove themselves on
+  `animationend`; JS decides only when one is born and how big it is. The string
+  is the exception that proves it — its shape *is* the last four seconds of
+  loudness, so it must be redrawn per frame, and it stops being drawn the moment
+  it settles.
+- **A `<Show>` swap does not order disposal against creation.** Anything that
+  registers itself from a `ref` into a shared map must retire only its own entry
+  (`if (map.get(key) === mine) map.delete(key)`). The naive `onCleanup(() =>
+  map.delete(key))` deletes the *new* entry when a branch flips, and the feature
+  goes quiet until the next re-render.
+- **The string's length and its sample count are one decision.** `SAMPLES · TICK`
+  is how much voice hangs on the string, and the column height is where it hangs
+  — stretch the column alone and the same crests travel proportionally faster
+  and further apart. A longer string must hold more voice (`SAMPLES` 24 → 40 for
+  ~300px), and the fade-out has to cover the new flight time or the string
+  vanishes with a wave still on it.
+- **`requestAnimationFrame` is suspended in a background tab.** A browser-based
+  preview of an rAF-driven effect that is sampled through `setTimeout` will
+  report a dead animation for perfectly working code. Screenshot the visible
+  tab; don't diff the DOM from a timer.

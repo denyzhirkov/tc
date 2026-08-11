@@ -7,15 +7,17 @@
 // committed sample carries its own phase, so a burst of voice moves downward
 // as one crest instead of the whole string wobbling in place.
 
-/// About 2.4s of voice hangs on the string at once.
-const SAMPLES = 24;
+/// About 4s of voice hangs on the string at once. A longer string holds more
+/// voice rather than the same wave stretched thin — the crests keep their
+/// spacing on screen, and one still takes 800ms to pass.
+const SAMPLES = 40;
 /// Milliseconds between committed samples — the speed the wave travels at.
 const TICK = 100;
-/// Points the string is drawn with. The ring holds 24 levels; a sine sampled
+/// Points the string is drawn with. The ring holds 40 levels; a sine sampled
 /// that coarsely reads as a zigzag, so the curve is interpolated between them.
-const POINTS = 48;
+const POINTS = 76;
 /// Radians of wave per committed sample — eight samples to a wavelength, so
-/// roughly three crests are on the string and one passes every 800ms.
+/// roughly five crests are on the string and one passes every 800ms.
 const DPHI = Math.PI / 4;
 /// Widest swing, in half-widths of the element.
 const AMP = 0.85;

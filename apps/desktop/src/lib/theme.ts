@@ -18,6 +18,11 @@ export type AvatarStyle = "weave" | "pixel" | "faces";
 /// recent voices on stage, or show everyone however small they get.
 export type Crowd = "recent" | "all";
 
+/// How a voice is drawn under the name that owns it: a string with a wave
+/// running down it (`lib/trace.ts`), or drops shed from the name and sinking
+/// (`lib/lava.ts`). Same slot, same colour, same silence — a different medium.
+export type VoiceLook = "string" | "lava";
+
 export type Tweaks = {
   theme: Theme;
   accent: Accent;
@@ -26,6 +31,7 @@ export type Tweaks = {
   /// Show the key hints under the input line.
   composerHints: boolean;
   crowd: Crowd;
+  voiceLook: VoiceLook;
 };
 
 const KEY = "tc.tweaks";
@@ -39,6 +45,8 @@ const FONTS: Record<Typeface, string> = {
 
 const AVATAR_STYLES: AvatarStyle[] = ["weave", "pixel", "faces"];
 
+const VOICE_LOOKS: VoiceLook[] = ["string", "lava"];
+
 // The room is typeset in one face, and that face is monospace: the terminal
 // heritage is carried by the type rather than by decoration.
 const ACCENTS: Accent[] = ["plain", "indigo", "forest", "rust"];
@@ -50,6 +58,7 @@ const DEFAULTS: Tweaks = {
   avatarStyle: "weave",
   composerHints: true,
   crowd: "recent",
+  voiceLook: "string",
 };
 
 function load(): Tweaks {
@@ -66,6 +75,8 @@ function load(): Tweaks {
     // The old accent set (indigo/forest/rust/slate) drove a variable nothing
     // read; "slate" is gone because a grey accent cannot be told from plain.
     if (!ACCENTS.includes(merged.accent)) merged.accent = DEFAULTS.accent;
+    if (!VOICE_LOOKS.includes(merged.voiceLook))
+      merged.voiceLook = DEFAULTS.voiceLook;
     return merged;
   } catch {
     return { ...DEFAULTS };
