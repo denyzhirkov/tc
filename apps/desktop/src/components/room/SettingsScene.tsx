@@ -20,7 +20,7 @@ import {
   onMount,
   type JSX,
 } from "solid-js";
-import { pushLog, state } from "../../lib/store";
+import { pushLog, state, update } from "../../lib/store";
 import { refreshStatus } from "../../lib/actions";
 import {
   cmd,
@@ -663,6 +663,25 @@ export default function SettingsScene() {
           label={(v) => (v ? t("set.tray_hides") : t("set.tray_quits"))}
           current={(v) => (st()?.close_to_tray ?? false) === v}
           pick={(v) => push(() => cmd.setCloseToTray(v))}
+        />
+      ),
+    },
+    {
+      group: "window",
+      label: t("set.innards"),
+      keys: "dev logs debug лог логи отладка дев разработчик",
+      hint: t("set.innards_hint"),
+      render: () => (
+        <Opts<boolean>
+          opts={[true, false]}
+          label={(v) => (v ? t("set.show") : t("set.hide"))}
+          current={(v) => state.devLogs === v}
+          pick={(v) =>
+            push(async () => {
+              await cmd.setDevLogs(v);
+              update.devLogs(v);
+            })
+          }
         />
       ),
     },
