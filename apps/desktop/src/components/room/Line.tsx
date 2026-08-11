@@ -38,6 +38,9 @@ const GLOBAL_LABELS: Record<string, string> = {
 
 export default function Line() {
   const [value, setValue] = createSignal("");
+  /// Focus, not emptiness: a bare letter stops being a shortcut the moment the
+  /// line takes focus, whether anything has been typed into it yet or not.
+  const [focused, setFocused] = createSignal(false);
   const [mention, setMention] = createSignal<string | null>(null);
   const [mentionIdx, setMentionIdx] = createSignal(0);
   const [globalKeys, setGlobalKeys] = createSignal<[string, string][]>([]);
@@ -187,21 +190,27 @@ export default function Line() {
     }
   };
 
+  /// The row never goes away — it is the only place the keys are written down,
+  /// and a line that vanishes as you type takes the answer with it exactly when
+  /// you looked for it. But bare letters stop being keys once the line has
+  /// focus (`Shell`'s handler bails on `isTyping`), so those go quiet instead
+  /// of lying: same words, same width, no jump.
   const hints = () => {
+    const bare = !focused();
     const out = [
       // Only true in push-to-talk; in the other modes the mic isn't yours to hold.
       ...(state.status?.voice_mode === "ptt"
-        ? [{ keys: "space", label: t("keys.talk") }]
+        ? [{ keys: "space", label: t("keys.talk"), live: bare }]
         : []),
-      { keys: "m", label: t("keys.mic") },
-      { keys: shortcut("k"), label: t("keys.jump") },
-      { keys: shortcut("j"), label: t("keys.history") },
-      { keys: "/", label: t("keys.commands") },
-      { keys: "@", label: t("keys.dm") },
+      { keys: "m", label: t("keys.mic"), live: bare },
+      { keys: shortcut("k"), label: t("keys.jump"), live: true },
+      { keys: shortcut("j"), label: t("keys.history"), live: true },
+      { keys: "/", label: t("keys.commands"), live: true },
+      { keys: "@", label: t("keys.dm"), live: true },
     ];
     for (const [action, accel] of globalKeys()) {
       const label = GLOBAL_LABELS[action];
-      if (label) out.push({ keys: formatAccel(accel), label });
+      if (label) out.push({ keys: formatAccel(accel), label, live: true });
     }
     return out;
   };
@@ -241,18 +250,22 @@ export default function Line() {
           placeholder={placeholder()}
           onInput={onInput}
           onKeyDown={onKeyDown}
-          onBlur={() => setMention(null)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            setFocused(false);
+            setMention(null);
+          }}
           autocomplete="off"
           spellcheck={false}
           aria-label={placeholder()}
         />
       </div>
 
-      <Show when={tweaks.composerHints && !value()}>
+      <Show when={tweaks.composerHints}>
         <div class="keys">
           <For each={hints()}>
             {(h) => (
-              <span>
+              <span classList={{ "key-idle": !h.live }}>
                 <b>{h.keys}</b> {h.label}
               </span>
             )}

@@ -836,6 +836,15 @@ textarea {
   font-weight: 500;
   color: var(--c-muted);
 }
+/* A key that isn't one right now: `m` is the microphone until the line has
+   focus, after which it is the letter m. It stays in place — the row is a map,
+   and a map that redraws itself while you read it is worse than a dim line. */
+.keys .key-idle {
+  opacity: 0.4;
+}
+.shell:focus-within .keys .key-idle b {
+  color: var(--c-faint);
+}
 
 /* ── things the app needs an answer to ───────────────────────────────── */
 
