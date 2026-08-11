@@ -327,6 +327,26 @@ async fn handle(
                 },
             );
         }
+        ServerMessage::NameChanged { old_name, new_name } if old_name.is_empty() => {
+            // The server telling us the name it gave us on connect. Only
+            // adopted when we have none of our own — a name we chose is already
+            // on its way there via SetName. Without this the room cannot find
+            // us among the people standing in it, and shows us none of our own
+            // controls.
+            {
+                let mut c = core.lock().await;
+                if c.name.is_some() {
+                    return;
+                }
+                c.name = Some(new_name.clone());
+                c.save();
+            }
+            emit(
+                app,
+                "name_changed",
+                serde_json::json!({ "old_name": "", "new_name": new_name }),
+            );
+        }
         ServerMessage::NameChanged { old_name, new_name } => {
             // Carry any local volume override across the rename, then persist.
             {

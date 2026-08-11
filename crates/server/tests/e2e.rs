@@ -228,6 +228,11 @@ async fn echo_test_reflects_voice_to_sender() {
 
         let mut client = connect_client(server.tcp_addr).await;
         assert!(matches!(client.recv().await, ServerMessage::Welcome { .. }));
+        // Right after Welcome the server says what it calls us.
+        assert!(matches!(
+            client.recv().await,
+            ServerMessage::NameChanged { ref old_name, .. } if old_name.is_empty()
+        ));
         client
             .send(&ClientMessage::Hello {
                 version: "test".into(),
@@ -295,6 +300,10 @@ async fn run_two_client_voice(bind_ip: std::net::IpAddr) {
         let mut client_a = connect_client(server.tcp_addr).await;
         let msg = client_a.recv().await;
         assert!(matches!(msg, ServerMessage::Welcome { .. }));
+        assert!(matches!(
+            client_a.recv().await,
+            ServerMessage::NameChanged { ref old_name, .. } if old_name.is_empty()
+        ));
 
         client_a
             .send(&ClientMessage::Hello {
@@ -308,6 +317,10 @@ async fn run_two_client_voice(bind_ip: std::net::IpAddr) {
         let mut client_b = connect_client(server.tcp_addr).await;
         let msg = client_b.recv().await;
         assert!(matches!(msg, ServerMessage::Welcome { .. }));
+        assert!(matches!(
+            client_b.recv().await,
+            ServerMessage::NameChanged { ref old_name, .. } if old_name.is_empty()
+        ));
 
         client_b
             .send(&ClientMessage::Hello {

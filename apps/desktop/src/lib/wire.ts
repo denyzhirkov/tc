@@ -113,6 +113,14 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
     }),
     on("error", (p) => pushLog(t("log.error", { message: p.message }), "error")),
     on("name_changed", (p) => {
+      // No old name means the server is telling us what it calls us — we
+      // arrived without one. Status carries the name the room looks itself up
+      // by, so it has to be re-read before anything of ours can render.
+      if (!p.old_name) {
+        pushLog(t("log.you_are", { name: p.new_name }), "system");
+        void cmd.status().then(update.status);
+        return;
+      }
       pushLog(t("log.name_changed", { old: p.old_name, new: p.new_name }), "system");
       update.renameParticipant(p.old_name, p.new_name);
       update.renamePeerVolume(p.old_name, p.new_name);

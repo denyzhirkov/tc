@@ -142,6 +142,21 @@ async fn handle_client(
         let _ = tx.try_send(b);
     }
 
+    // Tell this client the name it was just given. Without it a user who never
+    // set one has no idea what to call themselves, while everyone else — and
+    // this server — call them `user-N`; their own client then cannot find them
+    // in the room and shows them none of their own controls.
+    //
+    // `NameChanged` rather than a new message, because this *is* one: from
+    // nothing to `user-N`. An empty `old_name` marks it as self-identification,
+    // and reusing the variant keeps every existing client able to parse it.
+    if let Some(b) = encode(&ServerMessage::NameChanged {
+        old_name: String::new(),
+        new_name: name.clone(),
+    }) {
+        let _ = tx.try_send(b);
+    }
+
     // Writer task: sends queued ServerMessages to this client
     let writer_handle = tokio::spawn(writer_task(writer, rx));
 
@@ -916,6 +931,32 @@ mod tests {
         .unwrap();
         let msg = decode_frame(rx.try_recv().unwrap());
         assert!(matches!(msg, ServerMessage::Error { .. }));
+    }
+
+    /// A client that never sets a name is still called something here, and it
+    /// has to be told what — otherwise its own room shows it none of its own
+    /// controls, because it cannot find itself among the people standing in it.
+    #[tokio::test]
+    async fn a_registering_client_is_told_the_name_it_was_given() {
+        let state = ServerState::new(Default::default());
+        let peer: SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let name = state.register_client(peer).await.unwrap();
+        assert!(name.starts_with("user-"));
+
+        let msg = ServerMessage::NameChanged {
+            old_name: String::new(),
+            new_name: name.clone(),
+        };
+        // Round-trips as an ordinary NameChanged: no new variant, so a client
+        // built before this change still parses it.
+        let bytes = encode(&msg).expect("encode");
+        match decode_frame(bytes) {
+            ServerMessage::NameChanged { old_name, new_name } => {
+                assert!(old_name.is_empty(), "empty old name marks it as ours");
+                assert_eq!(new_name, name);
+            }
+            other => panic!("expected NameChanged, got {:?}", other),
+        }
     }
 
     #[tokio::test]

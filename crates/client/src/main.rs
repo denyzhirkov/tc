@@ -1054,6 +1054,16 @@ async fn handle_server_message(
             app.add_message("left channel".into());
         }
         ServerMessage::NameChanged { old_name, new_name } => {
+            // Empty `old_name` is the server telling us what it called us on
+            // connect. Only adopted when we have no name of our own: a name we
+            // chose is already on its way there via SetName.
+            if old_name.is_empty() {
+                if app.name.is_none() {
+                    app.add_message(format!("you are {}", new_name));
+                    app.name = Some(new_name);
+                }
+                return;
+            }
             app.add_message(format!("{} is now {}", old_name, new_name));
             // Carry any local volume adjustment across the rename.
             app.peer_gains.rename(&old_name, &new_name);
