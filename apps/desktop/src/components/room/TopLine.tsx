@@ -3,7 +3,7 @@
 // breathes. Private channels (no `pub-` prefix) carry a leading dot.
 
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import { state } from "../../lib/store";
+import { pushLog, state } from "../../lib/store";
 import { joinChannel } from "../../lib/actions";
 import { openDm } from "../../lib/dm";
 import { openPalette } from "../../lib/palette";
@@ -31,6 +31,31 @@ export default function TopLine() {
     onCleanup(() => clearInterval(id));
   });
 
+  /// What a room word does depends on where you already are. Somewhere else —
+  /// go there. Here, but looking at settings or history — come back. Here and
+  /// looking at it — the word has nothing left to do, so it hands you the link
+  /// to bring someone else in. Same `tc://` link as `/invite`, and the echo
+  /// above the line reports it, because that is where this interface puts the
+  /// result of anything you asked for.
+  const enter = async (id: string) => {
+    if (state.channel !== id || state.dm) {
+      goto("room");
+      return void joinChannel(id);
+    }
+    if (view() !== "room") return goto("room");
+    try {
+      const link = await cmd.inviteLink();
+      await navigator.clipboard.writeText(link);
+      pushLog(`${link} — ${t("common.copied")}`, "system");
+    } catch (e) {
+      pushLog(`${e}`, "error");
+    }
+  };
+
+  /// The room you are standing in is the one you can hand out.
+  const shareable = (id: string) =>
+    state.channel === id && !state.dm && view() === "room";
+
   const connWord = () => {
     switch (state.conn) {
       case "connected":
@@ -50,11 +75,12 @@ export default function TopLine() {
         {(ch) => (
           <Word
             current={view() === "room" && state.channel === ch.channel_id && !state.dm}
-            title={t("top.in_room", { count: ch.participant_count })}
-            onClick={() => {
-              goto("room");
-              void joinChannel(ch.channel_id);
-            }}
+            title={
+              shareable(ch.channel_id)
+                ? t("top.share_room")
+                : t("top.in_room", { count: ch.participant_count })
+            }
+            onClick={() => void enter(ch.channel_id)}
           >
             {roomLabel(ch.channel_id)}
           </Word>
@@ -73,11 +99,13 @@ export default function TopLine() {
         <Word
           current={view() === "room" && !state.dm}
           title={
-            isPrivateRoom(state.channel!)
-              ? t("top.private_room")
-              : t("top.in_room", { count: state.participants.length })
+            shareable(state.channel!)
+              ? t("top.share_room")
+              : isPrivateRoom(state.channel!)
+                ? t("top.private_room")
+                : t("top.in_room", { count: state.participants.length })
           }
-          onClick={() => goto("room")}
+          onClick={() => void enter(state.channel!)}
         >
           {roomLabel(state.channel!)}
         </Word>
