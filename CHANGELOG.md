@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.15.1] — 2026-08-11
+
+### Added
+- **Click the room you're in to copy an invitation.** Standing in a room and
+  looking at it, a click on its name in the top line puts a `tc://` link on the
+  clipboard — the same one `/invite` gives — ready to send to whoever you want
+  in. Most useful for private rooms: the server never lists those, so a link is
+  the only way in.
+
+### Fixed
+- **The key hints no longer vanish as you type.** The row under the input line
+  disappeared the moment you typed a character, which is exactly when you might
+  have wanted to look something up. It stays put now. The two hints that stop
+  working while you type — `m` for the microphone and `space` for talk, which
+  become ordinary letters once you're writing — go dim in place instead of
+  lying to you.
+
 ## [1.15.0] — 2026-08-11
 
 ### Added

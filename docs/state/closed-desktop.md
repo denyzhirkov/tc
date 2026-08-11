@@ -393,3 +393,23 @@ turned someone down and conclude their microphone is bad.
 Worth keeping: **before building a feature in this repo, check whether the core
 already does it.** Three of the four items above were UI-only, and the fourth
 was two missing lines in a poller that had been diffing the right data all along.
+
+## Two small truths about the composer and the top line (v1.15.1, 2026-08-11)
+
+**Hints that hid.** The key row under the composer was `Show when={hints && !value()}` —
+it left as soon as you typed, taking both the reference and the layout with it.
+Fixed by keeping the row and dimming what stopped being true instead: `Shell`'s
+key handler bails on `isTyping`, so bare letters (`m`, `space`) are shortcuts
+only while the line is *unfocused*. Two consequences worth keeping: the predicate
+is **focus, not emptiness** (a focused-but-empty line already eats `m`), and the
+row must not change size — a map that redraws while you read it is worse than a
+dim line.
+
+**A word whose job depends on where you stand.** The room word in the top line
+had two jobs (go there / come back from settings) and a third state where it had
+none: you are in that room and looking at it. That state now copies the `tc://`
+invite. The result goes to the echo above the input line — both because that is
+the rule for command results here, and because swapping the word for "copied"
+would shove every other room in the line sideways for a second and a half. The
+hover title changes only in the state where the click actually copies, so the
+overload is visible before you commit to it.
