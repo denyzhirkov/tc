@@ -280,3 +280,13 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   writer elides `false` as `None` for opt-in flags; for `agc`, absent means on,
   so the same shortcut would have silently re-enabled it every start. Any
   default-true setting must be written explicitly.
+- **Identity is assigned by the server, so the server must say it out loud.** A
+  client that has not chosen a name is called `user-N` by everyone but itself,
+  and the room finds *you* by matching your name against the people standing in
+  it. `NameChanged { old_name: "", .. }` right after `Welcome` is that
+  statement; an empty old name means "this one is about you". Reusing the
+  variant is what kept the protocol version at 3.
+- **A link is written for readers we do not control.** `invite_url` always
+  writes the port now: omitting the default only worked for our own deep-link
+  parser, and links get pasted into chats, address bars and `/server`. The same
+  rule applies to anything else the app puts on a clipboard.

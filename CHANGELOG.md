@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.18.0] — 2026-08-11
+
+### Added
+- **The technical log has a switch.** Settings → window → "what it's doing"
+  streams the app's own account of itself — connection, audio devices, capture
+  levels — into the room. It was only reachable by typing `/show_dev_logs`,
+  which is a thing you had to know before you needed it.
+
+### Fixed
+- **People who never chose a name had no controls of their own.** The server
+  calls them "user-10" and never said so, so their own app did not know what to
+  call them and could not find them among the people standing in the room: no
+  "go quiet", no "leave", no "you" beside their name, their name did not react
+  to their own voice, and their own words did not fall from it. **This half
+  lives in the server** — the room you connect to has to be updated too.
+- **An invitation link now carries the port.** Links to a server on the usual
+  port left it out, which our own app filled back in but nothing else did — not
+  a person reading it, not a chat client, not pasting it into `/server`.
+
 ## [1.17.0] — 2026-08-11
 
 ### Added

@@ -125,3 +125,36 @@ One deliberate asymmetry: the sound check runs with the user's real AGC setting
 while still forcing denoise off. "How loud am I" is the question that check is
 asked, and answering it through a path the call does not use is the kind of lie
 it exists to catch.
+
+## A client was never told its own name (`zw8tqe`, v1.18.0, 2026-08-11)
+
+Reported as "the other person has no buttons in the room". The cause was four
+levels away from buttons: `server/state.rs` names every registering client
+`user-N`, and nothing ever sent that name back — `Welcome` carries version and
+protocol only. A user who had not set a name locally therefore held `None` while
+the server and every peer called them `user-10`.
+
+Everything in the room keys off `me()`, so one gap broke four things at once:
+the acts row (`anchor()` finds no standing name that is ours) — the visible
+symptom; the "you" tail; the input-peak branch of `levelOf`, so their own name
+never moved with their own voice; and `Falling`, which resolves "you: …" through
+`me()` and so never found a node to drop their own words from. Worth
+remembering as a shape: **a single unknown identity can look like four unrelated
+UI bugs.**
+
+Fix without a protocol bump: right after `Welcome`, the server sends that client
+`NameChanged { old_name: "", new_name }`. Not a new variant — this *is* a name
+change, from nothing to `user-N`, and an empty `old_name` marks it as
+self-identification. Clients adopt it only when they have no name, so a chosen
+name still wins and its `SetName` round-trip is untouched. Old client + new
+server = one cosmetic log line; new client + old server = today's behaviour. The
+three e2e tests had encoded the old handshake and now assert the name arrives.
+
+Deployment note that matters more than the code: **this half is in the server**.
+A client update alone changes nothing.
+
+Same release: `invite_url` stopped stripping the default port. Omitting it was
+correct for exactly one reader — our own `deeplink.rs`, which fills the default
+back in — and wrong for a person, a chat client, or a paste into `/server`. Bare
+IPv6 literals are bracketed on the way out, which the old "does it contain a
+colon" test could never have got right.
