@@ -323,13 +323,76 @@ textarea {
   margin-left: 0.12em;
 }
 
-/* The volume knob for one person, in front of their own voice — positioned for
-   the same reason `.acts` is: this is a thing you click, not scenery. */
+/* The knob does not arrive on top of the name — it comes up from underneath
+   it. The name falls away (scale, opacity and blur, driven per frame in
+   `Cast`, because the loop owns those properties), and the knob rises out of
+   the same depth in the same moment. No panel, no border: the two are one
+   movement, so nothing needs a lid. */
 .tune {
-  position: relative;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
   display: flex;
   justify-content: center;
+  /* Absolute positioning would otherwise take its width from the name behind
+     it, and a three-letter name folds the row into three lines. */
+  width: max-content;
   font-size: 11px;
+  transform: translate(-50%, -50%) scale(0.72);
+  opacity: 0;
+  filter: blur(4px);
+  /* Sunk, it must not catch the cursor on its way to something else. */
+  pointer-events: none;
+  transition:
+    opacity 280ms ease,
+    filter 280ms ease,
+    transform 280ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.tune.up {
+  transform: translate(-50%, -50%) scale(1);
+  opacity: 1;
+  filter: blur(0);
+  pointer-events: auto;
+}
+/* The knob is wider than a name and neighbours sit close, so it needs ground
+   to be read against — but ground, not a panel: a pool of the room's own
+   background with no edge anywhere, fading out long before it ends. It rises
+   and sinks with the knob because it is part of it. */
+.tune::before {
+  content: "";
+  position: absolute;
+  inset: -16px -30px;
+  z-index: -1;
+  background: radial-gradient(
+    ellipse at center,
+    var(--c-bg) 42%,
+    transparent 78%
+  );
+}
+/* One line, always: this panel covers a name, so it must not grow taller than
+   the thing it stands in for. */
+.tune .opts {
+  flex-wrap: nowrap;
+  gap: 9px;
+}
+
+/* Everyone else steps back while one person is being tuned. The dimming is on
+   `.person`, never on `.name` — the frame loop writes the name's opacity every
+   frame from its voice level, and the two would fight. Nesting multiplies
+   instead. */
+.cast .person {
+  transition: opacity 220ms ease;
+}
+.cast.deep .person:not(.tuned) {
+  opacity: 0.28;
+}
+/* Falling speech is a sibling painted over the whole stage, so while a knob is
+   out the room comes forward — words are ambience, this is a thing you are
+   using. It drops back the moment the knob does. */
+.cast.tuning {
+  position: relative;
+  z-index: 2;
 }
 
 .acts {
@@ -614,7 +677,9 @@ textarea {
   gap: 3px;
   align-items: flex-end;
   height: 16px;
-  cursor: ew-resize;
+  /* Not `ew-resize`: nothing here is dragged. Every tick is a click, and the
+     two ends are words — so the cursor promises exactly that. */
+  cursor: pointer;
 }
 .meter i {
   width: 4px;
@@ -629,6 +694,16 @@ textarea {
   outline: 1px solid var(--c-muted);
   outline-offset: 4px;
 }
+/* The two ends of a scale are the smallest targets in the interface — one
+   glyph each. The padding is the hit area and the negative margin gives it
+   back to the layout, so they are easy to hit without pushing the row apart. */
+.meter-end .word {
+  font-size: 16px;
+  line-height: 1;
+  padding: 5px 8px;
+  margin: -5px -4px;
+}
+
 /* A chosen device that is not plugged in: still yours, just not here. */
 .word:disabled {
   cursor: default;
@@ -927,6 +1002,15 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .sealed::before {
     animation: none;
+  }
+  /* No frame loop here, so nothing sinks the name out of the way — the knob
+     has to hide it outright, and `visibility` is the one property the loop's
+     inline opacity cannot overrule. */
+  .tune {
+    transition: none;
+  }
+  .cast.deep .person.tuned .name {
+    visibility: hidden;
   }
   .said {
     animation-duration: 0.01ms;

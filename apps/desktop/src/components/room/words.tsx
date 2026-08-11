@@ -115,9 +115,11 @@ export function Meter(props: {
     );
   return (
     <span class="opts">
-      <Word tone="quiet" title={t("set.less", { n: FINE })} onClick={() => nudge(-1)}>
-        −
-      </Word>
+      <span class="meter-end">
+        <Word tone="quiet" title={t("set.less", { n: FINE })} onClick={() => nudge(-1)}>
+          −
+        </Word>
+      </span>
       <span
         class="meter"
         role="slider"
@@ -147,9 +149,11 @@ export function Meter(props: {
           )}
         </For>
       </span>
-      <Word tone="quiet" title={t("set.more", { n: FINE })} onClick={() => nudge(1)}>
-        +
-      </Word>
+      <span class="meter-end">
+        <Word tone="quiet" title={t("set.more", { n: FINE })} onClick={() => nudge(1)}>
+          +
+        </Word>
+      </span>
       <span class="meter-val">
         {props.value}
         {props.unit ?? ""}

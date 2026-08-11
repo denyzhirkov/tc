@@ -30,8 +30,13 @@ const STAND_MAX = 14;
 const SWAP_EVERY = 2.5;
 /// Crowded rooms recede harder so a small name still reads as speaking.
 const CROWD_AT = 8;
-/// How long a volume knob stays out after you stop touching it.
-const TUNE_LINGER = 6000;
+/// How long you have to rest on a name before its volume knob appears.
+const TUNE_DELAY = 500;
+/// How long the knob stays after the cursor has left.
+const TUNE_LINGER = 1500;
+/// How long the knob takes to sink back into the name. Must match the
+/// transition on `.tune` in styles.css, or it is taken away mid-descent.
+const TUNE_FADE = 280;
 /// Loudest a peer can be made, matching `config::PEER_VOL_MAX_PCT`.
 const PEER_VOL_MAX = 200;
 
@@ -65,15 +70,61 @@ export default function Cast() {
   /// Whose voice you are currently tuning. One at a time: this is an aside in
   /// the middle of a conversation, not a mixing desk.
   const [tuning, setTuning] = createSignal<string | null>(null);
-  let tuneTimer: number | undefined;
-  /// It closes itself, because nobody thinks to put a volume knob away — but
-  /// only after a pause, so a series of nudges keeps it open.
-  const holdTuning = (name: string | null) => {
-    if (tuneTimer) clearTimeout(tuneTimer);
-    setTuning(name);
-    if (name) tuneTimer = window.setTimeout(() => setTuning(null), TUNE_LINGER);
+  /// Mounted and *up* are two different things: the knob has to exist for a
+  /// moment before it can rise, and again after it has sunk, or there would be
+  /// nothing left on screen to animate on the way out.
+  const [surfaced, setSurfaced] = createSignal(false);
+  let openTimer: number | undefined;
+  let closeTimer: number | undefined;
+  let sinkTimer: number | undefined;
+  const stopTimers = () => {
+    if (openTimer) clearTimeout(openTimer);
+    if (closeTimer) clearTimeout(closeTimer);
+    openTimer = closeTimer = undefined;
   };
-  onCleanup(() => tuneTimer && clearTimeout(tuneTimer));
+  onCleanup(() => {
+    stopTimers();
+    if (sinkTimer) clearTimeout(sinkTimer);
+  });
+
+  const tunable = (name: string) => name !== me() && !state.dm;
+
+  /// Bring it up out of the name: mount first, rise on the next frame, so the
+  /// transition has a starting point to travel from.
+  const raise = (name: string) => {
+    if (sinkTimer) clearTimeout(sinkTimer);
+    setTuning(name);
+    requestAnimationFrame(() => setSurfaced(true));
+  };
+
+  /// Let it sink back before taking it away — the name is rising through the
+  /// same moment (`sunk` in the frame loop below), and one without the other
+  /// reads as a glitch rather than a return.
+  const sink = () => {
+    setSurfaced(false);
+    if (sinkTimer) clearTimeout(sinkTimer);
+    sinkTimer = window.setTimeout(() => setTuning(null), TUNE_FADE);
+  };
+
+  /// The pause before the knob appears is the whole design: a cursor crosses
+  /// names on its way elsewhere, and a panel that opened instantly would keep
+  /// jumping out at people who were only passing through.
+  const hoverIn = (name: string) => {
+    if (!tunable(name)) return;
+    stopTimers();
+    if (tuning() === name) return void setSurfaced(true);
+    // Moving to someone else sends the old one back down at once — you are
+    // pointing at this person now.
+    if (tuning()) sink();
+    openTimer = window.setTimeout(() => raise(name), TUNE_DELAY);
+  };
+
+  /// Leaving is forgiving: the knob is small, and clipping a corner of it on
+  /// the way to "+" should not take it away.
+  const hoverOut = () => {
+    stopTimers();
+    closeTimer = window.setTimeout(sink, TUNE_LINGER);
+  };
 
   const volumeOf = (name: string) => state.peerVolumes[name] ?? 100;
 
@@ -159,6 +210,11 @@ export default function Cast() {
 
     // ── the only animation loop in the app ──
     const levels = new Map<string, number>();
+    /// How far each name has fallen away behind its own volume knob, 0..1.
+    /// This lives here rather than in CSS because the loop rewrites every
+    /// name's opacity and transform each frame — a stylesheet would be
+    /// overwritten sixty times a second.
+    const sunk = new Map<string, number>();
     let roomHue = 40;
     let roomLit = 0;
     let paintedHue = -1;
@@ -176,14 +232,25 @@ export default function Cast() {
 
       let loudName: string | null = null;
       let loudLevel = 0;
+      // Only one name is ever behind a knob, and only while it is up.
+      const deep = surfaced() ? tuning() : null;
 
       for (const [name, el] of nodes) {
         const goal = levelOf(name);
         const cur = levels.get(name) ?? 0;
         const next = cur + (goal - cur) * Math.min(1, dt * 8);
         levels.set(name, next);
-        el.style.transform = `scale(${(0.88 + next * swing).toFixed(3)})`;
-        el.style.opacity = (floor + next * (1 - floor)).toFixed(3);
+
+        // Falling inward: smaller, dimmer and out of focus, the same distance
+        // the knob travels the other way.
+        const was = sunk.get(name) ?? 0;
+        const depth = was + ((name === deep ? 1 : 0) - was) * Math.min(1, dt * 9);
+        sunk.set(name, depth);
+
+        el.style.transform = `scale(${((0.88 + next * swing) * (1 - depth * 0.26)).toFixed(3)})`;
+        el.style.opacity = ((floor + next * (1 - floor)) * (1 - depth)).toFixed(3);
+        if (depth > 0.004) el.style.filter = `blur(${(depth * 3).toFixed(2)}px)`;
+        else if (el.style.filter) el.style.filter = "";
         painters.get(name)?.(next, now);
         if (next > 0.1) spokeAt.set(name, t);
         if (next > loudLevel) {
@@ -274,7 +341,11 @@ export default function Cast() {
     <div
       class="cast"
       ref={host}
-      classList={{ crowded: standing().length > CROWD_AT }}
+      classList={{
+        crowded: standing().length > CROWD_AT,
+        tuning: tuning() !== null,
+        deep: surfaced(),
+      }}
       style={{ "--nameSize": `${size().toFixed(1)}px` }}
     >
       <Show
@@ -295,7 +366,15 @@ export default function Cast() {
               >
                 <For each={rank}>
                   {(name) => (
-                    <div class="person">
+                    <div
+                      class="person"
+                      classList={{ tuned: tuning() === name }}
+                      // On the person, not the name: the knob sits over the
+                      // name, so a handler on the name itself would count
+                      // reaching for "+" as leaving.
+                      onMouseEnter={() => hoverIn(name)}
+                      onMouseLeave={hoverOut}
+                    >
                       <button
                         ref={bind(name)}
                         class="name"
@@ -303,12 +382,13 @@ export default function Cast() {
                           hushed: name === me() && !state.dm && !!state.status?.muted,
                         }}
                         style={{ color: tint(name) }}
-                        title={name === me() ? t("room.you") : t("room.tune")}
+                        title={name === me() ? t("room.you") : undefined}
+                        // Hovering is the way in; a click just skips the wait,
+                        // which is what a keyboard or a touchscreen needs.
                         onClick={() => {
-                          // Your own voice isn't a peer gain, and a DM carries
-                          // no voice at all.
-                          if (name === me() || state.dm) return;
-                          holdTuning(tuning() === name ? null : name);
+                          if (!tunable(name)) return;
+                          stopTimers();
+                          raise(name);
                         }}
                       >
                         {name}
@@ -325,16 +405,13 @@ export default function Cast() {
                         </Show>
                       </button>
                       <Show when={tuning() === name}>
-                        <div class="tune">
+                        <div class="tune" classList={{ up: surfaced() }}>
                           <Meter
                             label={t("room.tune")}
                             value={volumeOf(name)}
                             max={PEER_VOL_MAX}
                             unit="%"
-                            set={(v) => {
-                              holdTuning(name);
-                              void setPeerVolume(name, v);
-                            }}
+                            set={(v) => void setPeerVolume(name, v)}
                           />
                         </div>
                       </Show>
