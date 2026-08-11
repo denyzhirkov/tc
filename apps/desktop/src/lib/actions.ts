@@ -23,6 +23,19 @@ export async function toggleMute() {
   }
 }
 
+/// How loud one peer is *for you*. Applied on the receive path before mixing
+/// and never sent anywhere — the relay holds no key and could not do this.
+/// The store is written first so the meter answers the click immediately; the
+/// backend is the one that persists it.
+export async function setPeerVolume(name: string, pct: number) {
+  update.peerVolume(name, pct);
+  try {
+    await cmd.setPeerVolume(name, pct);
+  } catch (e) {
+    pushLog(`error: ${e}`, "error");
+  }
+}
+
 /// Toggle between the two "live" modes. The third (open = always-send) is
 /// reserved for settings — too easy to enable by accident from a click.
 export async function toggleVadPtt() {

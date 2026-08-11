@@ -15,14 +15,14 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { state } from "../../lib/store";
 import { tint, hueOf } from "../../lib/tint";
-import { leaveChannel, toggleMute } from "../../lib/actions";
+import { leaveChannel, setPeerVolume, toggleMute } from "../../lib/actions";
 import { closeDm } from "../../lib/dm";
 import { tweaks } from "../../lib/theme";
 import { t } from "../../lib/i18n";
 import { nameNodes } from "../../lib/stage";
 import { Trace } from "../../lib/trace";
 import { Lava } from "../../lib/lava";
-import { Word } from "./words";
+import { Meter, Word } from "./words";
 
 /// Most names that ever stand at once. Past this the room stops being a room.
 const STAND_MAX = 14;
@@ -30,6 +30,10 @@ const STAND_MAX = 14;
 const SWAP_EVERY = 2.5;
 /// Crowded rooms recede harder so a small name still reads as speaking.
 const CROWD_AT = 8;
+/// How long a volume knob stays out after you stop touching it.
+const TUNE_LINGER = 6000;
+/// Loudest a peer can be made, matching `config::PEER_VOL_MAX_PCT`.
+const PEER_VOL_MAX = 200;
 
 export default function Cast() {
   const me = () => state.status?.name ?? null;
@@ -57,6 +61,21 @@ export default function Cast() {
   let host: HTMLDivElement | undefined;
 
   const showAll = () => tweaks.crowd === "all";
+
+  /// Whose voice you are currently tuning. One at a time: this is an aside in
+  /// the middle of a conversation, not a mixing desk.
+  const [tuning, setTuning] = createSignal<string | null>(null);
+  let tuneTimer: number | undefined;
+  /// It closes itself, because nobody thinks to put a volume knob away — but
+  /// only after a pause, so a series of nudges keeps it open.
+  const holdTuning = (name: string | null) => {
+    if (tuneTimer) clearTimeout(tuneTimer);
+    setTuning(name);
+    if (name) tuneTimer = window.setTimeout(() => setTuning(null), TUNE_LINGER);
+  };
+  onCleanup(() => tuneTimer && clearTimeout(tuneTimer));
+
+  const volumeOf = (name: string) => state.peerVolumes[name] ?? 100;
 
   const levelOf = (name: string): number => {
     if (state.dm) return 0;
@@ -284,13 +303,41 @@ export default function Cast() {
                           hushed: name === me() && !state.dm && !!state.status?.muted,
                         }}
                         style={{ color: tint(name) }}
-                        title={name === me() ? t("room.you") : name}
+                        title={name === me() ? t("room.you") : t("room.tune")}
+                        onClick={() => {
+                          // Your own voice isn't a peer gain, and a DM carries
+                          // no voice at all.
+                          if (name === me() || state.dm) return;
+                          holdTuning(tuning() === name ? null : name);
+                        }}
                       >
                         {name}
                         <Show when={name === me()}>
                           <span class="name-tail">{t("room.you_tail")}</span>
                         </Show>
+                        {/* Someone you have turned down stays turned down for
+                            every future call — that must be visible without
+                            opening anything. */}
+                        <Show when={name !== me() && volumeOf(name) !== 100}>
+                          <span class="name-mark" aria-hidden="true">
+                            °
+                          </span>
+                        </Show>
                       </button>
+                      <Show when={tuning() === name}>
+                        <div class="tune">
+                          <Meter
+                            label={t("room.tune")}
+                            value={volumeOf(name)}
+                            max={PEER_VOL_MAX}
+                            unit="%"
+                            set={(v) => {
+                              holdTuning(name);
+                              void setPeerVolume(name, v);
+                            }}
+                          />
+                        </div>
+                      </Show>
                       <Show
                         when={tweaks.voiceLook === "lava"}
                         fallback={
