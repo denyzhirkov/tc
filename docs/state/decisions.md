@@ -237,3 +237,27 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   width with auto margins so the label/value boundary is identical down the
   column. Per-row centring (`align-items: center` on the flex column) makes that
   boundary jitter with the content, and that seam is the line the eye follows.
+- **An element that overlays its own trigger must move the hover handlers to a
+  shared parent.** The per-peer volume knob covers the name that opens it, so
+  `mouseleave` on the name fires the moment you reach for the control. The
+  handlers live on `.person`. Any future hover-revealed overlay in the room has
+  this same trap.
+- **Anything the frame loop writes cannot be animated in CSS.** `Cast` sets each
+  name's `opacity` and `transform` every frame; inline style beats a stylesheet,
+  so a transition there is silently overwritten. Effects on names are expressed
+  as a smoothed factor inside the loop and *multiplied into* the live value
+  (`opacity * (1 - depth)`), and effects on their surroundings go on a parent
+  (`.person`), where nesting multiplies for free. The exception is `visibility`,
+  which inline `opacity` cannot overrule — that is how the reduced-motion path
+  hides a name with no loop running.
+- **A reverse animation requires the node to outlive the state change.** Closing
+  the knob clears `surfaced` and unmounts one transition later (`TUNE_FADE`, in
+  step with the CSS). Unmounting on the decision gives an element that blinks
+  out while its counterpart is still moving.
+- **Falling text is driven by "was this just said", not by "is this new to me".**
+  Every live chat line is stamped with the local clock on arrival and stored
+  history keeps its original timestamp, so freshness distinguishes speech from a
+  replay no matter how the replay reaches the log (rejoin, reconnect,
+  `/history`). An id-watermark alone cannot: on a rejoin the history is genuinely
+  new to the component. Any future "react to new messages" code in the room needs
+  the same test.

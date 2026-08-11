@@ -413,3 +413,49 @@ the rule for command results here, and because swapping the word for "copied"
 would shove every other room in the line sideways for a second and a half. The
 hover title changes only in the state where the click actually copies, so the
 overload is visible before you commit to it.
+
+## The volume knob rises out of the name (`7wgyjw`, v1.16.0, 2026-08-11)
+
+The click-to-open knob from `s4evgw` lasted one release. Hovering is the right
+verb for something you reach for mid-conversation — but hovering needs a delay
+(0.5s in, 1.5s out), because a cursor crosses names on its way somewhere else
+and a control with no wait ambushes everyone it passes.
+
+- **Handlers on `.person`, not on `.name`.** The knob covers the name, so a
+  listener on the name would treat the move toward "+" as a departure. Anything
+  that overlays its own trigger has this bug waiting for it.
+- **The animation could not live in CSS.** `Cast`'s frame loop writes every
+  name's `opacity` and `transform` each frame from its voice level, and inline
+  style beats a stylesheet — a CSS transition on the name would be overwritten
+  sixty times a second. So each name carries a `sunk` factor smoothed in the
+  loop and *multiplied into* its live values: `opacity * (1 - depth)`,
+  `scale * (1 - 0.26·depth)`, plus a blur written only while depth > 0. The two
+  movements compose instead of fighting. Same reason the dimming of everyone
+  else is on `.person` (a parent) rather than `.name`: nesting multiplies.
+- **A reverse animation needs the element to outlive the decision.** Closing
+  sets `surfaced = false` and only unmounts `TUNE_FADE` (280ms) later, matching
+  the CSS transition. Unmounting immediately gives a knob that vanishes while
+  the name is still rising — which reads as a glitch, not a return.
+- **No panel, but not nothing.** The owner rejected the bordered panel; the
+  knob is still wider than a name with neighbours close by, so the ticks landed
+  on other people's letters. Resolution: a radial pool of `--c-bg` with no edge
+  at all, sized past the knob and fading out well before it ends — the dark the
+  knob rose from, rather than a lid over the room.
+- **`prefers-reduced-motion` has no frame loop**, so nothing sinks the name out
+  of the way. There, the tuned name is `visibility: hidden` — the one property
+  the loop's inline `opacity` cannot overrule.
+
+Two rules generalised to every meter in the app: `cursor: pointer` (nothing is
+dragged — each tick is a click and the ends are words), and a 26×26 hit box on
+`−`/`+` with negative margins so the enlarged target costs the row no width.
+
+**Rejoining replayed the room's past as falling text.** `Falling` guards its
+mount (`seen = last id`), which covers the first render — but a rejoin appends
+the saved history to a log the component is *already* watching, so fifty stored
+lines arrived as fifty new ids and dropped simultaneously into an illegible
+pile. The fix is semantic rather than a batch-size heuristic: every live line is
+stamped from the local clock the moment it arrives (`wire.ts` for incoming,
+`commands.ts` for your own), while history carries its original `ts_unix`, so a
+line older than `JUST_SAID` (5s) is something read out of storage and does not
+fall. A chat line with no stamp at all still falls — that would be a bug worth
+seeing rather than swallowing.

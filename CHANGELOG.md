@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.16.0] — 2026-08-11
+
+### Changed
+- **A person's volume opens by resting on their name, not by clicking it.** Hold
+  the cursor on someone for half a second and their name sinks away while the
+  scale rises out of it; move off and it goes back a second and a half later.
+  Everyone else steps back while you're adjusting, so there is one thing to look
+  at. Clicking still works and skips the wait.
+- **The scales say what they are.** Hovering one shows a pointer instead of a
+  drag arrow — nothing here is dragged, every tick is a click — and the "−" and
+  "+" at the ends are large enough to hit without aiming.
+
+### Fixed
+- **Rejoining a room no longer dumps its past into the air.** Coming back to a
+  room replayed everything said there before as falling text, all at once and on
+  top of itself. Only what is said now falls; what was said before is read in
+  "what was said".
+
 ## [1.15.1] — 2026-08-11
 
 ### Added
