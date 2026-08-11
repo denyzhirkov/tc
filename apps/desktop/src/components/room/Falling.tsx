@@ -16,6 +16,11 @@ import { nameNodes, speakerOf } from "../../lib/stage";
 import { tint } from "../../lib/tint";
 
 const CROWD_AT = 6;
+/// How old a line may be and still be treated as something just said. Live
+/// lines are stamped from the local clock at the moment they arrive (`wire.ts`,
+/// and your own in `commands.ts`), so anything older than this came out of
+/// storage rather than out of somebody's mouth.
+const JUST_SAID = 5;
 
 export default function Falling() {
   let host: HTMLDivElement | undefined;
@@ -97,10 +102,17 @@ export default function Falling() {
     const l = lines();
     if (!l.length) return;
     const me = state.status?.name ?? null;
+    const now = Date.now() / 1000;
     for (const line of l) {
       if (line.id <= seen) continue;
       seen = line.id;
       if (line.kind !== "chat" && line.kind !== "dm") continue;
+      // Joining a room appends its saved history to the log, and on a rejoin
+      // those lines are all new to this component — fifty of them arriving at
+      // once used to drop as one illegible pile. Only speech falls; the past is
+      // read in the history scene. `undefined` still falls, because a line
+      // without a stamp is a bug we would rather see than silently swallow.
+      if (line.ts !== undefined && now - line.ts > JUST_SAID) continue;
       const parsed = speakerOf(line.text);
       if (!parsed) continue;
       // Your own sends are logged as "you: …" — resolve that to your name so
