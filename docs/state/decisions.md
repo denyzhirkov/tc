@@ -268,3 +268,15 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   count cost Windows users 6 dB (v1.16.1). The decision is made from a slow
   per-channel envelope and frozen during silence. Any future format we do not
   choose ourselves needs the same suspicion.
+- **A manual gain is not a substitute for an automatic one.** It scales the
+  noise floor by the same factor as the voice, so a quiet microphone stays
+  quiet-sounding however far the slider goes. `client/agc.rs` (v1.17.0) is the
+  answer, and it is on by default because every app this one is compared against
+  levels the microphone itself. Its two load-bearing rules: never adapt on a
+  frame below the speech floor (adapting in pauses is what "bad AGC" means), and
+  always follow the gain with a soft limiter (useful gain exceeds the headroom
+  of a loud syllable).
+- **An on-by-default flag may never be persisted by omission.** The settings
+  writer elides `false` as `None` for opt-in flags; for `agc`, absent means on,
+  so the same shortcut would have silently re-enabled it every start. Any
+  default-true setting must be written explicitly.

@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.17.0] — 2026-08-11
+
+### Added
+- **Your microphone level is kept even, automatically.** Quiet speech is brought
+  up and loud speech held back, so you reach the people listening at the same
+  loudness as everyone else instead of at whatever your microphone happens to
+  give. This is what the apps you are used to have been doing all along, and
+  what a manual gain slider cannot do: turning that up raises the hiss by
+  exactly as much as the voice. **On by default** — settings → sound → "my
+  level" turns it off, and your choice is remembered. If you had pushed "my
+  voice" up to compensate for a quiet microphone, put it back to 100%: there is
+  nothing left to compensate for.
+
+### Fixed
+- **Right-click no longer opens a browser menu.** On Windows it offered Back,
+  Reload, Save as and Inspect, which belong to a web page and not to this. Note
+  that right-click no longer offers Paste in the input line either — paste is
+  ⌘V / Ctrl+V.
+
 ## [1.16.1] — 2026-08-11
 
 ### Fixed

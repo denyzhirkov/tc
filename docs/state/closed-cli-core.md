@@ -85,3 +85,43 @@ signal`.
 Still unverified by us: nobody here has Windows. If that log line reads `1ch`,
 the cause is elsewhere — start with the Windows per-device level and Microphone
 Boost, which sit before we ever see the samples.
+
+## Automatic capture level (`9ezeql`, v1.17.0, 2026-08-11)
+
+Follow-on from `4s219r`. The Windows downmix fix was real but not the whole
+story: the owner's fifine stayed quiet even at the 200% manual ceiling. The
+sentence that settled it — "this same microphone works fine in Discord and
+Telemost" — is decisive, because both are WebRTC with AGC enabled by default.
+Nothing was wrong with the microphone, with Windows, or with the downmix. We
+simply had no automatic level at all, and a manual gain cannot substitute for
+one: it multiplies the noise floor by exactly the same factor as the voice,
+which is why 200% sounded loud-but-wrong rather than loud.
+
+`client/agc.rs` targets `AGC_TARGET_RMS` with the gain clamped to
+[−12 dB, +18 dB]. Two properties are the whole design:
+
+- **It learns only from speech.** Frames under `AGC_FLOOR_RMS` do not move the
+  gain. An AGC that adapts in a pause is a machine for winding up room noise
+  between sentences — the artefact everyone recognises as bad automatic gain.
+- **Down fast, up slow** (`AGC_ATTACK` 0.35 vs `AGC_RELEASE` 0.03 per 20 ms
+  frame). Coming down is urgent — the next syllable would clip. Going up is
+  cosmetic and takes about a second, so it is inaudible.
+
+A soft limiter (knee at `AGC_KNEE`, asymptotic to 1.0) is part of the feature,
+not a refinement: any gain worth having exceeds the headroom of a loud syllable,
+and those peaks would clip inside Opus. Placed after denoise (level measured on
+cleaned speech, not on noise) and before the RMS meter (so "my voice" shows what
+is actually sent).
+
+**Default on**, reversing the plan stated when the work was scoped. Every
+comparable app levels the microphone itself, so an off-by-default switch would
+have left a quiet microphone quiet for everyone who never found it. That default
+came with a trap worth remembering: the settings writer elided `false` as `None`
+for the other flags, and with an on-by-default field an absent value reads as
+"on" — saving "off" would have undone itself at the next start. It is written
+explicitly now.
+
+One deliberate asymmetry: the sound check runs with the user's real AGC setting
+while still forcing denoise off. "How loud am I" is the question that check is
+asked, and answering it through a path the call does not use is the kind of lie
+it exists to catch.
