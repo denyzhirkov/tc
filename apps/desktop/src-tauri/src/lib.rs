@@ -170,6 +170,7 @@ pub fn run() {
             commands::set_voice_mode,
             commands::set_paranoid,
             commands::set_denoise,
+            commands::set_agc,
             commands::ptt_press,
             commands::ptt_release,
             audio_cmd::list_input_devices,

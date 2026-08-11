@@ -137,6 +137,27 @@ pub const DOWNMIX_SILENCE_FLOOR: f32 = 1.0e-5;
 /// purpose: this answers "how is this device wired", not "who is talking now".
 pub const DOWNMIX_SMOOTHING: f32 = 0.05;
 
+// ── Automatic capture level (AGC) ────────────────────────────────────────
+// Opt-in. A manual gain multiplies the noise floor along with the voice, so a
+// quiet microphone stays quiet at any slider position; this keeps speech at a
+// target level instead. See `client/agc.rs`.
+/// Where speech is aimed, as frame RMS. About −21 dBFS — loud enough to match
+/// a laptop's own processed microphone, short of the headroom a shout needs.
+pub const AGC_TARGET_RMS: f32 = 0.09;
+/// Most the gain may ever help (≈ +18 dB) and most it may hold back (−12 dB).
+pub const AGC_MAX_GAIN: f32 = 8.0;
+pub const AGC_MIN_GAIN: f32 = 0.25;
+/// Per-frame approach when coming down. Fast: the next syllable would arrive
+/// over-amplified otherwise.
+pub const AGC_ATTACK: f32 = 0.35;
+/// Per-frame approach when going up — about a second, so nobody hears it.
+pub const AGC_RELEASE: f32 = 0.03;
+/// Below this frame RMS the gain does not move at all. An AGC that adapts in a
+/// pause is a machine for amplifying room noise between sentences.
+pub const AGC_FLOOR_RMS: f32 = 0.004;
+/// Where the limiter starts compressing instead of passing through.
+pub const AGC_KNEE: f32 = 0.8;
+
 // ── VAD ──────────────────────────────────────────────────────────────────
 
 /// RMS energy threshold for voice activity detection.

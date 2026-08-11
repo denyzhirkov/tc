@@ -92,6 +92,10 @@ async fn main() -> Result<()> {
     if user_settings.denoise == Some(true) {
         app.denoise.store(true, Ordering::Relaxed);
     }
+    // On unless turned off: every app this one is compared against levels the
+    // microphone by default, and a quiet mic is otherwise quiet forever.
+    app.agc
+        .store(user_settings.agc.unwrap_or(true), Ordering::Relaxed);
     let mut terminal = tui::init_terminal()?;
 
     // TOFU state for TLS certificate verification
@@ -398,6 +402,7 @@ async fn handle_command(
         }
         "/paranoid" => return cmd_paranoid(app, arg),
         "/denoise" => return cmd_denoise(app, arg),
+        "/agc" => return cmd_agc(app, arg),
         "/trust" => {
             return cmd_trust(
                 app,
@@ -634,6 +639,7 @@ fn cmd_help(app: &mut tui::App) {
         "  /leave (/l)        leave current channel",
         "  /echotest (/echo)  5s mic+connection check (hear yourself back)",
         "  /denoise <on|off>  RNNoise mic noise suppression",
+        "  /agc <on|off>      automatic mic level (keeps speech at a target loudness)",
         "  /paranoid <on|off> hide speaking patterns from the server (constant rate)",
         "  /invite (/i)       tc:// link to current server/channel",
         "  /mute (/m)         toggle mute",
@@ -717,6 +723,29 @@ fn cmd_leave(
     app.participants.clear();
     app.voice_join_params = None;
     app.rejoin_channel = None;
+}
+
+fn cmd_agc(app: &mut tui::App, arg: Option<&str>) {
+    let cur = app.agc.load(Ordering::Relaxed);
+    let next = match arg.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("on") | Some("true") | Some("1") => true,
+        Some("off") | Some("false") | Some("0") => false,
+        None | Some("") => !cur,
+        _ => {
+            app.add_message("usage: /agc <on|off>".into());
+            return;
+        }
+    };
+    app.agc.store(next, Ordering::Relaxed);
+    save_settings(app);
+    app.add_message(
+        if next {
+            "automatic level ON — quiet speech is brought up, loud speech held back"
+        } else {
+            "automatic level OFF"
+        }
+        .into(),
+    );
 }
 
 fn cmd_denoise(app: &mut tui::App, arg: Option<&str>) {
@@ -940,6 +969,7 @@ async fn handle_server_message(
                 my_name,
                 app.peer_gains.clone(),
                 app.denoise.clone(),
+                app.agc.clone(),
                 app.paranoid.clone(),
                 false,
             )
@@ -981,6 +1011,11 @@ async fn handle_server_message(
                 my_name,
                 app.peer_gains.clone(),
                 Arc::new(AtomicBool::new(false)),
+                // Unlike denoise, the automatic level follows the real setting
+                // here: "how loud am I" is the question a sound check is asked,
+                // and answering it with a path the call does not use would be a
+                // lie of exactly the kind this check exists to catch.
+                app.agc.clone(),
                 Arc::new(AtomicBool::new(false)),
                 true,
             )
@@ -1358,6 +1393,10 @@ fn build_settings(app: &tui::App) -> settings::UserSettings {
         } else {
             None
         },
+        // Always written, never elided: with the default on, an absent value
+        // means "on", so saving "off" as absence would silently undo it at the
+        // next start.
+        agc: Some(app.agc.load(Ordering::Relaxed)),
         hotkeys: Default::default(),
         notifications: None,
         autostart: None,
@@ -1406,6 +1445,7 @@ async fn restart_voice(
         my_name,
         app.peer_gains.clone(),
         app.denoise.clone(),
+        app.agc.clone(),
         app.paranoid.clone(),
         false,
     )

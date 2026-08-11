@@ -34,6 +34,7 @@ pub struct AppStatus {
     pub vad_level_pct: u32,
     pub paranoid: bool,
     pub denoise: bool,
+    pub agc: bool,
     pub notifications: bool,
     pub close_to_tray: bool,
     pub autostart: bool,
@@ -64,6 +65,7 @@ pub async fn app_status(state: CoreState<'_>) -> Result<AppStatus, String> {
         vad_level_pct: c.vad_level_pct,
         paranoid: c.paranoid.load(Ordering::Relaxed),
         denoise: c.denoise.load(Ordering::Relaxed),
+        agc: c.agc.load(Ordering::Relaxed),
         notifications: c.notifications,
         close_to_tray: c.close_to_tray.load(Ordering::Relaxed),
         autostart: c.autostart,
@@ -270,6 +272,15 @@ pub async fn set_paranoid(state: CoreState<'_>, enabled: bool) -> Result<(), Str
     Ok(())
 }
 
+/// Toggle the automatic capture level. Applies live mid-call.
+#[tauri::command]
+pub async fn set_agc(state: CoreState<'_>, enabled: bool) -> Result<(), String> {
+    let c = state.lock().await;
+    c.agc.store(enabled, Ordering::Relaxed);
+    c.save();
+    Ok(())
+}
+
 /// Toggle RNNoise mic noise suppression. Applies live mid-call.
 #[tauri::command]
 pub async fn set_denoise(state: CoreState<'_>, enabled: bool) -> Result<(), String> {
@@ -309,6 +320,7 @@ pub async fn export_settings(state: CoreState<'_>) -> Result<String, String> {
         voice_mode: Some(c.voice_mode.as_str().to_string()),
         paranoid: Some(c.paranoid.load(Ordering::Relaxed)),
         denoise: Some(c.denoise.load(Ordering::Relaxed)),
+        agc: Some(c.agc.load(Ordering::Relaxed)),
         hotkeys: c.hotkeys.clone(),
         notifications: Some(c.notifications),
         autostart: Some(c.autostart),
@@ -351,6 +363,9 @@ pub async fn import_settings(state: CoreState<'_>, json: String) -> Result<(), S
     }
     if let Some(v) = s.paranoid {
         c.paranoid.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = s.agc {
+        c.agc.store(v, Ordering::Relaxed);
     }
     if let Some(v) = s.denoise {
         c.denoise.store(v, Ordering::Relaxed);

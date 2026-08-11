@@ -414,6 +414,10 @@ pub async fn start_voice(
     // Noise suppression (RNNoise): clean the mic before encoding. Read live on
     // the capture thread so the toggle applies mid-call.
     denoise: Arc<AtomicBool>,
+    // Automatic capture level (`agc.rs`): keep speech at a target level instead
+    // of multiplying whatever the microphone gives. Read live on the capture
+    // thread so the toggle applies mid-call.
+    agc: Arc<AtomicBool>,
     // Paranoid (traffic-analysis-resistant) mode: send a constant packet rate
     // of flat-size frames even in silence/mute, so the relay can't infer who is
     // speaking when. Read live on the capture thread so the toggle applies
@@ -504,6 +508,7 @@ pub async fn start_voice(
         stop: handle.stop.clone(),
         stream_failed: handle.capture_failed.clone(),
         denoise: denoise.clone(),
+        agc: agc.clone(),
         paranoid: paranoid.clone(),
     });
 
@@ -628,6 +633,8 @@ struct CaptureCfg {
     stream_failed: Arc<AtomicBool>,
     /// Noise suppression (RNNoise) on the captured signal. Read live.
     denoise: Arc<AtomicBool>,
+    /// Automatic capture level. Read live.
+    agc: Arc<AtomicBool>,
     /// Traffic-analysis-resistant mode (constant rate + flat size). Read live.
     paranoid: Arc<AtomicBool>,
 }
@@ -672,6 +679,9 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
         // RNNoise denoiser, allocated once (heavy boxed model); applied per
         // frame only when the toggle is on.
         let mut denoiser = Denoiser::new();
+        // Automatic level, allocated once and kept across frames — its whole
+        // job is the memory of what the last second sounded like.
+        let mut auto_level = crate::agc::Agc::new();
 
         // Shared encode→encrypt→send for the paranoid constant-rate paths.
         // Returns false when the pipeline channel is closed (stop). Captures
@@ -784,6 +794,13 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
             // and VAD react to the cleaned signal too.
             if cfg.denoise.load(Ordering::Relaxed) {
                 denoiser.process(&mut pcm_frame);
+            }
+
+            // After denoise, so the level is measured on speech rather than on
+            // room noise; before the meter, so "my voice" shows what is
+            // actually being sent.
+            if cfg.agc.load(Ordering::Relaxed) {
+                auto_level.process(&mut pcm_frame);
             }
 
             // Publish RMS for UI level meter.

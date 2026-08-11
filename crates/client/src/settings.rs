@@ -34,6 +34,8 @@ pub struct UserSettings {
     /// Noise suppression (RNNoise) on the captured mic. None = default (false).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denoise: Option<bool>,
+    /// Automatic capture level (`agc.rs`). Opt-in: it changes how you sound.
+    pub agc: Option<bool>,
     /// Hotkey bindings (action → accelerator string, e.g. "CommandOrControl+Shift+M").
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub hotkeys: HashMap<String, String>,

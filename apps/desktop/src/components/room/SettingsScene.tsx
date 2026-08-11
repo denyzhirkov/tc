@@ -404,6 +404,20 @@ export default function SettingsScene() {
     },
     {
       group: "sound",
+      label: t("set.level"),
+      keys: "agc level automatic gain громкость уровень авто усиление тихо",
+      hint: t("set.level_hint"),
+      render: () => (
+        <Opts<boolean>
+          opts={[true, false]}
+          label={(v) => (v ? t("set.level_auto") : t("set.level_manual"))}
+          current={(v) => (st()?.agc ?? true) === v}
+          pick={(v) => push(() => cmd.setAgc(v))}
+        />
+      ),
+    },
+    {
+      group: "sound",
       label: t("set.noise"),
       keys: "denoise rnnoise шум шумодав",
       hint: t("settings.denoise_hint"),

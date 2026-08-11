@@ -226,6 +226,11 @@ const en: Dict = {
   "set.face_mono": "JetBrains Mono",
   "set.face_inter": "Inter",
   "set.face_plex": "IBM Plex",
+  "set.level": "my level",
+  "set.level_auto": "keep it even",
+  "set.level_manual": "leave it to me",
+  "set.level_hint":
+    "quiet speech is brought up and loud speech held back, so you arrive at the same loudness as everyone else — the gain above is still yours to set on top",
   "set.voice_look": "a voice looks like",
   "set.voice_string": "a string",
   "set.voice_lava": "drops",
@@ -507,6 +512,11 @@ const ru: Dict = {
   "set.face_mono": "JetBrains Mono",
   "set.face_inter": "Inter",
   "set.face_plex": "IBM Plex",
+  "set.level": "мой уровень",
+  "set.level_auto": "выравнивать",
+  "set.level_manual": "как есть",
+  "set.level_hint":
+    "тихую речь поднимает, громкую придерживает — вы приходите к собеседникам с той же громкостью, что и все; усиление выше остаётся вашим поверх этого",
   "set.voice_look": "голос выглядит как",
   "set.voice_string": "верёвочка",
   "set.voice_lava": "капли",

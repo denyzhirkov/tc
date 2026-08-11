@@ -229,6 +229,7 @@ pub struct App {
     pub echo_deadline: Option<std::time::Instant>,
     /// Noise suppression (RNNoise). Shared with the capture thread (read live).
     pub denoise: Arc<AtomicBool>,
+    pub agc: Arc<AtomicBool>,
     /// Traffic-analysis-resistant mode: constant packet rate + flat frame size
     /// even in silence/mute. Shared with the capture thread (read live).
     pub paranoid: Arc<AtomicBool>,
@@ -304,6 +305,7 @@ impl App {
             voice_join_params: None,
             echo_deadline: None,
             denoise: Arc::new(AtomicBool::new(false)),
+            agc: Arc::new(AtomicBool::new(false)),
             paranoid: Arc::new(AtomicBool::new(false)),
             vad_threshold: Arc::new(AtomicU32::new(config::VAD_RMS_THRESHOLD.to_bits())),
             input_gain: Arc::new(AtomicU32::new(1.0_f32.to_bits())),

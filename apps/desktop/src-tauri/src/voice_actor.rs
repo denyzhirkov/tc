@@ -33,6 +33,8 @@ pub struct StartParams {
     pub sender_name: String,
     /// Noise suppression (RNNoise) on the captured mic. Read live.
     pub denoise: Arc<AtomicBool>,
+    /// Automatic capture level. Read live.
+    pub agc: Arc<AtomicBool>,
     /// Traffic-analysis-resistant mode (constant rate + flat size). Read live.
     pub paranoid: Arc<AtomicBool>,
     /// Echo (sound-check) session — hear our own audio reflected by the server.
@@ -215,6 +217,7 @@ async fn start_from(p: &StartParams) -> anyhow::Result<VoiceHandle> {
         p.sender_name.clone(),
         p.peer_gains.clone(),
         p.denoise.clone(),
+        p.agc.clone(),
         p.paranoid.clone(),
         p.echo_test,
     )

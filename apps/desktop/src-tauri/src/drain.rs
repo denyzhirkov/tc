@@ -405,6 +405,9 @@ async fn spawn_echo(
             output_device: c.output_device.clone(),
             sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),
             denoise: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            // Unlike denoise, the automatic level follows the real setting: how
+            // loud you are is the question a sound check is asked.
+            agc: c.agc.clone(),
             paranoid: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             echo_test: true,
         };
@@ -466,6 +469,7 @@ async fn spawn_voice(app: AppHandle, core: Arc<Mutex<AppCore>>) {
             output_device: c.output_device.clone(),
             sender_name: c.name.clone().unwrap_or_else(|| "anon".to_string()),
             denoise: c.denoise.clone(),
+            agc: c.agc.clone(),
             paranoid: c.paranoid.clone(),
             echo_test: false,
         };

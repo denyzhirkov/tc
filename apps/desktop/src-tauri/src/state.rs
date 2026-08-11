@@ -95,6 +95,8 @@ pub struct AppCore {
     pub paranoid: Arc<AtomicBool>,
     /// Noise suppression (RNNoise) on the captured mic (read live).
     pub denoise: Arc<AtomicBool>,
+    /// Automatic capture level (`tc_client::agc`). Read live by the capture thread.
+    pub agc: Arc<AtomicBool>,
     pub vad_threshold: Arc<AtomicU32>,
     pub input_gain: Arc<AtomicU32>,
     pub output_vol: Arc<AtomicU32>,
@@ -140,6 +142,7 @@ impl AppCore {
         let muted = Arc::new(AtomicBool::new(matches!(voice_mode, VoiceMode::Ptt)));
         let paranoid = Arc::new(AtomicBool::new(saved.paranoid.unwrap_or(false)));
         let denoise = Arc::new(AtomicBool::new(saved.denoise.unwrap_or(false)));
+        let agc = Arc::new(AtomicBool::new(saved.agc.unwrap_or(true)));
         let vad_threshold = Arc::new(AtomicU32::new(
             vad_threshold_for(voice_mode, vad_level_pct).to_bits(),
         ));
@@ -196,6 +199,7 @@ impl AppCore {
             muted,
             paranoid,
             denoise,
+            agc,
             vad_threshold,
             input_gain,
             output_vol,
@@ -226,6 +230,7 @@ impl AppCore {
             voice_mode: Some(self.voice_mode.as_str().to_string()),
             paranoid: Some(self.paranoid.load(Ordering::Relaxed)),
             denoise: Some(self.denoise.load(Ordering::Relaxed)),
+            agc: Some(self.agc.load(Ordering::Relaxed)),
             hotkeys: self.hotkeys.clone(),
             notifications: Some(self.notifications),
             autostart: Some(self.autostart),

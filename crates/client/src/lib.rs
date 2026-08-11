@@ -1,3 +1,4 @@
+pub mod agc;
 pub mod audio;
 pub mod codec;
 pub mod identity;
