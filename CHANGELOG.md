@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.16.1] — 2026-08-11
+
+### Fixed
+- **Windows microphones are no longer half as loud.** On Windows the system
+  hands the app the microphone in the format it chooses, and a mono microphone
+  is routinely delivered as two channels with the second one empty — which cost
+  exactly half the volume, so "my voice" had to be pushed toward 200% to sound
+  normal, dragging up hiss along with it. Empty channels no longer count. If
+  every channel carries sound, as on macOS and Linux, nothing about your audio
+  changes.
+
 ## [1.16.0] — 2026-08-11
 
 ### Changed

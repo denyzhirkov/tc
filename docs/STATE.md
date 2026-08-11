@@ -2,7 +2,7 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.16.0**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.16.1**, protocol **3**.
 
 ## Recently closed (newest first)
 
@@ -66,4 +66,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-11 (the volume knob rises out of the name, v1.16.0)._
+_Last updated: 2026-08-11 (Windows capture level, v1.16.1)._

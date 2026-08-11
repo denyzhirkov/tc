@@ -261,3 +261,10 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   `/history`). An id-watermark alone cannot: on a rejoin the history is genuinely
   new to the component. Any future "react to new messages" code in the room needs
   the same test.
+- **A downmix divisor must come from the channels that carry signal, not from
+  the channel count.** We only choose the capture format on macOS/Linux; WASAPI
+  shared mode hands us the device's mixer format, and a mono microphone
+  presented as silent-padded stereo is common enough that dividing by the raw
+  count cost Windows users 6 dB (v1.16.1). The decision is made from a slow
+  per-channel envelope and frozen during silence. Any future format we do not
+  choose ourselves needs the same suspicion.

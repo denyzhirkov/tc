@@ -52,3 +52,36 @@ Project scaffold, workspace, and the shared protocol/types. Server TCP control c
 ## Docs
 
 CONTRIBUTING.md, CHANGELOG.md, full wire-protocol spec (`PROTOCOL.md`), cross-platform system-dependency notes, ARM64 Linux build support.
+
+## Windows capture was 6 dB down: the downmix divided by silent channels (`4s219r`, v1.16.1, 2026-08-11)
+
+Reported as "Windows picks up about half of what macOS does, and 200% gain
+still isn't the same loudness or quality". Both halves have one cause.
+
+macOS and Linux open the device on our terms — the fixed 1ch/48k config, so no
+downmix happens at all. Windows cannot: WASAPI shared mode grants the mixer
+format or nothing, so `resolve_stream_params` takes the device default whole,
+and that is typically 2 channels. The capture callback then did
+`chunk.iter().sum() / ch`, and a mono microphone delivered as stereo-with-a-
+silent-second-channel — the common wiring — loses exactly half its amplitude.
+The "quality" half follows: 200% gain buys the level back while amplifying the
+noise floor and eating headroom.
+
+`Downmix` now derives the divisor from the channels that carry signal: a slow
+per-channel magnitude envelope, a channel counting while it is within
+`DOWNMIX_ACTIVE_RATIO` (−30 dB) of the loudest, and no re-deciding below
+`DOWNMIX_SILENCE_FLOOR` so a pause between words cannot flap the divisor
+mid-sentence. A channel that does not count is also not summed, keeping its
+noise floor out.
+
+The property that made this safe to ship without a Windows machine: **when
+every channel carries signal the arithmetic is identical to the average it
+replaces**, so macOS, Linux and any true stereo input are untouched. Tests pin
+both directions (silent second channel keeps full amplitude, true stereo still
+averages, silence preserves the decision). Diagnosis on the user's side is one
+log line — `input: 2ch …` at open, then `capture downmix: 1 of 2 channels carry
+signal`.
+
+Still unverified by us: nobody here has Windows. If that log line reads `1ch`,
+the cause is elsewhere — start with the Windows per-device level and Microphone
+Boost, which sit before we ever see the samples.
