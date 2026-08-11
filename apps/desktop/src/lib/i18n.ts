@@ -230,6 +230,10 @@ const en: Dict = {
   "set.voice_lava": "drops",
   "set.voice_look_hint":
     "under every name: a string with the voice running down it, or drops shed from the name that sink and dissolve",
+  "room.tune": "how loud they are for you",
+  "set.less": "{n}% less",
+  "set.more": "{n}% more",
+  "set.device_gone": "not here now",
   "set.crowd": "when it's crowded",
   "set.crowd_recent": "hide the quiet ones",
   "set.crowd_all": "show everyone",
@@ -506,6 +510,10 @@ const ru: Dict = {
   "set.voice_lava": "капли",
   "set.voice_look_hint":
     "под каждым именем: верёвочка, по которой бежит голос, или капли, которые срываются с имени, тонут и растворяются",
+  "room.tune": "насколько он громкий для вас",
+  "set.less": "на {n}% меньше",
+  "set.more": "на {n}% больше",
+  "set.device_gone": "сейчас нет",
   "set.crowd": "когда людей много",
   "set.crowd_recent": "прятать молчащих",
   "set.crowd_all": "показывать всех",

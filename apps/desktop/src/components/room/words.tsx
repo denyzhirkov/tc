@@ -3,6 +3,7 @@
 // ticks for the two or three things that are genuinely continuous.
 
 import { For, Show, type JSX } from "solid-js";
+import { t } from "../../lib/i18n";
 
 export function Word(props: {
   children: JSX.Element;
@@ -90,9 +91,16 @@ export function Opts<T>(props: {
   );
 }
 
-const TICKS = 12;
+const TICKS = 20;
+/// Tallest tick, in px. The ramp is derived from it so the row can grow
+/// sideways without also growing upward.
+const TICK_TOP = 15.5;
+/// What the ends and the arrow keys move by. A tick is the coarse grain — this
+/// is for landing on a number you actually meant.
+const FINE = 2;
 
-/// The only continuous control: twelve ticks and the number itself.
+/// The only continuous control: a row of ticks, a pair of ends that move it two
+/// at a time, and the number itself.
 export function Meter(props: {
   value: number;
   max: number;
@@ -103,10 +111,13 @@ export function Meter(props: {
   const step = () => props.max / TICKS;
   const nudge = (dir: number) =>
     props.set(
-      Math.max(0, Math.min(props.max, Math.round(props.value + dir * step()))),
+      Math.max(0, Math.min(props.max, Math.round(props.value + dir * FINE))),
     );
   return (
     <span class="opts">
+      <Word tone="quiet" title={t("set.less", { n: FINE })} onClick={() => nudge(-1)}>
+        −
+      </Word>
       <span
         class="meter"
         role="slider"
@@ -130,12 +141,15 @@ export function Meter(props: {
           {(i) => (
             <i
               classList={{ on: props.value >= (i + 1) * step() - step() / 2 }}
-              style={{ height: `${4 + i * 1.05}px` }}
+              style={{ height: `${4 + (i * (TICK_TOP - 4)) / (TICKS - 1)}px` }}
               onClick={() => props.set(Math.round((i + 1) * step()))}
             />
           )}
         </For>
       </span>
+      <Word tone="quiet" title={t("set.more", { n: FINE })} onClick={() => nudge(1)}>
+        +
+      </Word>
       <span class="meter-val">
         {props.value}
         {props.unit ?? ""}
