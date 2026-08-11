@@ -158,3 +158,15 @@ correct for exactly one reader — our own `deeplink.rs`, which fills the defaul
 back in — and wrong for a person, a chat client, or a paste into `/server`. Bare
 IPv6 literals are bracketed on the way out, which the old "does it contain a
 colon" test could never have got right.
+
+**A link the app could not read back (v1.18.1).** Pasting `tc://host:7100/pub-room`
+into `/server` died with "invalid port value": the string reached the socket
+verbatim and `ToSocketAddrs` splits on the *last* colon, so the port it parsed
+was `7100/pub-room`. The app tripped over the exact string it hands out when you
+click your own room — one release after that click was added. Parsing now lives
+beside the builder in `tc_shared::invite` and serves the desktop `connect`
+command, `/server` in the TUI, and the OS deep-link handler, which had been
+carrying a second parser on the `url` crate (now dropped as a dependency). A
+pasted link that names a room also joins it. **Rule of thumb this leaves
+behind: anything the app puts on a clipboard has to be accepted back in every
+field where its plain form is accepted.**

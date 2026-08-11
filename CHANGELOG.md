@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.18.1] — 2026-08-11
+
+### Fixed
+- **An invitation can be pasted, not only clicked.** Pasting a `tc://…` link
+  where a server address goes failed with "invalid port value" — the app tripped
+  over the exact link it gives you when you click your own room. Links are now
+  understood everywhere an address is accepted, in both clients, and a link that
+  names a room takes you into that room instead of only onto the server.
+
 ## [1.18.0] — 2026-08-11
 
 ### Added
