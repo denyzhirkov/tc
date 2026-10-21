@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.20.0] — 2026-10-21
+
+### Added
+- **Two new ways to see a room.** Settings → look → room now offers, beside
+  the familiar names:
+  - **score** — the conversation over time. Everyone gets a line; their voice
+    is drawn along it as they speak, what they type is written underneath at the
+    moment they sent it, and you can scroll back through the last two minutes to
+    see who spoke when, who cut in and who has been quiet.
+  - **heads** — a face above every name, drawn from the person's name in their
+    own colour. Its mouth moves with what they actually say, it blinks, and its
+    brows go up when someone gets loud. With reduced motion only the mouth moves.
+
+### Changed
+- **Voice meters show how loud people really are.** Loudness used to be
+  guessed from the size of the network packets; it is now measured from the
+  sound you hear, many times a second. Names swell more truthfully, and someone
+  sending silence in privacy mode no longer looks like they are talking. Your own
+  name now reacts on the same scale as everyone else's, and your own voice no
+  longer tints the room.
+
 ## [1.19.0] — 2026-10-21
 
 ### Fixed

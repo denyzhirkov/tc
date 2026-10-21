@@ -2,11 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.19.0**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.20.0**, protocol **3**.
 
 ## Recently closed (newest first)
 
-- Room looks: score + talking heads (`uercuu`, `g931tf`, unreleased, desktop + core levels, no wire change): Settings → look → room now picks **names** (default, unchanged), **score** — the conversation over time, one staff per person, voice as loudness bars, chat written under the sender at the moment it was sent, wheel back through two minutes — or **heads**, generated line-art faces above the names whose mouths follow real loudness at 30 Hz. Under it the core now measures each peer's loudness from the frame actually rendered (was an Opus packet-size guess) and streams it on a fast `voice_levels` lane. Frontend unit tests exist for the first time (`pnpm -C apps/desktop test`, node:test). See `closed-desktop.md` → "Room looks" and `decisions.md` → "Room looks" / "Speaker loudness is measured".
+- Room looks: score + talking heads (`uercuu`, `g931tf`, **v1.20.0**, desktop + core levels, no wire change): Settings → look → room now picks **names** (default, unchanged), **score** — the conversation over time, one staff per person, voice as loudness bars, chat written under the sender at the moment it was sent, wheel back through two minutes — or **heads**, generated line-art faces above the names whose mouths follow real loudness at 30 Hz. Under it the core now measures each peer's loudness from the frame actually rendered (was an Opus packet-size guess) and streams it on a fast `voice_levels` lane. Frontend unit tests exist for the first time (`pnpm -C apps/desktop test`, node:test). See `closed-desktop.md` → "Room looks" and `decisions.md` → "Room looks" / "Speaker loudness is measured".
 
 - Crackle pack — pull-based playout (`go238h`, **v1.19.0**, client-only, no wire change): five fixes, each with tests. Glitch counters (`diagnostics.rs`, `VoiceHandle::audio_diagnostics()`); a soft limiter at both ends (`limiter.rs`; volume ×4 used to hard-clip in the driver); Opus FEC always on **and actually decoded** (it was never decoded), plus the HIGH tier applied at call start (it was only applied on a tier change); **playout clocked by the output device** (`playout.rs`; the jitter buffer used to delay nothing, so any late packet ran playback dry) with an adaptive 40–200 ms target, FEC/PLC/Expand, Accelerate for latency and clock drift per sender; stateful sinc playback resampling on non-48 kHz devices. Simulations cover jitter, loss, ±0.5 % sender clocks and Windows timer granularity. Follow-ups `s78v4c`, `bixegi`, `dx376j`. See `closed-cli-core.md` → "Crackle pack" and `decisions.md` → "Playout & crackle".
 
@@ -71,4 +71,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-10-21 (room looks: score + heads, unreleased)._
+_Last updated: 2026-10-21 (room looks: score + heads, v1.20.0)._
