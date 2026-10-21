@@ -1,12 +1,12 @@
 //! Per-peer local playback gain, keyed by sender display name.
 //!
 //! The voice receive path mixes every sender's decoded PCM into one buffer
-//! (`voice::drain_streams_to_playback`). This lets the *listener* scale an
+//! (`playout::PlayoutEngine::render_frame`). This lets the *listener* scale an
 //! individual sender up or down for themselves only — never sent to the relay
 //! or other peers. The relay can't do this anyway: it holds no key and forwards
 //! ciphertext.
 //!
-//! Reads happen every drain round on the hot path; writes only when the user
+//! Reads happen every rendered frame on the hot path; writes only when the user
 //! drags a slider. So the store is an `ArcSwap<HashMap>`: lock-free reads,
 //! copy-on-write swaps — the same pattern the relay uses for its peer cache.
 //!

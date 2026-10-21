@@ -1,9 +1,12 @@
 pub mod agc;
 pub mod audio;
 pub mod codec;
+pub mod diagnostics;
 pub mod identity;
+pub mod limiter;
 pub mod network;
 pub mod peer_gain;
+mod playout;
 pub mod settings;
 pub mod tls;
 pub mod tui;

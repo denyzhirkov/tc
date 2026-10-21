@@ -58,7 +58,7 @@ impl Agc {
         }
 
         for s in frame.iter_mut() {
-            *s = soft_clip(*s * self.gain);
+            *s = crate::limiter::soft_clip(*s * self.gain);
         }
         self.gain
     }
@@ -66,23 +66,6 @@ impl Agc {
     /// Current gain, for tests and diagnostics.
     pub fn gain(&self) -> f32 {
         self.gain
-    }
-}
-
-/// Compress above the knee instead of clipping at it. Asymptotic to 1.0, so a
-/// sample can approach full scale but never leave it however hard it is driven.
-fn soft_clip(x: f32) -> f32 {
-    let knee = config::AGC_KNEE;
-    let a = x.abs();
-    if a <= knee {
-        return x;
-    }
-    let over = (a - knee) / (1.0 - knee);
-    let shaped = knee + (1.0 - knee) * over.tanh();
-    if x < 0.0 {
-        -shaped
-    } else {
-        shaped
     }
 }
 

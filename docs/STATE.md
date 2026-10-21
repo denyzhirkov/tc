@@ -6,6 +6,8 @@
 
 ## Recently closed (newest first)
 
+- Crackle pack — pull-based playout (`go238h`, unreleased, client-only, no wire change): five fixes, each with tests. Glitch counters (`diagnostics.rs`, `VoiceHandle::audio_diagnostics()`); a soft limiter at both ends (`limiter.rs`; volume ×4 used to hard-clip in the driver); Opus FEC always on **and actually decoded** (it was never decoded), plus the HIGH tier applied at call start (it was only applied on a tier change); **playout clocked by the output device** (`playout.rs`; the jitter buffer used to delay nothing, so any late packet ran playback dry) with an adaptive 40–200 ms target, FEC/PLC/Expand, Accelerate for latency and clock drift per sender; stateful sinc playback resampling on non-48 kHz devices. Simulations cover jitter, loss, ±0.5 % sender clocks and Windows timer granularity. Follow-ups `s78v4c`, `bixegi`, `dx376j`. See `closed-cli-core.md` → "Crackle pack" and `decisions.md` → "Playout & crackle".
+
 - Sound settings you can aim + a device that leaves (`75xum2`, `4kwyen`, `s4evgw`, **v1.15.0**, desktop): four items from one screenshot. The tick meter went 12 → 20 ticks (row 81 → 137px) with `−`/`+` ends moving 2 pts, arrow keys taking the same fine step, and the height ramp derived from the tallest tick so a longer row doesn't grow upward. `.field` bounded to 680px and centred **as a block** — per-row centring would jitter the label/value seam. Unplugged devices stayed listed forever: `Supervisor::tick` only iterated the arrival direction of the set diff, *and* `DeviceRow` never refetched its `createResource` — two sufficient causes; now `devices_changed` rides the snapshot and `level_pump` emits it before the idle `continue`, with the chosen-but-absent device kept in place, disabled and marked. Per-peer volume turned out to be **UI-only**: `peer_gain.rs`, persistence, commands and the store were all shipped already, only the knob was missing — a click on a name opens the meter under that person, `°` marks anyone off 100%. See `closed-desktop.md` → "Sound settings you can actually aim" and `decisions.md` → "Per-peer volume is a listener-side gain…".
 
 - A voice can be liquid (`t77mj3`, **v1.14.0**, desktop UI only): a second look for the voice under a name — *drops* instead of the string, shed from the speaking name to sink, sway and dissolve (`set.voice_look`, localStorage, default unchanged). Cost one module and one `<Show>` because the shape was already right: one slot under a name, one frame loop that knows loudness. `lib/lava.ts` decides only *when* a drop is born and how big; the rest is a keyframed CSS animation removing itself on `animationend` — the trick `Falling.tsx` already used, so fourteen liquid names cost what fourteen strings cost. Merging is the drop's own fading rim + 0.6px blur, not a gooey SVG filter (a per-element filter pass on HTML in WKWebView is a portability bet for decoration, and heavy blur washes out identity colour). Same release doubles the voice column (~140 → ~300px, shared by both looks) — which forced `SAMPLES` 24 → 40 in `trace.ts`, because a longer string must **hold more voice**, not the same wave stretched thin. See `closed-desktop.md` → "A voice can be liquid" and `decisions.md` → "A voice has two looks, one slot, one loop".
@@ -47,6 +49,7 @@
 
 ## Up next
 
+- Crackle pack verification: a real call on Windows (WASAPI) and over Wi-Fi, reading `output_starved` / `expand_frames` in the technical log; then release. Follow-ups: stretch for slow sender clocks (`s78v4c`), output-side starvation watchdog (`dx376j`), receiver→sender loss feedback (`bixegi`, protocol change)
 - Playback timeline follow-ups: comfort noise instead of zero-fill on underrun (`4rg56x`); continuous DTX timeline instead of the RMS gate-and-flush (`ta0vu0`, needs its own intake — touches both clients, the wire cadence and paranoid mode)
 - EPIC 15 — Forward secrecy for voice keys (`66b9lj`: KeyRotation message, periodic server rotation, dual-key transition)
 - Масштабируемость сервера (`aw76wp`)
@@ -66,4 +69,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-08-11 (links parse back, v1.18.1)._
+_Last updated: 2026-10-21 (crackle pack — pull-based playout, unreleased)._

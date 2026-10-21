@@ -11,9 +11,12 @@ use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePacket};
 
-use crate::audio;
-use crate::codec::{Denoiser, OpusDecoder, OpusEncoder};
+use crate::audio::{self, PlayoutSignals};
+use crate::codec::{Denoiser, OpusEncoder};
+use crate::diagnostics::{AudioDiagnostics, DiagnosticsSnapshot};
+use crate::limiter::limit_in_place;
 use crate::peer_gain::PeerGains;
+use crate::playout::PlayoutPump;
 
 // ── Adaptive Quality ────────────────────────────────────────────────
 
@@ -83,9 +86,20 @@ impl QualityTier {
         }
     }
 
-    fn fec(self) -> bool {
-        self != Self::High
+    /// Apply this tier to the encoder. In-band FEC is on in every tier, with
+    /// the loss hint floored at `FEC_MIN_LOSS_PERC` (see config). Returns the
+    /// hint that was applied. Single source of truth for both the initial
+    /// setup and later tier changes.
+    fn apply(self, encoder: &mut OpusEncoder, measured_loss: u8) -> Result<u8> {
+        let loss_hint = fec_loss_hint(measured_loss);
+        encoder.apply_quality_settings(self.bitrate(), self.complexity(), true, loss_hint)?;
+        Ok(loss_hint)
     }
+}
+
+/// Packet-loss hint handed to Opus: the measured loss, never below the floor.
+fn fec_loss_hint(measured_loss: u8) -> u8 {
+    measured_loss.max(config::FEC_MIN_LOSS_PERC)
 }
 
 pub struct NetworkStats {
@@ -96,7 +110,7 @@ pub struct NetworkStats {
 }
 
 impl NetworkStats {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             received: AtomicU32::new(0),
             lost: AtomicU32::new(0),
@@ -105,12 +119,21 @@ impl NetworkStats {
         }
     }
 
-    fn record_received(&self) {
+    pub(crate) fn record_received(&self) {
         self.received.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn record_lost(&self) {
+    pub(crate) fn record_lost(&self) {
         self.lost.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// (received, lost) in the current measurement window.
+    #[cfg(test)]
+    pub(crate) fn window_counts(&self) -> (u32, u32) {
+        (
+            self.received.load(Ordering::Relaxed),
+            self.lost.load(Ordering::Relaxed),
+        )
     }
 
     pub fn loss_percent(&self) -> u8 {
@@ -122,7 +145,7 @@ impl NetworkStats {
     }
 
     /// Check if the measurement window is complete and recalculate tier.
-    fn maybe_finalize_window(&self) {
+    pub(crate) fn maybe_finalize_window(&self) {
         let received = self.received.load(Ordering::Relaxed);
         let lost = self.lost.load(Ordering::Relaxed);
         let total = received + lost;
@@ -135,234 +158,6 @@ impl NetworkStats {
             self.lost.store(0, Ordering::Relaxed);
         }
     }
-}
-
-/// Wrapping-aware sequence comparison: returns true if a is "before" b.
-fn seq_before(a: u32, b: u32) -> bool {
-    // Treat the difference as signed: if b - a is in [1, 2^31), a is before b.
-    let diff = b.wrapping_sub(a);
-    diff > 0 && diff < 0x8000_0000
-}
-
-/// Adaptive jitter buffer backed by a fixed-size ring.
-/// Uses RFC 3550-style jitter estimation to pick optimal buffer depth.
-/// Pre-allocated slots avoid per-packet heap allocation on the hot path.
-struct JitterBuffer {
-    /// Fixed-size ring of (seq, data) slots. seq=0 means slot is empty.
-    /// Vecs are pre-allocated and reused — no heap alloc after warmup.
-    slots: Vec<(u32, Vec<u8>)>,
-    capacity: usize,
-    next_seq: u32,
-    started: bool,
-    max_size: usize,
-    /// Smoothed jitter estimate (exponential moving average, in ms).
-    jitter_ms: f64,
-    /// Last packet arrival time.
-    last_arrival: Option<Instant>,
-    /// Expected inter-packet interval (ms).
-    expected_interval_ms: f64,
-    /// Counter for periodic adaptation.
-    packets_since_adapt: u32,
-    /// Consecutive packets that landed beyond the ring (forward gap).
-    out_of_window: u32,
-}
-
-impl JitterBuffer {
-    fn new() -> Self {
-        let capacity = config::JITTER_BUF_MAX;
-        let slots = (0..capacity)
-            .map(|_| (0u32, Vec::with_capacity(256)))
-            .collect();
-        Self {
-            slots,
-            capacity,
-            next_seq: 0,
-            started: false,
-            max_size: config::JITTER_BUF_INITIAL,
-            jitter_ms: 0.0,
-            last_arrival: None,
-            expected_interval_ms: (config::FRAME_SIZE as f64 / config::SAMPLE_RATE as f64) * 1000.0, // 20ms
-            packets_since_adapt: 0,
-            out_of_window: 0,
-        }
-    }
-
-    /// Push a packet into the buffer. Copies opus_data into a pre-allocated slot.
-    fn push(&mut self, seq: u32, opus_data: &[u8]) {
-        if !self.started {
-            self.next_seq = seq;
-            self.started = true;
-        }
-
-        // Drop packets that are too old (already played)
-        if seq_before(seq, self.next_seq) {
-            // Detect sender restart: a large backward jump means the remote
-            // peer likely left and rejoined, resetting their sequence counter.
-            // Without this, all new packets would be silently dropped until
-            // the sequence catches up to the old next_seq.
-            let gap = self.next_seq.wrapping_sub(seq);
-            if gap > self.capacity as u32 * 2 {
-                tracing::debug!(
-                    "jitter buffer: stream restart detected (seq={}, next_seq={}, gap={}), resetting",
-                    seq, self.next_seq, gap
-                );
-                self.reset_to(seq);
-            } else {
-                return;
-            }
-        }
-
-        // Packets too far ahead would alias in the ring. One stray packet is
-        // dropped, but a sustained forward gap (loss burst / deaf window
-        // longer than the ring, e.g. while UDP registration was re-healing)
-        // means the stream has moved on and next_seq can never catch up —
-        // without a resync every later packet is dropped forever while the
-        // speaking indicator (updated before push) keeps animating.
-        let ahead = seq.wrapping_sub(self.next_seq) as usize;
-        if ahead >= self.capacity {
-            self.out_of_window += 1;
-            if self.out_of_window >= config::JITTER_RESYNC_AFTER {
-                tracing::debug!(
-                    "jitter buffer: forward gap resync (seq={}, next_seq={}, ahead={})",
-                    seq,
-                    self.next_seq,
-                    ahead
-                );
-                self.reset_to(seq);
-                // fall through and store this packet at the new position
-            } else {
-                return;
-            }
-        } else {
-            self.out_of_window = 0;
-        }
-
-        // Track inter-arrival jitter (RFC 3550 style)
-        let now = Instant::now();
-        if let Some(prev) = self.last_arrival {
-            let actual_interval_ms = now.duration_since(prev).as_secs_f64() * 1000.0;
-            let deviation = (actual_interval_ms - self.expected_interval_ms).abs();
-            // Exponential moving average: alpha = 1/16 (same as RFC 3550)
-            self.jitter_ms += (deviation - self.jitter_ms) / 16.0;
-        }
-        self.last_arrival = Some(now);
-
-        // Copy into pre-allocated slot (reuses existing Vec capacity)
-        let idx = seq as usize % self.capacity;
-        self.slots[idx].0 = seq;
-        self.slots[idx].1.clear();
-        self.slots[idx].1.extend_from_slice(opus_data);
-
-        // Periodically adapt buffer size
-        self.packets_since_adapt += 1;
-        if self.packets_since_adapt >= config::JITTER_ADAPT_INTERVAL {
-            self.packets_since_adapt = 0;
-            self.adapt_size();
-        }
-
-        // If too many packets buffered, skip ahead to drain faster
-        if self.count_buffered() > self.max_size {
-            self.skip_to_oldest_available();
-        }
-    }
-
-    /// Adapt max_size based on observed jitter.
-    /// target = jitter_ms * 2 / frame_duration_ms, clamped to [MIN, MAX].
-    fn adapt_size(&mut self) {
-        let target_ms = self.jitter_ms * 2.0;
-        let target_packets = (target_ms / self.expected_interval_ms).ceil() as usize;
-        let new_size = target_packets.clamp(config::JITTER_BUF_MIN, config::JITTER_BUF_MAX);
-        if new_size != self.max_size {
-            tracing::debug!(
-                "jitter buffer adapted: {} → {} packets (jitter={:.1}ms)",
-                self.max_size,
-                new_size,
-                self.jitter_ms,
-            );
-            self.max_size = new_size;
-        }
-    }
-
-    /// Pop the next packet. Data is swapped into `out` (zero-alloc after warmup).
-    fn pop(&mut self, out: &mut Vec<u8>) -> PopResult {
-        if !self.started {
-            return PopResult::Empty;
-        }
-
-        let idx = self.next_seq as usize % self.capacity;
-        if self.slots[idx].0 == self.next_seq {
-            // Swap data out: slot gets the (empty) out buffer, caller gets the data.
-            // Both Vecs keep their capacity — no allocation.
-            std::mem::swap(&mut self.slots[idx].1, out);
-            self.slots[idx].0 = 0; // mark empty
-            self.next_seq = self.next_seq.wrapping_add(1);
-            return PopResult::Packet;
-        }
-
-        // Slot empty or stale — check if any future packets exist
-        let has_future = (1..self.capacity).any(|offset| {
-            let future_seq = self.next_seq.wrapping_add(offset as u32);
-            let future_idx = future_seq as usize % self.capacity;
-            let slot = &self.slots[future_idx];
-            slot.0 == future_seq && slot.0 != 0
-        });
-        if has_future {
-            // Clear stale data at current slot
-            self.slots[idx].0 = 0;
-            self.next_seq = self.next_seq.wrapping_add(1);
-            PopResult::Missing
-        } else {
-            PopResult::Empty
-        }
-    }
-
-    /// Count valid buffered packets in the current window.
-    fn count_buffered(&self) -> usize {
-        (0..self.capacity)
-            .filter(|&offset| {
-                let seq = self.next_seq.wrapping_add(offset as u32);
-                let idx = seq as usize % self.capacity;
-                self.slots[idx].0 == seq && seq != 0
-            })
-            .count()
-    }
-
-    /// Skip next_seq forward to the oldest available packet in the ring.
-    fn skip_to_oldest_available(&mut self) {
-        for offset in 0..self.capacity {
-            let seq = self.next_seq.wrapping_add(offset as u32);
-            let idx = seq as usize % self.capacity;
-            if self.slots[idx].0 == seq && seq != 0 {
-                self.next_seq = seq;
-                return;
-            }
-        }
-    }
-
-    /// Reset the buffer to accept a new stream starting at the given sequence.
-    /// Called on a large backward jump (peer rejoined) or a sustained forward
-    /// gap (loss burst longer than the ring).
-    fn reset_to(&mut self, seq: u32) {
-        self.next_seq = seq;
-        for slot in &mut self.slots {
-            slot.0 = 0; // mark empty (Vecs keep their capacity)
-        }
-        self.jitter_ms = 0.0;
-        self.last_arrival = None;
-        self.packets_since_adapt = 0;
-        self.out_of_window = 0;
-    }
-
-    /// Current jitter estimate in milliseconds.
-    fn jitter_ms(&self) -> f64 {
-        self.jitter_ms
-    }
-}
-
-enum PopResult {
-    Packet,  // Data available in the swap buffer
-    Missing, // Gap detected — use PLC
-    Empty,   // Nothing available
 }
 
 /// Swappable endpoint of the capture ring buffer: the capture thread reads
@@ -445,7 +240,6 @@ pub async fn start_voice(
         ));
     }
     let speaking: Arc<Mutex<HashMap<String, SpeakerStat>>> = Arc::new(Mutex::new(HashMap::new()));
-    let playback_cap = Arc::new(AtomicU32::new(config::MAX_PLAYBACK_BUF as u32));
     let input_peak = Arc::new(AtomicU32::new(0));
 
     let cipher = XChaCha20Poly1305::new_from_slice(&voice_key)
@@ -463,7 +257,8 @@ pub async fn start_voice(
         playback_slot,
         capture_failed,
         playback_failed,
-        playback_cap,
+        playout: Arc::new(PlayoutSignals::default()),
+        diag: Arc::new(AudioDiagnostics::default()),
         output_vol,
         recv_handle: None,
         stats,
@@ -510,6 +305,7 @@ pub async fn start_voice(
         denoise: denoise.clone(),
         agc: agc.clone(),
         paranoid: paranoid.clone(),
+        diag: handle.diag.clone(),
     });
 
     spawn_udp_send_task(
@@ -525,14 +321,15 @@ pub async fn start_voice(
         cipher,
         stats: handle.stats.clone(),
         bytes_rx: handle.bytes_rx.clone(),
-        playback_cap: handle.playback_cap.clone(),
         speaking: handle.speaking.clone(),
         playback_slot: handle.playback_slot.clone(),
+        playout: handle.playout.clone(),
         registered: handle.registered.clone(),
         udp_token,
         own_name: sender_name,
         peer_gains,
         echo_test,
+        diag: handle.diag.clone(),
     }));
 
     Ok(handle)
@@ -637,6 +434,23 @@ struct CaptureCfg {
     agc: Arc<AtomicBool>,
     /// Traffic-analysis-resistant mode (constant rate + flat size). Read live.
     paranoid: Arc<AtomicBool>,
+    diag: Arc<AudioDiagnostics>,
+}
+
+/// Multiply a captured frame by the user's input gain. A boost can push peaks
+/// past full scale, which the denoiser would hard-clip, so a boosted frame goes
+/// through the soft limiter when `limit` is set. With AGC on and denoise off
+/// the caller clears `limit`: the AGC then attenuates the unclipped frame
+/// cleanly and soft-clips its own output. Returns whether the limiter avoided
+/// a clip.
+fn apply_input_gain(frame: &mut [f32], gain: f32, limit: bool) -> bool {
+    if gain == 1.0 {
+        return false;
+    }
+    for s in frame.iter_mut() {
+        *s *= gain;
+    }
+    limit && gain > 1.0 && limit_in_place(frame)
 }
 
 fn spawn_capture_thread(cfg: CaptureCfg) {
@@ -659,8 +473,14 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
             }
         };
 
-        let mut sequence: u32 = 1;
+        // A fresh encoder runs at Opus defaults; start at the HIGH tier's
+        // settings rather than waiting for a tier change to apply them.
         let mut current_tier = QualityTier::High;
+        if let Err(e) = current_tier.apply(&mut encoder, cfg.stats.loss_percent()) {
+            tracing::warn!("failed to apply initial quality settings: {}", e);
+        }
+
+        let mut sequence: u32 = 1;
         let mut frames_since_check: u32 = 0;
         let mut hangover_remaining: u32 = 0;
         let mut packet_buf = BytesMut::with_capacity(config::MAX_UDP_PACKET);
@@ -784,10 +604,9 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
             }
 
             let gain = f32::from_bits(cfg.input_gain.load(Ordering::Relaxed));
-            if gain != 1.0 {
-                for s in &mut pcm_frame {
-                    *s *= gain;
-                }
+            let limit = cfg.denoise.load(Ordering::Relaxed) || !cfg.agc.load(Ordering::Relaxed);
+            if apply_input_gain(&mut pcm_frame, gain, limit) {
+                cfg.diag.limiter_capture.fetch_add(1, Ordering::Relaxed);
             }
 
             // Noise suppression before the meter/VAD/encode, so the level meter
@@ -898,20 +717,14 @@ fn maybe_adapt_encoder(
     }
     let loss = stats.loss_percent();
     *current_tier = new_tier;
-    let loss_hint = if current_tier.fec() { loss } else { 0 };
-    if let Err(e) = encoder.apply_quality_settings(
-        current_tier.bitrate(),
-        current_tier.complexity(),
-        current_tier.fec(),
-        loss_hint,
-    ) {
+    if let Err(e) = current_tier.apply(encoder, loss) {
         tracing::warn!("failed to apply quality settings: {}", e);
     } else {
         tracing::info!(
             "encoder adapted: tier={}, bitrate={}, loss={}%",
             current_tier.as_str(),
             current_tier.bitrate(),
-            loss_hint,
+            fec_loss_hint(loss),
         );
     }
 }
@@ -1060,9 +873,10 @@ struct RecvCfg {
     cipher: XChaCha20Poly1305,
     stats: Arc<NetworkStats>,
     bytes_rx: Arc<AtomicU64>,
-    playback_cap: Arc<AtomicU32>,
     speaking: Arc<Mutex<HashMap<String, SpeakerStat>>>,
     playback_slot: PlaybackSlot,
+    /// Output level and playing count shared with the output callback.
+    playout: Arc<PlayoutSignals>,
     /// Confirmed-inbound flag shared with the re-hello task and the UI.
     registered: Arc<AtomicBool>,
     udp_token: u64,
@@ -1073,136 +887,146 @@ struct RecvCfg {
     /// Sound-check mode: don't drop our own reflected packets (we want to hear
     /// them come back through the server).
     echo_test: bool,
+    diag: Arc<AudioDiagnostics>,
 }
 
-/// Per-sender receive state. Sequence counters of different senders are
-/// independent (each starts at 1), so sharing one jitter buffer across
-/// senders would make every interleaved packet look like a stream restart
-/// and constantly reset the buffer — concurrent speakers require one
-/// buffer + decoder per sender, mixed into playback per frame.
-struct SenderStream {
-    jitter: JitterBuffer,
-    decoder: OpusDecoder,
-    last_packet: Instant,
+/// What woke the receive task.
+enum Wake {
+    Datagram(std::io::Result<usize>),
+    PlayoutTick,
+    DiagLog,
 }
 
 fn spawn_recv_task(cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut streams: HashMap<String, SenderStream> = HashMap::new();
+        let mut pump = PlayoutPump::new(Instant::now());
         let mut buf = vec![0u8; config::MAX_UDP_PACKET + 64];
         let mut decrypt_buf: Vec<u8> = Vec::with_capacity(config::MAX_UDP_PACKET);
-        let mut opus_swap: Vec<u8> = Vec::with_capacity(256);
-        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
-        let stale_ttl = Duration::from_secs(config::SENDER_STREAM_TTL_SECS);
-        let mut packets_since_prune: u32 = 0;
+        // Output is pulled on this tick as well as on every packet, so a
+        // sender's buffer is drained on the device's schedule, not the
+        // network's. Armed only while something is buffered or playing: an
+        // idle channel wakes for packets and the diagnostics timer only.
+        let mut tick = tokio::time::interval(Duration::from_millis(config::PLAYOUT_TICK_MS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Its own slow timer, so the log fires on time in silence too.
+        let diag_interval = Duration::from_secs(config::AUDIO_DIAG_LOG_SECS);
+        let mut diag_tick =
+            tokio::time::interval_at(tokio::time::Instant::now() + diag_interval, diag_interval);
+        diag_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut diag_logged_at = Instant::now();
+        let mut diag_logged = cfg.diag.snapshot();
 
         loop {
-            let len = match cfg.socket.recv(&mut buf).await {
-                Ok(n) => n,
-                Err(e) => {
+            // All three futures are cancel-safe (UdpSocket::recv, Interval::tick).
+            let wake = tokio::select! {
+                r = cfg.socket.recv(&mut buf) => Wake::Datagram(r),
+                _ = tick.tick(), if pump.needs_tick() => Wake::PlayoutTick,
+                _ = diag_tick.tick() => Wake::DiagLog,
+            };
+            match wake {
+                Wake::Datagram(Ok(len)) => {
+                    cfg.bytes_rx.fetch_add(len as u64, Ordering::Relaxed);
+                    ingest(&cfg, &mut pump, &buf[..len], &mut decrypt_buf);
+                }
+                Wake::Datagram(Err(e)) => {
                     // On Windows, connected UDP sockets surface ICMP errors
-                    // (WSAECONNRESET / 10054) on the next recv(). Transient — retry.
+                    // (WSAECONNRESET / 10054) on the next recv(). Transient —
+                    // retry; the pause stays well inside the output low-water.
                     tracing::warn!("UDP recv error: {}", e);
                     tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Wake::PlayoutTick => {}
+                Wake::DiagLog => {
+                    log_glitches(&cfg.diag, &mut diag_logged, &mut diag_logged_at);
                     continue;
                 }
-            };
-            cfg.bytes_rx.fetch_add(len as u64, Ordering::Relaxed);
-
-            // Late hello ACK (initial handshake timed out, re-hello task running).
-            if !cfg.registered.load(Ordering::Relaxed)
-                && decode_udp_hello(&buf[..len]) == Some(cfg.udp_token)
-            {
-                cfg.registered.store(true, Ordering::Relaxed);
-                continue;
             }
 
-            let Some((sequence, encrypted)) = VoicePacket::parse_voice_data(&buf[..len]) else {
-                continue;
-            };
-            // Any inbound voice proves the relay knows our address.
-            if !cfg.registered.load(Ordering::Relaxed) {
-                cfg.registered.store(true, Ordering::Relaxed);
-            }
-            if !decrypt_packet(&cfg.cipher, encrypted, &mut decrypt_buf) {
-                continue;
-            }
-            let Some((name, opus_offset)) = parse_packet_name(&decrypt_buf) else {
-                continue;
-            };
-            // Echo guard: a relayed copy of our own stream (server-side echo,
-            // loopback on a peer) must never reach the speaking map or playback
-            // — except during a sound-check, where hearing ourselves back is
-            // the whole point.
-            if !cfg.echo_test && name == cfg.own_name {
-                tracing::trace!("dropping echoed own packet");
-                continue;
-            }
-            record_speaker(&cfg.speaking, name, decrypt_buf.len() - opus_offset);
-
-            packets_since_prune += 1;
-            if packets_since_prune >= config::STATS_WINDOW_PACKETS {
-                packets_since_prune = 0;
-                streams.retain(|_, s| s.last_packet.elapsed() < stale_ttl);
-            }
-
-            if !streams.contains_key(name) {
-                if streams.len() >= config::MAX_SENDER_STREAMS {
-                    streams.retain(|_, s| s.last_packet.elapsed() < stale_ttl);
-                }
-                if streams.len() >= config::MAX_SENDER_STREAMS {
-                    tracing::warn!("sender stream limit reached, dropping packet");
-                    continue;
-                }
-                let decoder = match OpusDecoder::new() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::error!("failed to create decoder: {}", e);
-                        continue;
-                    }
-                };
-                streams.insert(
-                    name.to_string(),
-                    SenderStream {
-                        jitter: JitterBuffer::new(),
-                        decoder,
-                        last_packet: Instant::now(),
-                    },
-                );
-            }
-            let stream = streams.get_mut(name).expect("stream just ensured");
-            stream.last_packet = Instant::now();
-            stream.jitter.push(sequence, &decrypt_buf[opus_offset..]);
-
-            // Sync playback buffer cap with this sender's jitter estimate
-            let jitter = &stream.jitter;
-            let jitter_cap = ((jitter.jitter_ms() * 2.0 / jitter.expected_interval_ms).ceil()
-                as usize)
-                .clamp(config::JITTER_BUF_MIN, config::JITTER_BUF_MAX);
-            let cap_samples = (jitter_cap * config::FRAME_SIZE) as u32;
-            cfg.playback_cap.store(
-                cap_samples.max(config::MAX_PLAYBACK_BUF as u32),
-                Ordering::Relaxed,
-            );
-
-            // Lock the playback slot once per drain round (uncontended; the
-            // supervisor swaps it only on device rebuilds). With no playback
-            // device the frames are still drained and decoded so jitter and
-            // decoder state stay current — output resumes seamlessly.
+            // Lock the playback slot once per wakeup (uncontended; the
+            // supervisor swaps it only on device rebuilds).
             let mut slot = match cfg.playback_slot.lock() {
                 Ok(s) => s,
                 Err(_) => break,
             };
-            drain_streams_to_playback(
-                &mut streams,
-                &mut opus_swap,
-                &mut mix_buf,
-                &cfg.stats,
-                &cfg.peer_gains,
+            pump.pump(
                 slot.as_mut(),
+                Instant::now(),
+                &cfg.playout,
+                &cfg.peer_gains,
+                &cfg.diag,
+                &cfg.stats,
             );
         }
     })
+}
+
+/// Warn with the glitch counters accumulated since the previous log, if any
+/// of them signals a real defect.
+fn log_glitches(
+    diag: &AudioDiagnostics,
+    logged: &mut DiagnosticsSnapshot,
+    logged_at: &mut Instant,
+) {
+    let window_secs = logged_at.elapsed().as_secs();
+    *logged_at = Instant::now();
+    let now = diag.snapshot();
+    let d = now.delta(logged);
+    *logged = now;
+    if d.has_glitches() {
+        tracing::warn!(
+            "voice glitches in last {}s: starved={} expand={} plc={} fec={} late={} accel={} dry={} trimmed={} play_overflow={} cap_overflow={} limiter_play={} limiter_cap={}",
+            window_secs,
+            d.output_starved,
+            d.expand_frames,
+            d.plc_frames,
+            d.fec_recovered,
+            d.late_packets,
+            d.accelerate_drops,
+            d.playback_dry,
+            d.playback_trimmed_samples,
+            d.playback_ring_overflow,
+            d.capture_ring_overflow,
+            d.limiter_playback,
+            d.limiter_capture
+        );
+    }
+}
+
+/// Handle one datagram: late hello ACK, or decrypt → sender name → echo guard
+/// → speaking meter → playout buffer.
+fn ingest(cfg: &RecvCfg, pump: &mut PlayoutPump, datagram: &[u8], decrypt_buf: &mut Vec<u8>) {
+    // Late hello ACK (initial handshake timed out, re-hello task running).
+    if !cfg.registered.load(Ordering::Relaxed) && decode_udp_hello(datagram) == Some(cfg.udp_token)
+    {
+        cfg.registered.store(true, Ordering::Relaxed);
+        return;
+    }
+
+    let Some((sequence, encrypted)) = VoicePacket::parse_voice_data(datagram) else {
+        return;
+    };
+    // Any inbound voice proves the relay knows our address.
+    if !cfg.registered.load(Ordering::Relaxed) {
+        cfg.registered.store(true, Ordering::Relaxed);
+    }
+    if !decrypt_packet(&cfg.cipher, encrypted, decrypt_buf) {
+        return;
+    }
+    let Some((name, opus_offset)) = parse_packet_name(decrypt_buf) else {
+        return;
+    };
+    // Echo guard: a relayed copy of our own stream (server-side echo,
+    // loopback on a peer) must never reach the speaking map or playback
+    // — except during a sound-check, where hearing ourselves back is
+    // the whole point.
+    if !cfg.echo_test && name == cfg.own_name {
+        tracing::trace!("dropping echoed own packet");
+        return;
+    }
+    record_speaker(&cfg.speaking, name, decrypt_buf.len() - opus_offset);
+    if pump.on_packet(name, sequence, &decrypt_buf[opus_offset..], Instant::now()) {
+        cfg.diag.late_packets.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Decrypt `encrypted` ([nonce:24][ciphertext+tag:16]) into `out` (reused buffer).
@@ -1265,92 +1089,6 @@ fn record_speaker(
     }
 }
 
-/// Pop one frame per sender per round, mix into `mix_buf`, push to playback.
-/// Rounds repeat until every sender's jitter buffer is empty. Single-talker
-/// rounds skip the clamp pass and behave exactly like the pre-mixing path.
-fn drain_streams_to_playback(
-    streams: &mut HashMap<String, SenderStream>,
-    opus_swap: &mut Vec<u8>,
-    mix_buf: &mut [f32],
-    stats: &NetworkStats,
-    peer_gains: &PeerGains,
-    mut playback_prod: Option<&mut audio::AudioProducer>,
-) {
-    use ringbuf::traits::Producer;
-    loop {
-        let mut contributors = 0usize;
-        let mut mixed_len = 0usize;
-        for (name, stream) in streams.iter_mut() {
-            // Listener-side per-peer volume (1.0 = unchanged). Read live; one
-            // map lookup per sender per round, no allocation, multiply skipped
-            // when unity.
-            let gain = peer_gains.get(name);
-            let pcm = match stream.jitter.pop(opus_swap) {
-                PopResult::Packet => {
-                    stats.record_received();
-                    stats.maybe_finalize_window();
-                    match stream.decoder.decode(opus_swap) {
-                        Ok(pcm) => pcm,
-                        Err(e) => {
-                            tracing::trace!("decode error: {}", e);
-                            continue;
-                        }
-                    }
-                }
-                PopResult::Missing => {
-                    stats.record_lost();
-                    stats.maybe_finalize_window();
-                    match stream.decoder.decode_plc() {
-                        Ok(pcm) => pcm,
-                        Err(e) => {
-                            tracing::trace!("PLC error: {}", e);
-                            continue;
-                        }
-                    }
-                }
-                PopResult::Empty => continue,
-            };
-            let n = pcm.len().min(mix_buf.len());
-            let unity = (gain - 1.0).abs() < f32::EPSILON;
-            if contributors == 0 {
-                if unity {
-                    mix_buf[..n].copy_from_slice(&pcm[..n]);
-                } else {
-                    for (m, s) in mix_buf[..n].iter_mut().zip(&pcm[..n]) {
-                        *m = *s * gain;
-                    }
-                }
-            } else {
-                if n > mixed_len {
-                    mix_buf[mixed_len..n].fill(0.0);
-                }
-                if unity {
-                    for (m, s) in mix_buf[..n].iter_mut().zip(pcm) {
-                        *m += *s;
-                    }
-                } else {
-                    for (m, s) in mix_buf[..n].iter_mut().zip(pcm) {
-                        *m += *s * gain;
-                    }
-                }
-            }
-            mixed_len = mixed_len.max(n);
-            contributors += 1;
-        }
-        if contributors == 0 {
-            break;
-        }
-        if contributors > 1 {
-            for m in &mut mix_buf[..mixed_len] {
-                *m = m.clamp(-1.0, 1.0);
-            }
-        }
-        if let Some(prod) = playback_prod.as_deref_mut() {
-            prod.push_slice(&mix_buf[..mixed_len]);
-        }
-    }
-}
-
 struct TrafficSnapshot {
     instant: Instant,
     bytes_tx: u64,
@@ -1375,7 +1113,8 @@ pub struct VoiceHandle {
     playback_slot: PlaybackSlot,
     capture_failed: Arc<AtomicBool>,
     playback_failed: Arc<AtomicBool>,
-    playback_cap: Arc<AtomicU32>,
+    playout: Arc<PlayoutSignals>,
+    diag: Arc<AudioDiagnostics>,
     output_vol: Arc<AtomicU32>,
     recv_handle: Option<tokio::task::JoinHandle<()>>,
     stats: Arc<NetworkStats>,
@@ -1396,6 +1135,11 @@ impl VoiceHandle {
             self.stats.loss_percent(),
             self.stats.current_tier().as_str(),
         )
+    }
+
+    /// Current audio glitch counters (monotonic since the call started).
+    pub fn audio_diagnostics(&self) -> DiagnosticsSnapshot {
+        self.diag.snapshot()
     }
 
     /// Whether the server confirmed our UDP registration (hello ACK or any
@@ -1445,7 +1189,7 @@ impl VoiceHandle {
         self.capture = None;
         *self.capture_slot.lock().unwrap() = None;
         self.capture_failed.store(false, Ordering::Relaxed);
-        match audio::start_capture(device, self.capture_failed.clone()) {
+        match audio::start_capture(device, self.capture_failed.clone(), self.diag.clone()) {
             Ok((stream, cons, opened_device)) => {
                 *self.capture_slot.lock().unwrap() = Some(cons);
                 self.capture = Some(AudioHalf {
@@ -1467,9 +1211,10 @@ impl VoiceHandle {
         self.playback_failed.store(false, Ordering::Relaxed);
         match audio::start_playback(
             device,
-            self.playback_cap.clone(),
             self.output_vol.clone(),
             self.playback_failed.clone(),
+            self.diag.clone(),
+            self.playout.clone(),
         ) {
             Ok((stream, prod, opened_device)) => {
                 *self.playback_slot.lock().unwrap() = Some(prod);
@@ -1556,148 +1301,6 @@ impl Drop for VoiceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── per-sender streams & mixing ──────────────────────────────────
-
-    fn encoded_frame(encoder: &mut OpusEncoder, value: f32) -> Vec<u8> {
-        let pcm = vec![value; config::FRAME_SIZE];
-        encoder.encode(&pcm).unwrap().to_vec()
-    }
-
-    fn sender_stream() -> SenderStream {
-        SenderStream {
-            jitter: JitterBuffer::new(),
-            decoder: OpusDecoder::new().unwrap(),
-            last_packet: Instant::now(),
-        }
-    }
-
-    /// Two senders with independent sequence counters (each starts near its own
-    /// base) must both decode and mix — the old shared jitter buffer treated the
-    /// interleaving as endless stream restarts and produced almost nothing.
-    #[test]
-    fn drain_mixes_two_concurrent_sender_streams() {
-        use ringbuf::traits::{Consumer, Observer, Split};
-
-        let mut enc_a = OpusEncoder::new().unwrap();
-        let mut enc_b = OpusEncoder::new().unwrap();
-
-        let mut streams: HashMap<String, SenderStream> = HashMap::new();
-        streams.insert("alice".into(), sender_stream());
-        streams.insert("bob".into(), sender_stream());
-
-        // Interleaved arrival, disjoint sequence spaces (bob "joined earlier").
-        const FRAMES: u32 = 5;
-        for i in 0..FRAMES {
-            let pkt_a = encoded_frame(&mut enc_a, 0.0);
-            let pkt_b = encoded_frame(&mut enc_b, 0.0);
-            streams.get_mut("alice").unwrap().jitter.push(1 + i, &pkt_a);
-            streams
-                .get_mut("bob")
-                .unwrap()
-                .jitter
-                .push(100_000 + i, &pkt_b);
-        }
-
-        let rb = ringbuf::HeapRb::<f32>::new(config::FRAME_SIZE * 16);
-        let (mut prod, mut cons) = rb.split();
-        let stats = NetworkStats::new();
-        let mut opus_swap = Vec::new();
-        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
-
-        drain_streams_to_playback(
-            &mut streams,
-            &mut opus_swap,
-            &mut mix_buf,
-            &stats,
-            &PeerGains::new(),
-            Some(&mut prod),
-        );
-
-        // Mixed output: one frame per round, not one per packet.
-        assert_eq!(cons.occupied_len(), config::FRAME_SIZE * FRAMES as usize);
-        // Every packet from both senders was consumed as received, none "lost".
-        assert_eq!(stats.received.load(Ordering::Relaxed), FRAMES * 2);
-        assert_eq!(stats.lost.load(Ordering::Relaxed), 0);
-        let mut sink = vec![0.0f32; config::FRAME_SIZE * FRAMES as usize];
-        cons.pop_slice(&mut sink);
-    }
-
-    #[test]
-    fn drain_single_sender_passthrough() {
-        use ringbuf::traits::{Observer, Split};
-
-        let mut enc = OpusEncoder::new().unwrap();
-        let mut streams: HashMap<String, SenderStream> = HashMap::new();
-        streams.insert("alice".into(), sender_stream());
-        for i in 0..3u32 {
-            let pkt = encoded_frame(&mut enc, 0.0);
-            streams.get_mut("alice").unwrap().jitter.push(1 + i, &pkt);
-        }
-
-        let rb = ringbuf::HeapRb::<f32>::new(config::FRAME_SIZE * 8);
-        let (mut prod, cons) = rb.split();
-        let stats = NetworkStats::new();
-        let mut opus_swap = Vec::new();
-        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
-
-        drain_streams_to_playback(
-            &mut streams,
-            &mut opus_swap,
-            &mut mix_buf,
-            &stats,
-            &PeerGains::new(),
-            Some(&mut prod),
-        );
-
-        assert_eq!(cons.occupied_len(), config::FRAME_SIZE * 3);
-        assert_eq!(stats.lost.load(Ordering::Relaxed), 0);
-    }
-
-    // A per-peer gain of 0% mutes that sender locally: the mixed output is
-    // silent even though the packet was received and decoded (decoder/jitter
-    // state stays current).
-    #[test]
-    fn drain_applies_per_peer_gain() {
-        use ringbuf::traits::{Consumer, Split};
-
-        let mut enc = OpusEncoder::new().unwrap();
-        let mut streams: HashMap<String, SenderStream> = HashMap::new();
-        streams.insert("loud".into(), sender_stream());
-        for i in 0..3u32 {
-            // A non-silent tone so a passthrough would be audibly non-zero.
-            let pkt = encoded_frame(&mut enc, 0.5);
-            streams.get_mut("loud").unwrap().jitter.push(1 + i, &pkt);
-        }
-
-        let rb = ringbuf::HeapRb::<f32>::new(config::FRAME_SIZE * 8);
-        let (mut prod, mut cons) = rb.split();
-        let stats = NetworkStats::new();
-        let mut opus_swap = Vec::new();
-        let mut mix_buf = vec![0.0f32; config::FRAME_SIZE];
-
-        let gains = PeerGains::new();
-        gains.set_pct("loud", 0); // mute locally
-
-        drain_streams_to_playback(
-            &mut streams,
-            &mut opus_swap,
-            &mut mix_buf,
-            &stats,
-            &gains,
-            Some(&mut prod),
-        );
-
-        let mut sink = vec![1.0f32; config::FRAME_SIZE * 3];
-        let n = cons.pop_slice(&mut sink);
-        assert!(n > 0, "muted peer still produces (zeroed) frames");
-        assert!(
-            sink[..n].iter().all(|s| *s == 0.0),
-            "gain 0% must zero the peer's contribution"
-        );
-        // Packets were still consumed/decoded, not dropped.
-        assert_eq!(stats.lost.load(Ordering::Relaxed), 0);
-    }
 
     #[test]
     fn parse_packet_name_extracts_name_and_offset() {
@@ -1805,25 +1408,6 @@ mod tests {
             .unwrap();
     }
 
-    // ── seq_before ───────────────────────────────────────────────────
-
-    #[test]
-    fn seq_before_basic() {
-        assert!(seq_before(1, 2));
-        assert!(seq_before(0, 1));
-        assert!(!seq_before(2, 1));
-        assert!(!seq_before(5, 5)); // equal
-    }
-
-    #[test]
-    fn seq_before_wrapping() {
-        // Near u32::MAX boundary
-        assert!(seq_before(u32::MAX - 1, u32::MAX));
-        assert!(seq_before(u32::MAX, 0)); // wrap around
-        assert!(seq_before(u32::MAX, 1)); // wrap around
-        assert!(!seq_before(1, u32::MAX)); // 1 is "after" MAX in wrapping
-    }
-
     // ── QualityTier ──────────────────────────────────────────────────
 
     #[test]
@@ -1870,11 +1454,45 @@ mod tests {
     }
 
     #[test]
-    fn quality_tier_fec_only_when_lossy() {
-        assert!(!QualityTier::High.fec());
-        assert!(QualityTier::Medium.fec());
-        assert!(QualityTier::Low.fec());
-        assert!(QualityTier::Minimum.fec());
+    fn fec_is_on_in_every_tier_with_a_floored_loss_hint() {
+        assert_eq!(fec_loss_hint(0), config::FEC_MIN_LOSS_PERC);
+        assert_eq!(
+            fec_loss_hint(config::FEC_MIN_LOSS_PERC + 20),
+            config::FEC_MIN_LOSS_PERC + 20
+        );
+        for tier in [
+            QualityTier::High,
+            QualityTier::Medium,
+            QualityTier::Low,
+            QualityTier::Minimum,
+        ] {
+            let mut enc = OpusEncoder::new().unwrap();
+            let hint = tier.apply(&mut enc, 0).unwrap();
+            assert_eq!(hint, config::FEC_MIN_LOSS_PERC);
+            let (bitrate, complexity, fec, loss) = enc.quality_settings();
+            assert_eq!(bitrate, tier.bitrate());
+            assert_eq!(complexity, tier.complexity());
+            assert!(fec, "{tier:?}");
+            assert_eq!(loss, config::FEC_MIN_LOSS_PERC);
+        }
+    }
+
+    #[test]
+    fn encoder_starts_at_high_tier() {
+        // A bare encoder runs at Opus defaults; the capture thread applies the
+        // HIGH tier through `QualityTier::apply` right after creating it.
+        let mut enc = OpusEncoder::new().unwrap();
+        assert!(!enc.quality_settings().2, "default encoder has no FEC");
+        QualityTier::High.apply(&mut enc, 0).unwrap();
+        assert_eq!(
+            enc.quality_settings(),
+            (
+                config::BITRATE_HIGH,
+                config::COMPLEXITY_HIGH,
+                true,
+                config::FEC_MIN_LOSS_PERC
+            )
+        );
     }
 
     #[test]
@@ -1936,176 +1554,24 @@ mod tests {
         assert_eq!(stats.loss_percent(), 0);
     }
 
-    // ── JitterBuffer ─────────────────────────────────────────────────
-
     #[test]
-    fn jitter_buffer_push_pop_in_order() {
-        let mut jb = JitterBuffer::new();
-        let mut out = Vec::new();
+    fn input_gain_boost_is_limited_and_counted() {
+        let mut frame = vec![0.6f32; config::FRAME_SIZE];
+        assert!(apply_input_gain(&mut frame, 4.0, true));
+        assert!(frame.iter().all(|s| s.abs() < 1.0));
 
-        jb.push(1, &[10, 20]);
-        jb.push(2, &[30, 40]);
+        // AGC on, denoise off: the frame is left unclipped for the AGC.
+        let mut frame = vec![0.6f32; config::FRAME_SIZE];
+        assert!(!apply_input_gain(&mut frame, 4.0, false));
+        assert!(frame.iter().all(|s| *s == 2.4));
 
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![10, 20]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![30, 40]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Empty));
-    }
+        let mut frame = vec![0.6f32; config::FRAME_SIZE];
+        assert!(!apply_input_gain(&mut frame, 1.0, true));
+        assert!(frame.iter().all(|s| *s == 0.6));
 
-    #[test]
-    fn jitter_buffer_missing_packet_detected() {
-        let mut jb = JitterBuffer::new();
-        let mut out = Vec::new();
-
-        jb.push(1, &[10]);
-        // Skip seq 2
-        jb.push(3, &[30]);
-
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet)); // seq 1
-        assert_eq!(out, vec![10]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Missing)); // seq 2 gap
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet)); // seq 3
-        assert_eq!(out, vec![30]);
-    }
-
-    #[test]
-    fn jitter_buffer_late_packet_dropped() {
-        let mut jb = JitterBuffer::new();
-        let mut out = Vec::new();
-
-        jb.push(5, &[50]);
-        jb.pop(&mut out); // consume seq 5, next_seq=6
-
-        // Push seq 5 again (late) — should be silently dropped
-        jb.push(5, &[99]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Empty));
-    }
-
-    #[test]
-    fn jitter_buffer_count_buffered() {
-        let mut jb = JitterBuffer::new();
-        jb.push(1, &[10]);
-        jb.push(2, &[20]);
-        jb.push(3, &[30]);
-        assert_eq!(jb.count_buffered(), 3);
-    }
-
-    #[test]
-    fn jitter_buffer_reset_to() {
-        let mut jb = JitterBuffer::new();
-        jb.push(100, &[1]);
-        jb.push(101, &[2]);
-
-        jb.reset_to(200);
-        assert_eq!(jb.count_buffered(), 0);
-        assert_eq!(jb.jitter_ms(), 0.0);
-
-        // Can push and pop from new sequence
-        let mut out = Vec::new();
-        jb.push(200, &[42]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![42]);
-    }
-
-    #[test]
-    fn jitter_buffer_stream_restart_detection() {
-        let mut jb = JitterBuffer::new();
-        let mut out = Vec::new();
-
-        // Simulate an advanced stream
-        jb.push(1000, &[1]);
-        jb.pop(&mut out); // next_seq = 1001
-
-        // Sender restarts at seq 1 — large backward jump
-        jb.push(1, &[99]);
-
-        // Buffer should have auto-reset
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![99]);
-    }
-
-    /// A sustained forward gap (loss burst / deaf window longer than the ring)
-    /// must resync the buffer onto the new stream position — previously the
-    /// buffer dropped every packet forever and playback went permanently
-    /// silent while the speaking indicator stayed alive.
-    #[test]
-    fn jitter_buffer_resyncs_after_sustained_forward_gap() {
-        let mut jb = JitterBuffer::new();
-        let mut out = Vec::new();
-
-        jb.push(1, &[1]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-
-        // Stream resumes far ahead (e.g. after 20s of loss): the first
-        // JITTER_RESYNC_AFTER - 1 packets are dropped, the next one resyncs.
-        let base = 5000u32;
-        for i in 0..config::JITTER_RESYNC_AFTER {
-            jb.push(base + i, &[i as u8]);
-        }
-        // Resync happened on the last push; it must be buffered and playable.
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![(config::JITTER_RESYNC_AFTER - 1) as u8]);
-
-        // And the stream continues normally from there.
-        jb.push(base + config::JITTER_RESYNC_AFTER, &[42]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![42]);
-    }
-
-    /// One stray far-ahead packet (reordered/bogus) must NOT reset a healthy
-    /// stream — only a sustained run of out-of-window packets does.
-    #[test]
-    fn jitter_buffer_single_stray_far_ahead_does_not_resync() {
-        let mut jb = JitterBuffer::new();
-        let mut out = Vec::new();
-
-        jb.push(1, &[1]);
-        jb.push(900_000, &[99]); // stray
-        jb.push(2, &[2]); // healthy stream continues
-
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![1]);
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![2]);
-    }
-
-    #[test]
-    fn jitter_buffer_far_ahead_packet_dropped() {
-        let mut jb = JitterBuffer::new();
-        jb.push(1, &[10]);
-        // Push way ahead (beyond capacity)
-        jb.push(1 + config::JITTER_BUF_MAX as u32, &[99]);
-
-        let mut out = Vec::new();
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![10]);
-        // The far-ahead packet should have been dropped
-        assert!(matches!(jb.pop(&mut out), PopResult::Empty));
-    }
-
-    #[test]
-    fn jitter_buffer_adapt_size() {
-        let mut jb = JitterBuffer::new();
-        // Jitter is 0 initially — adapt should set to minimum
-        jb.adapt_size();
-        assert!(jb.max_size >= config::JITTER_BUF_MIN);
-        assert!(jb.max_size <= config::JITTER_BUF_MAX);
-    }
-
-    #[test]
-    fn jitter_buffer_skip_to_oldest() {
-        let mut jb = JitterBuffer::new();
-        jb.push(1, &[10]); // start
-        let mut out = Vec::new();
-        jb.pop(&mut out); // consume seq 1, next_seq = 2
-
-        // Push 5 and 6, skip 2,3,4
-        jb.push(5, &[50]);
-        jb.push(6, &[60]);
-
-        jb.skip_to_oldest_available();
-        assert!(matches!(jb.pop(&mut out), PopResult::Packet));
-        assert_eq!(out, vec![50]);
+        // Attenuation can never need the limiter.
+        let mut frame = vec![0.9f32; config::FRAME_SIZE];
+        assert!(!apply_input_gain(&mut frame, 0.5, true));
+        assert!(frame.iter().all(|s| *s == 0.45));
     }
 }

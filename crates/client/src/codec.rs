@@ -40,6 +40,20 @@ impl OpusEncoder {
         Ok(())
     }
 
+    /// Current (bitrate, complexity, inband FEC, packet-loss hint), for tests.
+    #[cfg(test)]
+    pub fn quality_settings(&self) -> (i32, u8, bool, u8) {
+        let Bitrate::BitsPerSecond(bitrate) = self.encoder.bitrate().unwrap() else {
+            panic!("bitrate is not a plain bits-per-second value");
+        };
+        (
+            bitrate,
+            self.encoder.complexity().unwrap(),
+            self.encoder.inband_fec().unwrap(),
+            self.encoder.packet_loss_perc().unwrap(),
+        )
+    }
+
     /// Constant-rate mode for traffic-analysis resistance ("paranoid"): disable
     /// VBR and DTX so every frame is full, fixed-ish size and silence never
     /// collapses into tiny packets that would betray *when* someone is speaking.
@@ -133,6 +147,22 @@ impl OpusDecoder {
     pub fn decode_plc(&mut self) -> Result<&[f32]> {
         let signals = audiopus::MutSignals::try_from(self.decode_buf.as_mut_slice())?;
         let samples = self.decoder.decode_float(None, signals, false)?;
+        Ok(&self.decode_buf[..samples])
+    }
+
+    /// The first `len` samples of the most recent decode.
+    pub fn frame(&self, len: usize) -> &[f32] {
+        &self.decode_buf[..len]
+    }
+
+    /// Recover the frame *before* `next_packet` from the redundancy (LBRR) that
+    /// `next_packet` carries. Only meaningful right after a lost packet and
+    /// before `next_packet` itself is decoded normally. Same buffer lifetime
+    /// as `decode`.
+    pub fn decode_fec(&mut self, next_packet: &[u8]) -> Result<&[f32]> {
+        let packet = audiopus::packet::Packet::try_from(next_packet)?;
+        let signals = audiopus::MutSignals::try_from(self.decode_buf.as_mut_slice())?;
+        let samples = self.decoder.decode_float(Some(packet), signals, true)?;
         Ok(&self.decode_buf[..samples])
     }
 }
@@ -282,5 +312,142 @@ mod tests {
         let len2 = enc.encode(&pcm).unwrap().len();
         // Opus is stateful, so same input may produce slightly different sizes, but both valid
         assert!(len1 > 0 && len2 > 0);
+    }
+
+    /// Deterministic voiced-speech stand-in: harmonics of a ~150 Hz fundamental
+    /// with slow vibrato and amplitude modulation.
+    fn speech_like(frames: usize) -> Vec<f32> {
+        let mut phase = 0.0f32;
+        (0..frames * config::FRAME_SIZE)
+            .map(|i| {
+                let t = i as f32 / config::SAMPLE_RATE as f32;
+                let f0 = 150.0 * (1.0 + 0.1 * (2.0 * std::f32::consts::PI * 0.7 * t).sin());
+                phase += 2.0 * std::f32::consts::PI * f0 / config::SAMPLE_RATE as f32;
+                let amp = 0.12 * (0.6 + 0.4 * (2.0 * std::f32::consts::PI * 2.3 * t).sin());
+                let voiced: f32 = (1..=20).map(|h| (h as f32 * phase).sin() / h as f32).sum();
+                amp * voiced
+            })
+            .collect()
+    }
+
+    fn high_tier_encoder() -> OpusEncoder {
+        let mut enc = OpusEncoder::new().unwrap();
+        enc.apply_quality_settings(
+            config::BITRATE_HIGH,
+            config::COMPLEXITY_HIGH,
+            true,
+            config::FEC_MIN_LOSS_PERC,
+        )
+        .unwrap();
+        enc
+    }
+
+    fn encode_all(enc: &mut OpusEncoder, pcm: &[f32]) -> Vec<Vec<u8>> {
+        pcm.chunks(config::FRAME_SIZE)
+            .map(|f| enc.encode(f).unwrap().to_vec())
+            .collect()
+    }
+
+    /// Relative error energy of `got` against `reference`, in dB (lower is better).
+    fn err_db(got: &[f32], reference: &[f32]) -> f32 {
+        let num: f32 = got
+            .iter()
+            .zip(reference)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        let den: f32 = reference.iter().map(|b| b * b).sum();
+        10.0 * (num / den).log10()
+    }
+
+    #[test]
+    fn fec_recovers_a_lost_frame_better_than_plc() {
+        const FRAMES: usize = 75; // 1.5 s
+        const LOST: usize = 30;
+        let packets = encode_all(&mut high_tier_encoder(), &speech_like(FRAMES));
+
+        let mut reference = OpusDecoder::new().unwrap();
+        let mut fec = OpusDecoder::new().unwrap();
+        let mut plc = OpusDecoder::new().unwrap();
+        let (mut ref_k, mut ref_k1) = (Vec::new(), Vec::new());
+        let (mut fec_k, mut fec_k1) = (Vec::new(), Vec::new());
+        let (mut plc_k, mut plc_k1) = (Vec::new(), Vec::new());
+
+        for (n, pkt) in packets.iter().enumerate() {
+            let r = reference.decode(pkt).unwrap().to_vec();
+            if n == LOST {
+                ref_k = r;
+                fec_k = fec.decode_fec(&packets[LOST + 1]).unwrap().to_vec();
+                assert_eq!(fec_k.len(), config::FRAME_SIZE);
+                plc_k = plc.decode_plc().unwrap().to_vec();
+            } else if n == LOST + 1 {
+                ref_k1 = r;
+                fec_k1 = fec.decode(pkt).unwrap().to_vec();
+                plc_k1 = plc.decode(pkt).unwrap().to_vec();
+            } else {
+                fec.decode(pkt).unwrap();
+                plc.decode(pkt).unwrap();
+            }
+        }
+
+        let (fec_db, plc_db) = (err_db(&fec_k, &ref_k), err_db(&plc_k, &ref_k));
+        let (fec1_db, plc1_db) = (err_db(&fec_k1, &ref_k1), err_db(&plc_k1, &ref_k1));
+        eprintln!("lost frame: fec {fec_db:.1} dB vs plc {plc_db:.1} dB");
+        eprintln!("next frame: fec {fec1_db:.1} dB vs plc {plc1_db:.1} dB");
+        // 6 dB = half the error amplitude; FEC decodes the actual coded
+        // signal, PLC extrapolates the past.
+        assert!(fec_db + 6.0 < plc_db, "fec {fec_db} dB, plc {plc_db} dB");
+        assert!(
+            fec1_db <= plc1_db + 0.5,
+            "fec {fec1_db} dB, plc {plc1_db} dB"
+        );
+    }
+
+    /// With FEC on, Opus leaves SILK-only and goes hybrid/CELT at the HIGH
+    /// bitrate; HD voice requires super-wideband or fullband (TOC config
+    /// 12-15 hybrid, 24-31 CELT SWB/FB; 16-23 are CELT NB/WB).
+    #[test]
+    fn hd_voice_still_wideband_or_better() {
+        let packets = encode_all(&mut high_tier_encoder(), &speech_like(50));
+        for pkt in &packets[10..] {
+            let cfg = pkt[0] >> 3;
+            assert!(
+                (12..=15).contains(&cfg) || cfg >= 24,
+                "TOC config {cfg} is below super-wideband"
+            );
+        }
+    }
+
+    #[test]
+    fn fec_is_actually_emitted_at_high_tier() {
+        // LBRR makes packets larger than the same signal without the hint.
+        let pcm = speech_like(50);
+        let with: usize = encode_all(&mut high_tier_encoder(), &pcm)
+            .iter()
+            .map(Vec::len)
+            .sum();
+        let mut no_fec = OpusEncoder::new().unwrap();
+        no_fec
+            .apply_quality_settings(config::BITRATE_HIGH, config::COMPLEXITY_HIGH, false, 0)
+            .unwrap();
+        let without: usize = encode_all(&mut no_fec, &pcm).iter().map(Vec::len).sum();
+        eprintln!("bytes with fec {with}, without {without}");
+        assert!(with != without);
+    }
+
+    /// The production setup (HIGH tier + FEC) with paranoid CBR on keeps
+    /// speech and silence frames the same size.
+    #[test]
+    fn constant_bitrate_is_flat_with_the_production_setup() {
+        let mut enc = high_tier_encoder();
+        enc.set_constant_bitrate(true).unwrap();
+        let mut pcm = speech_like(10);
+        pcm.extend(vec![0.0f32; 10 * config::FRAME_SIZE]);
+        let sizes: Vec<usize> = encode_all(&mut enc, &pcm).iter().map(Vec::len).collect();
+        eprintln!("cbr sizes: {sizes:?}");
+        assert!(sizes.iter().all(|&s| s > 10));
+        assert!(
+            sizes.windows(2).all(|w| w[0] == w[1]),
+            "CBR frames must all be the same size: {sizes:?}"
+        );
     }
 }

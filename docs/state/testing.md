@@ -9,12 +9,14 @@ cargo clippy --workspace      # must be warning-clean
 ```
 
 Unit coverage of note:
-- `client/codec.rs` — Opus encode/decode + PLC for lost packets
+- `client/codec.rs` — Opus encode/decode + PLC; **FEC recovers a lost frame better than PLC** and HD-voice stays SWB/FB with FEC on (real Opus, measured margins)
+- `client/playout.rs` — **playout simulations**: a real-Opus sender model, a network model (jitter/loss/reorder/clock drift) and an event-clocked output driving the real `PlayoutPump` + ring + `PlaybackRenderer`; asserts zero `output_starved`/gaps under 0–30 ms jitter, Windows 15.6 ms timer granularity, a 2048-sample device, ±0.5 % sender clocks, talkspurt seq continuity. Load-bearing for any change on the receive path
+- `client/audio.rs` — `PlaybackRenderer` (limiter last, volume, sinc resample without chunk-boundary steps), `PlaybackQueue` ramps; `client/limiter.rs` — soft clip bounds
 - `shared`/framing — length-prefixed frame parse, `BytesMut` pending buffer
 - `server/tcp.rs` — `handle_message` routing
 - `server/udp.rs` — **behavioral `BatchSender`** fan-out over loopback: exercises the real per-OS send path (`sendmmsg`/`sendmsg_x`/`try_send_to`) + cached-layout reuse. The only test that actually runs the platform syscall, so it must run on each OS.
 - `server/state.rs` — UDP registration incl. canonical-IP (v4-mapped IPv6) match
-- `client/voice.rs` — re-hello loop, jitter buffer, seq wrap
+- `client/voice.rs` — re-hello loop, quality tiers (FEC in every tier, HIGH at start), input gain + limiter
 - `client/network.rs` — frame parsing
 - `client/main.rs` — input sanitize + conversions
 

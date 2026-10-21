@@ -77,21 +77,73 @@ pub const SAMPLE_RATE: u32 = 48000;
 pub const AUDIO_CHANNELS: u16 = 1;
 /// Max encoded Opus packet size (bytes).
 pub const MAX_OPUS_PACKET: usize = 4000;
-/// Max playback buffer in samples (~100ms). Excess is dropped to cap latency.
-pub const MAX_PLAYBACK_BUF: usize = FRAME_SIZE * 5;
+/// Safety-net latency cap of the output callback's queue, in 48 kHz samples
+/// (300 ms). The playout loop only renders while the output holds less than
+/// `PLAYOUT_OUTPUT_LOW_WATER`, so in normal operation the queue never gets near
+/// this; it exists so a stalled-then-resumed device or any future overproducer
+/// cannot grow latency without bound. Set above the largest jitter target
+/// (`PLAYOUT_TARGET_MAX_FRAMES`) so it can never fight the playout engine. A
+/// trim at this cap is a defect and counts as a glitch.
+pub const PLAYBACK_SAFETY_CAP: usize = FRAME_SIZE * 15;
 /// Length of the click-avoiding ramps on the playback path, in milliseconds.
-/// Two discontinuities are audible on every phrase and both are ramped over
-/// this window: the splice made when trimming back to the latency cap (the VAD
-/// pre-roll flush overshoots it once per talkspurt), and the silence↔data
-/// boundary when the queue runs dry between phrases.
+/// Every edit of the sample timeline is ramped over this window: the crossfade
+/// over a frame dropped by playout acceleration, the crossfade across a
+/// safety-cap trim, and the silence↔data boundary when the output runs dry
+/// between phrases.
 pub const PLAYBACK_FADE_MS: u32 = 5;
-/// Jitter buffer min/max capacity (packets) for adaptive sizing.
-pub const JITTER_BUF_MIN: usize = 2;
+
+/// How often (seconds) the receive task logs the audio glitch counters,
+/// when any of them moved since the previous log.
+pub const AUDIO_DIAG_LOG_SECS: u64 = 10;
+
+// ── Playout (receive side, `client/playout.rs`) ─────────────────────────
+// Playback is pulled by the output device's clock: the receive task renders
+// one mixed 20 ms frame whenever the output runs low, and each sender's jitter
+// buffer is held at an adaptive depth in front of that pull.
+
+/// Wakeup period of the receive task's playout loop (milliseconds), on top of
+/// waking for every inbound packet. Several ticks per 20 ms frame so the output
+/// is topped up well before the device needs it. On Windows the default timer
+/// resolution is ~15.6 ms, so this may tick at ~16 ms there; the low-water
+/// mark below is sized to survive that, and `output_starved` is the evidence.
+pub const PLAYOUT_TICK_MS: u64 = 5;
+/// The playout loop renders frames while the output (decode → playback ring
+/// plus the callback's queue) holds fewer than this many 48 kHz samples.
+/// Two frames: one for the device to take next, one to cover a late wakeup
+/// (a 16 ms Windows tick plus scheduling slack). A device whose callback asks
+/// for more than a frame raises it to one request plus one frame.
+pub const PLAYOUT_OUTPUT_LOW_WATER: usize = 2 * FRAME_SIZE;
+/// Bounds of a sender's target jitter-buffer depth, in frames. The target is
+/// `ceil((2 × jitter_ms + 20) / 20)`: two mean deviations of arrival time plus
+/// one frame for the arrival/pull phase. 2 frames (40 ms) is the floor even on
+/// a perfect link; 10 frames (200 ms) is where waiting stops being worth it.
+pub const PLAYOUT_TARGET_MIN_FRAMES: usize = 2;
+pub const PLAYOUT_TARGET_MAX_FRAMES: usize = 10;
+/// Frames of concealment (expand) a playing sender gets when its buffer runs
+/// empty before it is considered finished and goes idle. 60 ms bridges a late
+/// packet without stretching a talkspurt's tail into an audible smear.
+pub const PLAYOUT_HOLD_FRAMES: u32 = 3;
+/// Window (frames, ≈1 s) over which the minimum buffered depth is taken when
+/// deciding to accelerate. Using the minimum, not the mean, means only latency
+/// the network never needed over a whole second is removed.
+pub const PLAYOUT_ACCEL_WINDOW_FRAMES: usize = 50;
+/// Frames of depth history needed before the first acceleration of a talkspurt
+/// or after the previous one. Lets the onset (the VAD pre-roll burst) play out
+/// intact and keeps one excess frame from being removed twice.
+pub const PLAYOUT_ACCEL_MIN_OBSERVED: usize = 10;
+/// A frame may be dropped to reduce latency only when its RMS is below this:
+/// the default VAD threshold (≈ −36 dBFS), i.e. a level the sender itself
+/// treats as not-speech — pauses, breaths, hangover tails. AGC aims speech at
+/// `AGC_TARGET_RMS` (≈ −21 dBFS), 15 dB above it.
+pub const PLAYOUT_ACCEL_MAX_RMS: f32 = 0.015;
+/// Excess depth (frames beyond target + 1) at which acceleration stops waiting
+/// for a quiet frame. Content that is never quiet (music, a loud room in
+/// paranoid mode) would otherwise let sender clock drift walk the buffer into
+/// the ring's edge and force a resync; a crossfaded drop is far gentler.
+pub const PLAYOUT_ACCEL_FORCE_EXCESS: usize = 3;
+/// Jitter ring capacity per sender (packets, 300 ms). Holds the largest target
+/// plus the acceleration margin; anything further ahead is out of window.
 pub const JITTER_BUF_MAX: usize = 15;
-/// Initial jitter buffer size before adaptation kicks in.
-pub const JITTER_BUF_INITIAL: usize = 4;
-/// How often to recalculate adaptive jitter buffer size (packets).
-pub const JITTER_ADAPT_INTERVAL: u32 = 50;
 /// Consecutive packets beyond the jitter ring (forward seq gap) before the
 /// buffer resyncs onto the new position. >1 so a single stray/reordered
 /// packet cannot reset a healthy stream.
@@ -155,8 +207,9 @@ pub const AGC_RELEASE: f32 = 0.03;
 /// Below this frame RMS the gain does not move at all. An AGC that adapts in a
 /// pause is a machine for amplifying room noise between sentences.
 pub const AGC_FLOOR_RMS: f32 = 0.004;
-/// Where the limiter starts compressing instead of passing through.
-pub const AGC_KNEE: f32 = 0.8;
+/// Where the soft limiter (AGC output, capture gain stage, playback output)
+/// starts compressing instead of passing through.
+pub const LIMITER_KNEE: f32 = 0.8;
 
 // ── VAD ──────────────────────────────────────────────────────────────────
 
@@ -192,6 +245,13 @@ pub const BITRATE_MINIMUM: i32 = 12_000;
 
 /// Encoder complexity per quality tier (0–10).
 pub const COMPLEXITY_HIGH: u8 = 10;
+
+/// Floor for the Opus packet-loss hint, in percent. In-band FEC is always on,
+/// but the encoder only emits LBRR redundancy when the loss hint is above 0,
+/// and the sender sees nothing but its own inbound loss (there is no receiver
+/// feedback yet), which is 0 on a clean link. The floor keeps every packet
+/// carrying a cheap copy of the previous frame so a single loss is recoverable.
+pub const FEC_MIN_LOSS_PERC: u8 = 5;
 pub const COMPLEXITY_MEDIUM: u8 = 7;
 pub const COMPLEXITY_LOW: u8 = 5;
 pub const COMPLEXITY_MINIMUM: u8 = 3;
