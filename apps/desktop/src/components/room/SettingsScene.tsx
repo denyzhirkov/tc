@@ -37,6 +37,7 @@ import {
   type AvatarStyle,
   type Crowd,
   type Theme,
+  type RoomLook,
   type Typeface,
   type VoiceLook,
 } from "../../lib/theme";
@@ -477,6 +478,20 @@ export default function SettingsScene() {
           current={(v) => tweaks.typeface === v}
           pick={(v) => setTweak("typeface", v)}
           paint={(v) => ({ "font-family": FONT_STACK[v] })}
+        />
+      ),
+    },
+    {
+      group: "look",
+      label: t("set.room_look"),
+      keys: "room score names heads faces партитура комната имена ноты история головы лица",
+      hint: t("set.room_look_hint"),
+      render: () => (
+        <Opts<RoomLook>
+          opts={["names", "heads", "score"]}
+          label={(v) => t(`set.room_${v}`)}
+          current={(v) => tweaks.roomLook === v}
+          pick={(v) => setTweak("roomLook", v)}
         />
       ),
     },

@@ -459,3 +459,8 @@ stamped from the local clock the moment it arrives (`wire.ts` for incoming,
 line older than `JUST_SAID` (5s) is something read out of storage and does not
 fall. A chat line with no stamp at all still falls — that would be a bug worth
 seeing rather than swallowing.
+
+## Room looks: score and talking heads
+
+- **Score and heads** (`uercuu`, `g931tf` = `q298jm` + `fvgtta`, unreleased): two alternative room looks beside the default names. The score came from a design round on the canvas prototype (https://claude.ai/artifact/DocNv4nnSJdkyT2UjKwUAR): the names room shows the present, the score shows who spoke when — overlaps, pauses, who has been quiet — with chat as lyrics under the sender's staff and a scroll back through two minutes. It is one DPR-correct canvas plus a names column of real buttons (volume knob, your acts), fed by an app-wide recorder. Review caught the "back to now" button clipped out of busy rooms, a rejoining speaker never lighting up, the "all" crowd overflowing the input line and quiet typists never getting a staff. Heads asked for real lip sync, which the 5 Hz packet-size proxy could not give, so the core now measures each peer's loudness from the rendered frame and streams it at 30 Hz without locking `AppCore` — which also made the old levels honest and forced a retune: one gate at the source plus a peak-held envelope keeps the default names look steady instead of throbbing per syllable. Faces are generated line art (head, eyes, brows, hair, mouth) in the identity hue; mouths follow raw frame loudness, eyes blink, brows lift on loud syllables. Reduced motion keeps only the mouth. Not yet seen in the real app with live speech — needs a manual pass in `tauri dev`.
+

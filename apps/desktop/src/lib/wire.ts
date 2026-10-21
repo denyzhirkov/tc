@@ -3,6 +3,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { cmd, on, type InvitePayload } from "./tauri";
 import { pushLog, state, update } from "./store";
 import { t } from "./i18n";
+import { clearFastLevels, takeFastLevels } from "./live";
 
 /// Timestamp of the last `voice_level` event. The watchdog below zeroes the
 /// voice UI if the stream of events stalls (backend pump stuck or dead) so
@@ -17,6 +18,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
   setInterval(() => {
     if (state.voice && Date.now() - lastVoiceLevelAt > VOICE_LEVEL_STALL_MS) {
       update.voice(null);
+      clearFastLevels();
     }
   }, 500);
   return await Promise.all([
@@ -30,6 +32,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
         update.channelList([]);
         update.speakers({});
         update.voice(null);
+        clearFastLevels();
         pushLog(t("conn.connecting"), "system");
       } else if (s.state === "connected") {
         update.conn("connected");
@@ -44,6 +47,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
         update.channelList([]);
         update.speakers({});
         update.voice(null);
+        clearFastLevels();
         pushLog(
           t("conn.reconnecting", { attempt: s.attempt, delay: s.delay_secs }),
           "system",
@@ -54,6 +58,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
         update.channelList([]);
         update.speakers({});
         update.voice(null);
+        clearFastLevels();
         pushLog(t("conn.disconnected"), "system");
       }
     }),
@@ -80,6 +85,7 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
     on("left_channel", () => {
       update.channel(null);
       update.voice(null);
+      clearFastLevels();
       pushLog(t("log.left_channel"), "system");
       // Leaving lands you back among the rooms, so ask what's there now —
       // counts have moved and rooms may have come and gone while you were in
@@ -130,8 +136,11 @@ export async function subscribeAll(): Promise<UnlistenFn[]> {
       update.voice(v);
       if (state.status) state.status.muted = v.muted;
     }),
+    // Lip sync: ~30 Hz, kept out of the store (`lib/live.ts`).
+    on("voice_levels", takeFastLevels),
     on("voice_stopped", () => {
       update.voice(null);
+      clearFastLevels();
     }),
     on("echo_test_started", () => {
       pushLog(t("settings.sound_check_recording", { secs: "5" }), "system");

@@ -232,11 +232,20 @@ const en: Dict = {
   "set.level_manual": "leave it to me",
   "set.level_hint":
     "quiet speech is brought up and loud speech held back, so you arrive at the same loudness as everyone else — the gain above is still yours to set on top",
+  "set.room_look": "room",
+  "set.room_names": "names",
+  "set.room_score": "score",
+  "set.room_heads": "heads",
+  "set.room_look_hint":
+    "heads puts a face above every name that speaks when they do; the score shows who spoke when — the last two minutes",
+  "score.now": "now",
+  "score.back": "back to now ▸",
+  "score.paused": "paused",
   "set.voice_look": "a voice looks like",
   "set.voice_string": "a string",
   "set.voice_lava": "drops",
   "set.voice_look_hint":
-    "under every name: a string with the voice running down it, or drops shed from the name that sink and dissolve",
+    "in the names room, under every name: a string with the voice running down it, or drops shed from the name that sink and dissolve",
   "room.tune": "how loud they are for you",
   "set.less": "{n}% less",
   "set.more": "{n}% more",
@@ -522,11 +531,20 @@ const ru: Dict = {
   "set.level_manual": "как есть",
   "set.level_hint":
     "тихую речь поднимает, громкую придерживает — вы приходите к собеседникам с той же громкостью, что и все; усиление выше остаётся вашим поверх этого",
+  "set.room_look": "комната",
+  "set.room_names": "имена",
+  "set.room_score": "партитура",
+  "set.room_heads": "головы",
+  "set.room_look_hint":
+    "головы — над каждым именем лицо, которое говорит вместе с голосом; партитура показывает, кто когда говорил — последние две минуты",
+  "score.now": "сейчас",
+  "score.back": "к сейчас ▸",
+  "score.paused": "пауза",
   "set.voice_look": "голос выглядит как",
   "set.voice_string": "верёвочка",
   "set.voice_lava": "капли",
   "set.voice_look_hint":
-    "под каждым именем: верёвочка, по которой бежит голос, или капли, которые срываются с имени, тонут и растворяются",
+    "в комнате имён, под каждым именем: верёвочка, по которой бежит голос, или капли, которые срываются с имени, тонут и растворяются",
   "room.tune": "насколько он громкий для вас",
   "set.less": "на {n}% меньше",
   "set.more": "на {n}% больше",

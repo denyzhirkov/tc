@@ -10,6 +10,7 @@ import { state } from "../../lib/store";
 import { toggleMute } from "../../lib/actions";
 import { cmd } from "../../lib/tauri";
 import { followRoom, goto, ground, toggle, view } from "../../lib/scene";
+import { tweaks } from "../../lib/theme";
 import DevicePrompt from "../DevicePrompt";
 import UpdateNotification from "../UpdateNotification";
 import Cast from "./Cast";
@@ -18,6 +19,7 @@ import Falling from "./Falling";
 import HistoryScene from "./HistoryScene";
 import Lobby from "./Lobby";
 import Line from "./Line";
+import Score from "./Score";
 import SettingsScene from "./SettingsScene";
 import TopLine from "./TopLine";
 
@@ -93,8 +95,17 @@ export default function Shell() {
       <TopLine />
       <div class="stage">
         <Show when={view() === "room"}>
-          <Cast />
-          <Falling />
+          <Show
+            when={tweaks.roomLook === "score"}
+            fallback={
+              <>
+                <Cast />
+                <Falling />
+              </>
+            }
+          >
+            <Score />
+          </Show>
         </Show>
         <Show when={view() === "lobby"}>
           <Lobby />

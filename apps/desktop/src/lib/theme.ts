@@ -23,6 +23,13 @@ export type Crowd = "recent" | "all";
 /// (`lib/lava.ts`). Same slot, same colour, same silence — a different medium.
 export type VoiceLook = "string" | "lava";
 
+/// How the room itself is drawn: the present (names, with the voice under
+/// each and speech falling from it), the same room with a face above every
+/// name that speaks with the voice (`components/room/Face.tsx`), or the
+/// conversation over time — one staff per person, a score
+/// (`components/room/Score.tsx`).
+export type RoomLook = "names" | "heads" | "score";
+
 export type Tweaks = {
   theme: Theme;
   accent: Accent;
@@ -32,6 +39,7 @@ export type Tweaks = {
   composerHints: boolean;
   crowd: Crowd;
   voiceLook: VoiceLook;
+  roomLook: RoomLook;
 };
 
 const KEY = "tc.tweaks";
@@ -47,6 +55,8 @@ const AVATAR_STYLES: AvatarStyle[] = ["weave", "pixel", "faces"];
 
 const VOICE_LOOKS: VoiceLook[] = ["string", "lava"];
 
+const ROOM_LOOKS: RoomLook[] = ["names", "heads", "score"];
+
 // The room is typeset in one face, and that face is monospace: the terminal
 // heritage is carried by the type rather than by decoration.
 const ACCENTS: Accent[] = ["plain", "indigo", "forest", "rust"];
@@ -59,6 +69,7 @@ const DEFAULTS: Tweaks = {
   composerHints: true,
   crowd: "recent",
   voiceLook: "string",
+  roomLook: "names",
 };
 
 function load(): Tweaks {
@@ -77,6 +88,8 @@ function load(): Tweaks {
     if (!ACCENTS.includes(merged.accent)) merged.accent = DEFAULTS.accent;
     if (!VOICE_LOOKS.includes(merged.voiceLook))
       merged.voiceLook = DEFAULTS.voiceLook;
+    if (!ROOM_LOOKS.includes(merged.roomLook))
+      merged.roomLook = DEFAULTS.roomLook;
     return merged;
   } catch {
     return { ...DEFAULTS };

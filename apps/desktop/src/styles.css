@@ -416,6 +416,73 @@ textarea {
   color: var(--c-danger);
 }
 
+/* ── heads: a face above every name (components/room/Face.tsx) ────────
+   Every class here is prefixed `face-`: a hand-written class shares its
+   namespace with Tailwind's utilities and would silently merge with one.
+   Strokes are in viewBox units on purpose — they scale with the face the way
+   a name's strokes scale with its type, so a big face is not drawn in
+   hairline and a crowd's small ones are not drawn in marker. */
+.face-art {
+  flex: none;
+  width: var(--face, 64px);
+  height: var(--face, 64px);
+  overflow: visible;
+  /* The person's hover handlers see the face; the face itself is not a
+     control, and the cursor should say so. */
+  cursor: default;
+  transition: opacity 220ms ease;
+}
+.face-art path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* The head is an outline with a breath of colour inside — enough to make it
+   a body rather than a ring, never enough to compete with the name. */
+.face-skin {
+  fill: currentColor;
+  fill-opacity: 0.06;
+  stroke: currentColor;
+  stroke-width: 2.4;
+}
+.face-hair {
+  fill: currentColor;
+  fill-opacity: 0.2;
+  stroke: currentColor;
+  stroke-width: 2.4;
+}
+.face-ink {
+  fill: currentColor;
+  stroke: none;
+}
+.face-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.8;
+}
+/* Closed, the two lips are one line and the fill has no area; open, the
+   inside reads darker than the face without becoming a hole. */
+.face-mouth {
+  fill: currentColor;
+  fill-opacity: 0.3;
+  stroke: currentColor;
+  stroke-width: 2.6;
+}
+/* Muted, the face steps back the way the struck-through name does. */
+.face-hushed {
+  opacity: 0.4;
+}
+:root[data-theme="light"] .face-skin {
+  fill-opacity: 0.05;
+}
+:root[data-theme="light"] .face-hair {
+  fill-opacity: 0.16;
+}
+/* The knob comes up out of the name, and in this look the name sits under a
+   face — so the knob is centred on the name, not on the whole person. */
+.cast.face-room .tune {
+  top: calc(var(--face, 64px) + 6px + var(--nameSize) * 0.55);
+}
+
 .who {
   font-size: 10.5px;
   color: var(--c-faint);
@@ -433,6 +500,171 @@ textarea {
   line-height: 1.9;
   color: var(--c-faint);
   padding: 0 10px;
+}
+
+/* ── the score: the room over time (components/room/Score.tsx) ──────────
+   Every class here is prefixed `score-`: a hand-written class shares its
+   namespace with Tailwind's utilities and would silently merge with one. */
+
+.score {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: clamp(8px, 3vh, 28px);
+}
+.score-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.score-names {
+  flex: none;
+  width: 148px;
+  min-width: 0;
+  box-sizing: border-box;
+  /* Tight rows put your acts beside your name; keep them off the staff. */
+  padding-right: 10px;
+}
+.score-person {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+/* Rows too short for a second line: your acts move beside your name. */
+.score-person.score-tight {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
+}
+.score-name {
+  max-width: 100%;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.78;
+  /* The frame loop owns `transform`; only opacity may transition. */
+  transform-origin: left center;
+  transition: opacity 250ms ease;
+  will-change: transform;
+}
+.score-tight .score-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.score-name.score-live {
+  opacity: 1;
+  font-weight: 700;
+}
+.score-name.score-hushed {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.score-name:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+.score-acts {
+  flex: none;
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.05em;
+}
+.score-acts .word {
+  color: var(--c-muted);
+}
+.score-acts .word:hover {
+  color: var(--c-text);
+}
+.score-acts .word-danger:hover {
+  color: var(--c-danger);
+}
+/* The knob opens over the staff beside the name, on a pool of the room's own
+   ground — the same no-panel ground as `.tune` in the names look. */
+.score-tune {
+  position: absolute;
+  top: calc(100% - 6px);
+  left: 0;
+  z-index: 3;
+  width: max-content;
+  font-size: 11px;
+  padding: 6px 0;
+}
+.score-tune::before {
+  content: "";
+  position: absolute;
+  inset: -12px -28px;
+  z-index: -1;
+  background: radial-gradient(ellipse at center, var(--c-bg) 46%, transparent 80%);
+}
+.score-tune .opts {
+  flex-wrap: nowrap;
+  gap: 9px;
+}
+.score-sheet {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+}
+.score-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+/* In the ruler band at the right, beside the paused clock — where the eye
+   already is when it notices the score has stopped. */
+.score-back {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 5px;
+  box-sizing: border-box;
+  font-size: 11px;
+  line-height: 1;
+}
+.score-back .word {
+  font-weight: 700;
+}
+.score-quiet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  /* A crowd longer than the room scrolls here, so every name stays reachable. */
+  overflow-y: auto;
+  font-size: 10.5px;
+  line-height: 1.9;
+  color: var(--c-faint);
+}
+.score-quiet-label {
+  flex: none;
+  width: 148px;
+}
+.score-quiet-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
 }
 
 /* ── a voice hangs under every name, as a string or as drops ─────────── */
@@ -1021,5 +1253,8 @@ textarea {
   .trace,
   .bubbles {
     display: none;
+  }
+  .face-art {
+    transition: none;
   }
 }

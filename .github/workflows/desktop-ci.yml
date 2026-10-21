@@ -39,7 +39,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
 
@@ -54,6 +54,10 @@ jobs:
       - name: Typecheck frontend
         working-directory: apps/desktop
         run: pnpm tsc --noEmit
+
+      - name: Test frontend
+        working-directory: apps/desktop
+        run: pnpm test
 
       - name: Build frontend
         working-directory: apps/desktop

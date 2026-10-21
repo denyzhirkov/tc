@@ -6,11 +6,13 @@ import { drainPendingInvite, fetchInitialStatus, subscribeAll } from "./lib/wire
 import { pushLog, state, update } from "./lib/store";
 import { cmd } from "./lib/tauri";
 import { installTheme } from "./lib/theme";
+import { installScoreRecorder } from "./lib/scoreFeed";
 import { goto } from "./lib/scene";
 import { shortcut } from "./lib/platform";
 
 export default function App() {
   installTheme();
+  installScoreRecorder();
 
   onMount(async () => {
     // Right-click otherwise reaches the webview and it answers with a browser's

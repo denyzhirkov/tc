@@ -9,8 +9,9 @@
 // Voice is painted straight onto the DOM from a rAF loop rather than through
 // signals: levels arrive many times a second and a store write per frame per
 // peer would re-run every dependent memo for no visual gain. That same loop
-// feeds each name's falling ribbon (`lib/trace.ts`) — one place knows how loud
-// anyone is, and it stays this one.
+// feeds each name's falling ribbon (`lib/trace.ts`), its drops, or — in the
+// heads look — its face (`Face.tsx`): one place knows how loud anyone is
+// (`lib/live.ts`), and it stays this one.
 
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { state } from "../../lib/store";
@@ -20,8 +21,11 @@ import { closeDm } from "../../lib/dm";
 import { tweaks } from "../../lib/theme";
 import { t } from "../../lib/i18n";
 import { nameNodes } from "../../lib/stage";
+import { levelOf } from "../../lib/live";
+import { Envelope, LIFT_AT } from "../../lib/loudness";
 import { Trace } from "../../lib/trace";
 import { Lava } from "../../lib/lava";
+import Face, { type Painter } from "./Face";
 import { Meter, Word } from "./words";
 
 /// Most names that ever stand at once. Past this the room stops being a room.
@@ -39,6 +43,18 @@ const TUNE_LINGER = 1500;
 const TUNE_FADE = 280;
 /// Loudest a peer can be made, matching `config::PEER_VOL_MAX_PCT`.
 const PEER_VOL_MAX = 200;
+/// A name has spoken (crowd recency) above this, on the room's scale
+/// (`lib/loudness.ts`): raw ≈ −36 dBFS, the default VAD threshold.
+const SPOKE_AT = 0.1;
+/// Faces stand in flow above their names, so their size is bound by the
+/// room's height as well as by the headcount — in a short window a full room
+/// would otherwise push the last rank over the input line. What a rank needs
+/// besides its face: the most `.ranks` is pushed down, and room for the acts
+/// under your name. Below `FACE_MIN` a face stops reading as one.
+const FACE_TOP = 54;
+const FACE_ACTS = 24;
+const FACE_QUIET = 40;
+const FACE_MIN = 28;
 
 export default function Cast() {
   const me = () => state.status?.name ?? null;
@@ -56,16 +72,20 @@ export default function Cast() {
 
   const [standing, setStanding] = createSignal<string[]>([]);
   const [width, setWidth] = createSignal(920);
+  const [height, setHeight] = createSignal(600);
   const spokeAt = new Map<string, number>();
   const nodes = nameNodes;
-  /// What paints the voice under each standing name — a string or the drops,
-  /// depending on the setting. Either way it is fed from the frame loop below,
-  /// so there is still exactly one place that knows how loud anyone is.
-  const painters = new Map<string, (level: number, now: number) => void>();
+  /// What paints the voice of each standing name — a string or the drops
+  /// under it, or a face above it, depending on the settings. Every one is
+  /// fed from the frame loop below, so there is still exactly one place that
+  /// knows how loud anyone is.
+  const painters = new Map<string, Painter>();
   let lastSwap = 0;
   let host: HTMLDivElement | undefined;
 
   const showAll = () => tweaks.crowd === "all";
+  const heads = () => tweaks.roomLook === "heads";
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   /// Whose voice you are currently tuning. One at a time: this is an aside in
   /// the middle of a conversation, not a mixing desk.
@@ -127,15 +147,6 @@ export default function Cast() {
   };
 
   const volumeOf = (name: string) => state.peerVolumes[name] ?? 100;
-
-  const levelOf = (name: string): number => {
-    if (state.dm) return 0;
-    if (name === me()) {
-      if (state.status?.muted) return 0;
-      return Math.min(1, (state.voice?.input_peak ?? 0) * 4);
-    }
-    return state.speakers[name] ?? 0;
-  };
 
   // Keep the standing set in step with who is actually in the room.
   createEffect(() => {
@@ -201,15 +212,36 @@ export default function Cast() {
 
   const quiet = createMemo(() => roster().filter((n) => !standing().includes(n)));
 
+  /// The heads look's face size: from the name size, then shrunk until every
+  /// rank fits the room's height (`.rank` gap and `.person` gap from CSS).
+  const face = createMemo(() => {
+    const s = size();
+    const rows = ranks().length || 1;
+    const want = Math.max(40, Math.min(96, s * 2.6));
+    const room =
+      height() -
+      FACE_TOP -
+      FACE_ACTS -
+      (quiet().length ? FACE_QUIET : 0) -
+      rows * (s * 1.1 + 6) -
+      (rows - 1) * s * 0.62;
+    return Math.max(FACE_MIN, Math.min(want, room / rows));
+  });
+
   onMount(() => {
     if (host && "ResizeObserver" in window) {
-      const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
+      const ro = new ResizeObserver(([e]) => {
+        setWidth(e.contentRect.width);
+        setHeight(e.contentRect.height);
+      });
       ro.observe(host);
       onCleanup(() => ro.disconnect());
     }
 
     // ── the only animation loop in the app ──
-    const levels = new Map<string, number>();
+    /// Each name's envelope (`lib/loudness.ts`): swells for a phrase rather
+    /// than throbbing per syllable. Faces get the raw level as well.
+    const levels = new Map<string, Envelope>();
     /// How far each name has fallen away behind its own volume knob, 0..1.
     /// This lives here rather than in CSS because the loop rewrites every
     /// name's opacity and transform each frame — a stylesheet would be
@@ -232,14 +264,16 @@ export default function Cast() {
 
       let loudName: string | null = null;
       let loudLevel = 0;
+      // Your own voice does not tint your own room: you know you're talking.
+      const mine = me();
       // Only one name is ever behind a knob, and only while it is up.
       const deep = surfaced() ? tuning() : null;
 
       for (const [name, el] of nodes) {
         const goal = levelOf(name);
-        const cur = levels.get(name) ?? 0;
-        const next = cur + (goal - cur) * Math.min(1, dt * 8);
-        levels.set(name, next);
+        let env = levels.get(name);
+        if (!env) levels.set(name, (env = new Envelope()));
+        const next = env.step(goal, now);
 
         // Falling inward: smaller, dimmer and out of focus, the same distance
         // the knob travels the other way.
@@ -251,9 +285,9 @@ export default function Cast() {
         el.style.opacity = ((floor + next * (1 - floor)) * (1 - depth)).toFixed(3);
         if (depth > 0.004) el.style.filter = `blur(${(depth * 3).toFixed(2)}px)`;
         else if (el.style.filter) el.style.filter = "";
-        painters.get(name)?.(next, now);
-        if (next > 0.1) spokeAt.set(name, t);
-        if (next > loudLevel) {
+        painters.get(name)?.(next, now, goal);
+        if (next > SPOKE_AT) spokeAt.set(name, t);
+        if (name !== mine && next > loudLevel) {
           loudLevel = next;
           loudName = name;
         }
@@ -262,7 +296,7 @@ export default function Cast() {
       // Somebody off-stage found their voice — bring them up.
       if (!showAll()) {
         for (const name of quiet()) {
-          if (levelOf(name) > 0.12) {
+          if (levelOf(name) > LIFT_AT) {
             spokeAt.set(name, t);
             lift(name, t);
             break;
@@ -292,13 +326,29 @@ export default function Cast() {
       raf = requestAnimationFrame(frame);
     };
 
-    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (!calm) {
       raf = requestAnimationFrame(frame);
       onCleanup(() => cancelAnimationFrame(raf));
     } else {
       // Static rooms still need presence — just not motion.
       queueMicrotask(() => {
         for (const el of nodes.values()) el.style.opacity = "0.72";
+      });
+      // Reduced motion keeps names still, but a face's mouth is information,
+      // not decoration — so while the heads look is up, and only then, a
+      // loop feeds the faces alone.
+      createEffect(() => {
+        if (!heads()) return;
+        let id = 0;
+        const still = (now: number) => {
+          for (const name of nodes.keys()) {
+            const goal = levelOf(name);
+            painters.get(name)?.(goal, now, goal);
+          }
+          id = requestAnimationFrame(still);
+        };
+        id = requestAnimationFrame(still);
+        onCleanup(() => cancelAnimationFrame(id));
       });
     }
     onCleanup(() => document.documentElement.style.removeProperty("--room"));
@@ -311,7 +361,7 @@ export default function Cast() {
 
   /// Swapping the look disposes one branch and creates the other, and the two
   /// are not ordered — so a painter only ever retires its own entry.
-  const own = (name: string, paint: (level: number, now: number) => void) => {
+  const own = (name: string, paint: Painter) => {
     painters.set(name, paint);
     onCleanup(() => {
       if (painters.get(name) === paint) painters.delete(name);
@@ -345,8 +395,13 @@ export default function Cast() {
         crowded: standing().length > CROWD_AT,
         tuning: tuning() !== null,
         deep: surfaced(),
+        "face-room": heads(),
       }}
-      style={{ "--nameSize": `${size().toFixed(1)}px` }}
+      style={{
+        "--nameSize": `${size().toFixed(1)}px`,
+        // A face is sized from its name and the room it stands in (`face`).
+        "--face": `${face().toFixed(1)}px`,
+      }}
     >
       <Show
         when={roster().length}
@@ -375,6 +430,14 @@ export default function Cast() {
                       onMouseEnter={() => hoverIn(name)}
                       onMouseLeave={hoverOut}
                     >
+                      <Show when={heads()}>
+                        <Face
+                          name={name}
+                          hushed={name === me() && !state.dm && !!state.status?.muted}
+                          calm={calm}
+                          own={(paint) => own(name, paint)}
+                        />
+                      </Show>
                       <button
                         ref={bind(name)}
                         class="name"
@@ -415,40 +478,44 @@ export default function Cast() {
                           />
                         </div>
                       </Show>
-                      <Show
-                        when={tweaks.voiceLook === "lava"}
-                        fallback={
-                          /* The string the voice runs down. `non-scaling-stroke`
-                             is load-bearing: the viewBox is stretched to the
-                             element, so a scaled stroke would smear. */
-                          <svg
-                            class="trace"
-                            viewBox="-1 0 2 1"
-                            preserveAspectRatio="none"
+                      {/* A face is the voice in the heads look — no string or
+                          drops under the name as well. */}
+                      <Show when={!heads()}>
+                        <Show
+                          when={tweaks.voiceLook === "lava"}
+                          fallback={
+                            /* The string the voice runs down. `non-scaling-stroke`
+                               is load-bearing: the viewBox is stretched to the
+                               element, so a scaled stroke would smear. */
+                            <svg
+                              class="trace"
+                              viewBox="-1 0 2 1"
+                              preserveAspectRatio="none"
+                              style={{ color: tint(name) }}
+                              aria-hidden="true"
+                            >
+                              <path
+                                ref={bindTrace(name)}
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.25"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                vector-effect="non-scaling-stroke"
+                              />
+                            </svg>
+                          }
+                        >
+                          {/* The same slot, filled by drops instead. They are
+                              born, animated and removed by CSS — this is only
+                              where they live. */}
+                          <div
+                            class="bubbles"
+                            ref={bindLava(name)}
                             style={{ color: tint(name) }}
                             aria-hidden="true"
-                          >
-                            <path
-                              ref={bindTrace(name)}
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.25"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              vector-effect="non-scaling-stroke"
-                            />
-                          </svg>
-                        }
-                      >
-                        {/* The same slot, filled by drops instead. They are
-                            born, animated and removed by CSS — this is only
-                            where they live. */}
-                        <div
-                          class="bubbles"
-                          ref={bindLava(name)}
-                          style={{ color: tint(name) }}
-                          aria-hidden="true"
-                        />
+                          />
+                        </Show>
                       </Show>
                       <Show when={name === anchor()}>
                         <div class="acts">
