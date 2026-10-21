@@ -7,6 +7,7 @@ mod dev_log;
 mod dm;
 mod drain;
 mod events;
+mod fast_levels;
 mod history;
 mod hotkeys;
 mod level_pump;

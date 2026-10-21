@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tc_client::audio;
+use tc_client::level::LiveLevels;
 use tc_client::peer_gain::PeerGains;
 use tc_client::voice::{self, VoiceHandle};
 use tc_shared::ChannelId;
@@ -89,6 +90,9 @@ pub struct VoiceSnapshot {
     /// snapshot (drained on read). `new_devices` only carries arrivals, and a
     /// device that goes away must still stop being offered in settings.
     pub devices_changed: bool,
+    /// The reported handle's per-frame levels (fast lane); a restarted
+    /// pipeline hands out a new one.
+    pub live_levels: Option<Arc<LiveLevels>>,
 }
 
 impl VoiceSnapshot {
@@ -107,6 +111,7 @@ impl VoiceSnapshot {
             playback_ok: true,
             new_devices: Vec::new(),
             devices_changed: false,
+            live_levels: None,
         }
     }
 }
@@ -516,6 +521,7 @@ async fn actor_loop(mut rx: mpsc::Receiver<Cmd>) {
                             playback_ok: h.playback_state() == voice::HalfState::Ok,
                             new_devices: std::mem::take(&mut sup.pending_new_devices),
                             devices_changed: std::mem::take(&mut sup.devices_changed),
+                            live_levels: Some(h.live_levels()),
                         }
                     }
                     None => {

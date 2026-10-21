@@ -187,6 +187,19 @@ export type VoiceLevelPayload = {
   playback_ok: boolean;
 };
 
+/**
+ * Fast level lane (~30 Hz, lip sync): per-frame loudness 0..1 of our own mic
+ * as peers hear it (`me`: 0 while muted or VAD-gated) and every peer the call
+ * holds a stream for (idle = 0). In a sound-check our reflected stream is not
+ * listed in `peers` — it is us, not someone in the room.
+ * Sent only while someone is audible, then one all-zero frame and nothing
+ * until the next audible level — no event means the last frame still holds.
+ */
+export type VoiceLevelsPayload = {
+  me: number;
+  peers: SpeakerLevel[];
+};
+
 export type DeviceAddedPayload = {
   kind: "input" | "output";
   name: string;
@@ -224,6 +237,7 @@ export type EventMap = {
   name_changed: { old_name: string; new_name: string };
   error: ErrorPayload;
   voice_level: VoiceLevelPayload;
+  voice_levels: VoiceLevelsPayload;
   voice_stopped: Record<string, never>;
   echo_test_started: Record<string, never>;
   echo_test_result: EchoResult;

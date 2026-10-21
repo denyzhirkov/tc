@@ -3,6 +3,7 @@ pub mod audio;
 pub mod codec;
 pub mod diagnostics;
 pub mod identity;
+pub mod level;
 pub mod limiter;
 pub mod network;
 pub mod peer_gain;

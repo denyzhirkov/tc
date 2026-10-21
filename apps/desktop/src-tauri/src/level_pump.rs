@@ -1,12 +1,14 @@
 //! Periodic emitter that polls the voice actor and pushes a `voice_level`
-//! event to the frontend roughly 5×/sec while voice is active.
+//! event to the frontend roughly 5×/sec while voice is active. Each poll also
+//! hands the current call's live-levels handle to the fast lane
+//! (`fast_levels`), which then runs without touching `AppCore`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::AppHandle;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 use crate::events::{emit, DeviceAddedPayload, SpeakerLevel, VoiceLevelPayload};
 use crate::state::AppCore;
@@ -14,6 +16,8 @@ use crate::state::AppCore;
 const TICK: Duration = Duration::from_millis(200);
 
 pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
+    let (live_tx, live_rx) = watch::channel(None);
+    crate::fast_levels::spawn(app.clone(), live_rx);
     tauri::async_runtime::spawn(async move {
         let mut last_muted: Option<bool> = None;
         let mut was_active = false;
@@ -32,7 +36,21 @@ pub fn spawn(app: AppHandle, core: Arc<Mutex<AppCore>>) {
                 last_muted = Some(muted);
             }
 
-            let snap = voice.snapshot().await;
+            let mut snap = voice.snapshot().await;
+            // A new call, a restarted pipeline or the end of the call: only
+            // then does the fast lane need to re-point.
+            let live = snap.live_levels.take();
+            live_tx.send_if_modified(|cur| {
+                let same = match (cur.as_ref(), live.as_ref()) {
+                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !same {
+                    *cur = live;
+                }
+                !same
+            });
             // Hot-plug prompts are relevant both in and out of calls.
             for d in &snap.new_devices {
                 emit(

@@ -44,6 +44,7 @@ use tc_shared::config;
 use crate::audio::{self, AudioProducer, PlayoutSignals};
 use crate::codec::OpusDecoder;
 use crate::diagnostics::AudioDiagnostics;
+use crate::level::rms;
 use crate::peer_gain::PeerGains;
 use crate::voice::NetworkStats;
 
@@ -405,6 +406,9 @@ struct SenderStream {
     /// Expand frames not yet known to be a mid-talkspurt underrun.
     pending_expand: u64,
     depths: DepthWindow,
+    /// RMS of the frame this stream last put into the mix, before the
+    /// listener's per-peer gain; 0 once it is idle. The UIs' speaker level.
+    frame_rms: f32,
     #[cfg(test)]
     ops: Vec<(u64, FrameOp)>,
 }
@@ -430,6 +434,7 @@ impl SenderStream {
             hold: 0,
             pending_expand: 0,
             depths: DepthWindow::new(),
+            frame_rms: 0.0,
             #[cfg(test)]
             ops: Vec::new(),
         }
@@ -604,10 +609,6 @@ impl SenderStream {
     }
 }
 
-fn rms(frame: &[f32]) -> f32 {
-    (frame.iter().map(|s| s * s).sum::<f32>() / frame.len().max(1) as f32).sqrt()
-}
-
 /// Copy a decoded frame into the fixed-size frame buffer, zero-padding a short one.
 fn copy_frame(pcm: &[f32], frame: &mut [f32]) {
     let n = pcm.len().min(frame.len());
@@ -640,6 +641,10 @@ pub(crate) struct PlayoutEngine {
     streams: HashMap<String, SenderStream>,
     scratch: Scratch,
     packets_since_prune: u32,
+    /// Moves whenever a stream's `frame_rms` was written, so the receive task
+    /// republishes speaker levels once per rendered frame and not at all
+    /// while everyone is idle.
+    levels_epoch: u64,
     #[cfg(test)]
     rendered: u64,
 }
@@ -655,6 +660,7 @@ impl PlayoutEngine {
                 head: vec![0.0; fade.clamp(1, config::FRAME_SIZE)],
             },
             packets_since_prune: 0,
+            levels_epoch: 0,
             #[cfg(test)]
             rendered: 0,
         }
@@ -720,17 +726,28 @@ impl PlayoutEngine {
         #[cfg(test)]
         let index = self.rendered;
         let mut contributors = 0usize;
+        let mut levels_written = false;
         for (name, stream) in self.streams.iter_mut() {
+            let was_playing = stream.state == StreamState::Playing;
             let Some(_op) = stream.render(now, pull, &mut self.scratch, diag, stats) else {
+                if was_playing {
+                    stream.frame_rms = 0.0;
+                    levels_written = true;
+                }
                 continue;
             };
             #[cfg(test)]
             stream.ops.push((index, _op));
+            let frame = &self.scratch.frame[..n];
+            // Measured on exactly what is mixed (after an accelerate, the
+            // crossfaded frame that replaced the dropped one), before the
+            // per-peer gain: a peer turned down locally still talks.
+            stream.frame_rms = rms(frame);
+            levels_written = true;
             // Listener-side per-peer volume (1.0 = unchanged). Read live; one
             // map lookup per sender per frame, multiply skipped when unity.
             let gain = gains.get(name);
             let unity = (gain - 1.0).abs() < f32::EPSILON;
-            let frame = &self.scratch.frame[..n];
             let out = &mut out[..n];
             match (contributors == 0, unity) {
                 (true, true) => out.copy_from_slice(frame),
@@ -752,6 +769,9 @@ impl PlayoutEngine {
             }
             contributors += 1;
         }
+        if levels_written {
+            self.levels_epoch = self.levels_epoch.wrapping_add(1);
+        }
         if contributors == 0 {
             return None;
         }
@@ -760,6 +780,17 @@ impl PlayoutEngine {
             self.rendered += 1;
         }
         Some(n)
+    }
+
+    /// RMS of each sender's last rendered frame (0 while idle or buffering),
+    /// for every sender stream the engine holds.
+    pub(crate) fn frame_levels(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.streams.iter().map(|(n, s)| (n.as_str(), s.frame_rms))
+    }
+
+    /// RMS of `name`'s last rendered frame; 0 for an idle or unknown sender.
+    pub(crate) fn frame_rms(&self, name: &str) -> f32 {
+        self.streams.get(name).map_or(0.0, |s| s.frame_rms)
     }
 
     /// Senders currently playing (buffering ones excluded).
@@ -848,6 +879,22 @@ impl PlayoutPump {
     /// can change that, so an idle channel costs no timer wakeups.
     pub(crate) fn needs_tick(&self) -> bool {
         self.engine.active()
+    }
+
+    /// Changes whenever a rendered frame (or a stream going idle) updated the
+    /// per-sender levels.
+    pub(crate) fn levels_epoch(&self) -> u64 {
+        self.engine.levels_epoch
+    }
+
+    /// See [`PlayoutEngine::frame_levels`].
+    pub(crate) fn frame_levels(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.engine.frame_levels()
+    }
+
+    /// See [`PlayoutEngine::frame_rms`].
+    pub(crate) fn frame_rms(&self, name: &str) -> f32 {
+        self.engine.frame_rms(name)
     }
 
     /// Render frames until the output holds its low-water mark or no sender
@@ -2217,6 +2264,225 @@ mod tests {
             assert!(out.iter().all(|s| s.abs() < 1.0));
         }
         assert!(diag.limiter_playback.load(Ordering::Relaxed) > 0);
+    }
+
+    // ── per-sender frame levels ──────────────────────────────────────
+
+    /// A 220 Hz tone of amplitude `amp` for capture frame `frame`, encoded.
+    /// Continuous phase across frames, so a step in `amp` is the only edge.
+    fn tone(enc: &mut OpusEncoder, amp: f32, frame: u64) -> Vec<u8> {
+        let mut pcm = vec![0.0f32; config::FRAME_SIZE];
+        loud_tone(frame, &mut pcm);
+        for s in &mut pcm {
+            *s *= amp / 0.3;
+        }
+        enc.encode(&pcm).unwrap().to_vec()
+    }
+
+    /// One render's view of a sender: what the stream did, the level the
+    /// engine reports for it, and the RMS of the mixed output.
+    struct LevelProbe {
+        op: Option<FrameOp>,
+        level: f32,
+        out_rms: f32,
+    }
+
+    impl Direct {
+        /// Render one frame (past the activation timeout) and probe `name`.
+        fn render_probe(&mut self, name: &str) -> LevelProbe {
+            let now = self.t0 + Duration::from_secs(1);
+            let mut out = vec![0.0f32; config::FRAME_SIZE];
+            let ops_before = self.engine.streams[name].ops.len();
+            let r = self.engine.render_frame(
+                now,
+                Output::new(0, 0).pull(),
+                &mut out,
+                &self.gains,
+                &self.diag,
+                &self.stats,
+            );
+            let ops = &self.engine.streams[name].ops;
+            LevelProbe {
+                op: (ops.len() > ops_before).then(|| ops[ops.len() - 1].1),
+                level: self.engine.frame_rms(name),
+                out_rms: r.map_or(0.0, |n| rms(&out[..n])),
+            }
+        }
+
+        /// Like `render_all`, but probes `name` after every render, including
+        /// the final one that finds everything idle.
+        fn render_levels(&mut self, name: &str) -> Vec<LevelProbe> {
+            let mut probes = Vec::new();
+            loop {
+                let p = self.render_probe(name);
+                let done = p.op.is_none();
+                probes.push(p);
+                if done {
+                    return probes;
+                }
+            }
+        }
+    }
+
+    fn mean(levels: &[LevelProbe]) -> f32 {
+        levels.iter().map(|p| p.level).sum::<f32>() / levels.len() as f32
+    }
+
+    /// The reported level is the RMS of exactly the frame that went into the
+    /// mix, so it follows the sender's envelope: loud > quiet > silence, and
+    /// an idle stream reads 0.
+    #[test]
+    fn frame_level_follows_the_encoded_envelope() {
+        let mut enc = fec_encoder();
+        let mut d = Direct::new();
+        let amps = [0.3f32, 0.03, 0.0];
+        // Fed one packet per frame, so the stream plays them as they come.
+        let mut probes = Vec::new();
+        for (seq, frame) in (1u32..).zip(0..30u64) {
+            let amp = amps[frame as usize / 10];
+            d.feed("alice", seq, &tone(&mut enc, amp, frame));
+            probes.push(d.render_probe("alice"));
+        }
+        assert!(probes
+            .iter()
+            .all(|p| matches!(p.op, Some(FrameOp::Packet(_)))));
+        probes.extend(d.render_levels("alice"));
+        assert_eq!(probes.len(), 30 + HOLD + 1, "30 packets, the hold, idle");
+        for p in &probes {
+            assert_eq!(p.level, p.out_rms, "level measured on the mixed frame");
+        }
+        // Skip each block's first two frames: codec ramp across the step.
+        let loud = mean(&probes[2..10]);
+        let quiet = mean(&probes[12..20]);
+        let silent = mean(&probes[22..30]);
+        assert!(loud > 0.15, "loud {loud}");
+        assert!(quiet > 0.01 && quiet < loud / 5.0, "quiet {quiet}");
+        assert!(silent < 1e-3, "silent {silent}");
+        assert!(crate::level::loudness(loud) > 0.9);
+        assert!((0.4..0.8).contains(&crate::level::loudness(quiet)));
+        assert_eq!(crate::level::loudness(silent), 0.0);
+        assert_eq!(probes.last().unwrap().level, 0.0, "idle reads 0");
+        assert!(d.engine.frame_levels().all(|(_, l)| l == 0.0));
+    }
+
+    /// When the buffer runs dry the concealment fades out, and so does the
+    /// level — the mouth closes on its own — then the idle stream reads 0.
+    #[test]
+    fn expand_level_decays_then_idle_reads_zero() {
+        let mut enc = fec_encoder();
+        let mut d = Direct::new();
+        for (seq, frame) in (1u32..).zip(0..10u64) {
+            d.feed("alice", seq, &tone(&mut enc, 0.3, frame));
+        }
+        let probes = d.render_levels("alice");
+        let last_packet = probes[9].level;
+        let expand: Vec<f32> = probes
+            .iter()
+            .filter(|p| p.op == Some(FrameOp::Expand))
+            .map(|p| p.level)
+            .collect();
+        assert_eq!(expand.len(), HOLD);
+        assert!(
+            expand.windows(2).all(|w| w[1] <= w[0]),
+            "concealment must not get louder: {expand:?}"
+        );
+        assert!(
+            expand[HOLD - 1] < last_packet * 0.8,
+            "{last_packet} → {expand:?}"
+        );
+        assert_eq!(probes.last().unwrap().level, 0.0);
+    }
+
+    /// An accelerate drops a quiet frame and plays the next one crossfaded in
+    /// its place: the level reported for that render is the played frame's,
+    /// never the dropped one's.
+    #[test]
+    fn accelerate_dropped_frame_is_not_reported() {
+        let mut enc = fec_encoder();
+        let mut d = Direct::new();
+        // A full ring, so the depth window stays above target + 1; two silent
+        // frames among loud ones give acceleration its quiet frame.
+        for (seq, frame) in (1u32..).zip(0..config::JITTER_BUF_MAX as u64) {
+            let amp = if (10..12).contains(&frame) { 0.0 } else { 0.3 };
+            d.feed("alice", seq, &tone(&mut enc, amp, frame));
+        }
+        let probes = d.render_levels("alice");
+        let accel: Vec<&LevelProbe> = probes
+            .iter()
+            .filter(|p| matches!(p.op, Some(FrameOp::Accelerated { .. })))
+            .collect();
+        assert_eq!(accel.len(), 1, "exactly one drop");
+        let Some(FrameOp::Accelerated { dropped, played }) = accel[0].op else {
+            unreachable!()
+        };
+        assert!((11..=12).contains(&dropped), "dropped seq {dropped}");
+        assert!(played >= 12);
+        assert_eq!(accel[0].level, accel[0].out_rms);
+        assert!(
+            accel[0].level >= config::PLAYOUT_ACCEL_MAX_RMS,
+            "reported {} — the dropped frame was quiet, the played one is not",
+            accel[0].level
+        );
+        // One render per frame played: the dropped seq has no render of its own.
+        let renders_with_op = probes.iter().filter(|p| p.op.is_some()).count();
+        assert_eq!(renders_with_op, config::JITTER_BUF_MAX - 1 + HOLD);
+    }
+
+    /// The listener's per-peer gain shapes the mix, not the speaker's level:
+    /// a peer turned down to 0% still visibly talks.
+    #[test]
+    fn per_peer_gain_does_not_change_the_reported_level() {
+        let run = |pct: Option<u32>| {
+            let mut enc = fec_encoder();
+            let mut d = Direct::new();
+            for (seq, frame) in (1u32..).zip(0..5u64) {
+                d.feed("alice", seq, &tone(&mut enc, 0.3, frame));
+            }
+            if let Some(pct) = pct {
+                d.gains.set_pct("alice", pct);
+            }
+            d.render_levels("alice")
+        };
+        let unity = run(None);
+        for pct in [0, 50, 200] {
+            let gained = run(Some(pct));
+            for (a, b) in unity.iter().zip(&gained) {
+                assert_eq!(a.level, b.level, "{pct}%");
+            }
+        }
+        assert!(unity[2].level > 0.1);
+        assert!(run(Some(0)).iter().all(|p| p.out_rms == 0.0));
+    }
+
+    /// A sender still buffering (Idle, not yet due) has rendered nothing:
+    /// level 0, and the epoch does not move, so nothing is republished.
+    #[test]
+    fn buffered_but_idle_sender_reports_zero_and_no_epoch_change() {
+        let mut enc = fec_encoder();
+        let mut d = Direct::new();
+        d.feed("alice", 1, &tone(&mut enc, 0.3, 0));
+        let epoch = d.engine.levels_epoch;
+        let mut out = vec![0.0f32; config::FRAME_SIZE];
+        let r = d.engine.render_frame(
+            d.t0,
+            Output::new(0, 0).pull(),
+            &mut out,
+            &d.gains,
+            &d.diag,
+            &d.stats,
+        );
+        assert_eq!(r, None);
+        assert_eq!(d.engine.frame_rms("alice"), 0.0);
+        assert_eq!(d.engine.levels_epoch, epoch);
+        assert_eq!(d.engine.frame_rms("nobody"), 0.0);
+
+        // Once due it plays; the epoch moves with every rendered frame and
+        // once more as the stream goes idle, then stops.
+        d.render_levels("alice");
+        let after = d.engine.levels_epoch;
+        assert_eq!(after.wrapping_sub(epoch), 1 + HOLD as u64 + 1);
+        d.render_levels("alice");
+        assert_eq!(d.engine.levels_epoch, after, "idle: no more publishes");
     }
 
     #[test]

@@ -211,6 +211,32 @@ pub const AGC_FLOOR_RMS: f32 = 0.004;
 /// starts compressing instead of passing through.
 pub const LIMITER_KNEE: f32 = 0.8;
 
+// ── Speaker loudness (UI level meters, lip sync) ─────────────────────────
+// A frame's RMS in dBFS is mapped linearly onto 0..1 between these two
+// points (`client/level.rs`). The window is sized around the levels the
+// pipeline actually produces: speech aimed at `AGC_TARGET_RMS` (≈ −21 dBFS)
+// lands at ≈ 0.76, leaving the top quarter for raised voices before the
+// meter pins; the default VAD threshold (≈ −36 dBFS) sits at ≈ 0.36, and
+// room noise and Opus concealment tails below −50 dBFS read as 0. The
+// desktop room gates its animation just under the default VAD threshold
+// (`VOICE_GATE` in apps/desktop/src/lib/loudness.ts), so breaths and
+// hangover tails near it barely move a mouth.
+/// Frame RMS (dBFS) that maps to loudness 0. Anything quieter is silence.
+/// Mirrored in apps/desktop/src/lib/loudness.ts — change both.
+pub const LEVEL_FLOOR_DBFS: f32 = -50.0;
+/// Frame RMS (dBFS) that maps to loudness 1. Anything louder is clamped.
+/// Mirrored in apps/desktop/src/lib/loudness.ts — change both.
+pub const LEVEL_CEIL_DBFS: f32 = -12.0;
+/// Period of the desktop's fast level lane (`voice_levels` event), in
+/// milliseconds: ~30 Hz, enough for a mouth to follow syllables (4–8 Hz)
+/// without flooding the IPC bridge.
+pub const FAST_LEVEL_TICK_MS: u64 = 33;
+/// How long every level must stay at zero before the fast lane goes quiet
+/// (after one final all-zero frame), in milliseconds. Matches the speaking
+/// indicator's cutoff, so a pause between words keeps the lane running and a
+/// finished phrase stops it.
+pub const FAST_LEVEL_SILENCE_MS: u64 = 300;
+
 // ── VAD ──────────────────────────────────────────────────────────────────
 
 /// RMS energy threshold for voice activity detection.

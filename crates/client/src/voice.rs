@@ -14,6 +14,7 @@ use tc_shared::{config, decode_udp_hello, encode_udp_hello, ChannelId, VoicePack
 use crate::audio::{self, PlayoutSignals};
 use crate::codec::{Denoiser, OpusEncoder};
 use crate::diagnostics::{AudioDiagnostics, DiagnosticsSnapshot};
+use crate::level::{self, LiveLevels};
 use crate::limiter::limit_in_place;
 use crate::peer_gain::PeerGains;
 use crate::playout::PlayoutPump;
@@ -241,6 +242,7 @@ pub async fn start_voice(
     }
     let speaking: Arc<Mutex<HashMap<String, SpeakerStat>>> = Arc::new(Mutex::new(HashMap::new()));
     let input_peak = Arc::new(AtomicU32::new(0));
+    let live = Arc::new(LiveLevels::new());
 
     let cipher = XChaCha20Poly1305::new_from_slice(&voice_key)
         .map_err(|_| anyhow::anyhow!("invalid voice key"))?;
@@ -275,6 +277,7 @@ pub async fn start_voice(
             rx_rate: 0.0,
         }),
         input_peak,
+        live,
     };
 
     // Best-effort halves: log-and-degrade instead of failing the call.
@@ -300,6 +303,7 @@ pub async fn start_voice(
         vad_threshold: vad_threshold.clone(),
         input_gain: input_gain.clone(),
         input_peak: handle.input_peak.clone(),
+        live: handle.live.clone(),
         stop: handle.stop.clone(),
         stream_failed: handle.capture_failed.clone(),
         denoise: denoise.clone(),
@@ -322,6 +326,7 @@ pub async fn start_voice(
         stats: handle.stats.clone(),
         bytes_rx: handle.bytes_rx.clone(),
         speaking: handle.speaking.clone(),
+        live: handle.live.clone(),
         playback_slot: handle.playback_slot.clone(),
         playout: handle.playout.clone(),
         registered: handle.registered.clone(),
@@ -425,6 +430,8 @@ struct CaptureCfg {
     vad_threshold: Arc<AtomicU32>,
     input_gain: Arc<AtomicU32>,
     input_peak: Arc<AtomicU32>,
+    /// Own-microphone loudness for the fast level lane.
+    live: Arc<LiveLevels>,
     stop: Arc<AtomicBool>,
     /// Set when the capture device stops delivering frames (starvation watchdog).
     stream_failed: Arc<AtomicBool>,
@@ -553,6 +560,7 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
                     // wait for the supervisor to install a new consumer.
                     drop(slot);
                     cfg.input_peak.store(0, Ordering::Relaxed);
+                    cfg.live.set_own(0.0);
                     last_frame_at = Instant::now();
                     starvation_reported = false;
                     std::thread::sleep(Duration::from_millis(50));
@@ -571,6 +579,8 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
                             config::AUDIO_STARVATION_SECS
                         );
                         cfg.stream_failed.store(true, Ordering::Relaxed);
+                        // A dead device must not leave our mouth open.
+                        cfg.live.set_own(0.0);
                     }
                     std::thread::sleep(Duration::from_millis(2));
                     continue;
@@ -593,6 +603,7 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
                 // Zero the published level — otherwise the UI meter freezes at
                 // the last pre-mute RMS and waves forever.
                 cfg.input_peak.store(0, Ordering::Relaxed);
+                cfg.live.set_own(0.0);
                 // Paranoid: keep the cadence constant with comfort silence
                 // (encoded zeros) — the real mic never leaves while muted, but
                 // the relay can't tell mute apart from speech.
@@ -622,9 +633,9 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
                 auto_level.process(&mut pcm_frame);
             }
 
-            // Publish RMS for UI level meter.
-            let rms =
-                (pcm_frame.iter().map(|s| s * s).sum::<f32>() / pcm_frame.len() as f32).sqrt();
+            // Publish RMS for UI level meter. The fast lane's own level is
+            // published below, once it is known whether this frame is sent.
+            let rms = level::rms(&pcm_frame);
             cfg.input_peak.store(rms.to_bits(), Ordering::Relaxed);
 
             frames_since_check += 1;
@@ -636,13 +647,16 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
             // Paranoid: no VAD gating — send every frame so the packet cadence
             // is constant and carries no speech-timing signal.
             if paranoid {
+                cfg.live.set_own(own_level(rms, true));
                 if !send_one(&mut encoder, &mut packet_buf, &mut sequence, &pcm_frame) {
                     break;
                 }
                 continue;
             }
 
-            if !pass_vad(&pcm_frame, &cfg.vad_threshold, &mut hangover_remaining) {
+            let sent = pass_vad(&pcm_frame, &cfg.vad_threshold, &mut hangover_remaining);
+            cfg.live.set_own(own_level(rms, sent));
+            if !sent {
                 // Buffer gated audio: quiet speech onsets sit below the VAD
                 // threshold and would be clipped (audible scratchy starts).
                 preroll.push(&pcm_frame);
@@ -703,7 +717,19 @@ fn spawn_capture_thread(cfg: CaptureCfg) {
             }
             sequence = sequence.wrapping_add(1);
         }
+        cfg.live.set_own(0.0);
     });
+}
+
+/// Own loudness for the fast lane: what peers hear, so a frame the VAD gate
+/// holds back (room noise, kept only as pre-roll) reads 0. Without that, room
+/// noise moves "my" mouth and keeps the lane busy for the whole call.
+fn own_level(rms: f32, sent: bool) -> f32 {
+    if sent {
+        level::loudness(rms)
+    } else {
+        0.0
+    }
 }
 
 fn maybe_adapt_encoder(
@@ -874,6 +900,8 @@ struct RecvCfg {
     stats: Arc<NetworkStats>,
     bytes_rx: Arc<AtomicU64>,
     speaking: Arc<Mutex<HashMap<String, SpeakerStat>>>,
+    /// Per-frame speaker levels for the fast UI lane.
+    live: Arc<LiveLevels>,
     playback_slot: PlaybackSlot,
     /// Output level and playing count shared with the output callback.
     playout: Arc<PlayoutSignals>,
@@ -915,6 +943,7 @@ fn spawn_recv_task(cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
         diag_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut diag_logged_at = Instant::now();
         let mut diag_logged = cfg.diag.snapshot();
+        let mut levels_epoch = pump.levels_epoch();
 
         loop {
             // All three futures are cancel-safe (UdpSocket::recv, Interval::tick).
@@ -956,8 +985,38 @@ fn spawn_recv_task(cfg: RecvCfg) -> tokio::task::JoinHandle<()> {
                 &cfg.diag,
                 &cfg.stats,
             );
+            drop(slot);
+            if pump.levels_epoch() != levels_epoch {
+                levels_epoch = pump.levels_epoch();
+                let own = cfg.echo_test.then_some(cfg.own_name.as_str());
+                publish_levels(&pump, &cfg.speaking, &cfg.live, own);
+            }
         }
+        cfg.live.clear();
     })
+}
+
+/// Hand the levels of the frames just rendered to the UIs: the speaking map
+/// (polled by `speaker_levels`) and the fast lane. Runs once per rendered
+/// frame, not per packet; allocation-free once every sender has been seen.
+/// `exclude` keeps our own reflected stream (sound-check) off the fast lane's
+/// peers: there it is `me`, not someone in the room.
+fn publish_levels(
+    pump: &PlayoutPump,
+    speaking: &Mutex<HashMap<String, SpeakerStat>>,
+    live: &LiveLevels,
+    exclude: Option<&str>,
+) {
+    if let Ok(mut sp) = speaking.lock() {
+        for (name, stat) in sp.iter_mut() {
+            stat.level = level::loudness(pump.frame_rms(name));
+        }
+    }
+    live.publish_peers(
+        pump.frame_levels()
+            .filter(|(name, _)| Some(*name) != exclude)
+            .map(|(name, rms)| (name, level::loudness(rms))),
+    );
 }
 
 /// Warn with the glitch counters accumulated since the previous log, if any
@@ -1023,7 +1082,7 @@ fn ingest(cfg: &RecvCfg, pump: &mut PlayoutPump, datagram: &[u8], decrypt_buf: &
         tracing::trace!("dropping echoed own packet");
         return;
     }
-    record_speaker(&cfg.speaking, name, decrypt_buf.len() - opus_offset);
+    record_speaker(&cfg.speaking, name);
     if pump.on_packet(name, sequence, &decrypt_buf[opus_offset..], Instant::now()) {
         cfg.diag.late_packets.fetch_add(1, Ordering::Relaxed);
     }
@@ -1057,32 +1116,23 @@ fn parse_packet_name(buf: &[u8]) -> Option<(&str, usize)> {
     Some((name, 1 + name_len))
 }
 
-/// Record voice activity for the UI meter.
-///
-/// Level proxy: opus_data length normalised against ~200 bytes (a typical
-/// high-bitrate frame). It's not RMS — but it tracks talker loudness well
-/// enough for a UI meter and is free to compute (no second decode).
-fn record_speaker(
-    speaking: &Arc<Mutex<HashMap<String, SpeakerStat>>>,
-    name: &str,
-    opus_len: usize,
-) {
+/// Record voice activity on packet arrival: who is talking (`last_seen`).
+/// The level is not known yet — it comes from the frame once it is rendered
+/// (`publish_levels`), so a sender still buffering reads 0.
+fn record_speaker(speaking: &Mutex<HashMap<String, SpeakerStat>>, name: &str) {
     if name.is_empty() {
         return;
     }
-    let level = (opus_len as f32 / 200.0).clamp(0.0, 1.0);
     if let Ok(mut sp) = speaking.lock() {
         // get_mut first: no String allocation on the per-packet path.
         if let Some(entry) = sp.get_mut(name) {
             entry.last_seen = Instant::now();
-            // EMA smoothing so the bar doesn't flicker per-frame.
-            entry.level = entry.level * 0.5 + level * 0.5;
         } else {
             sp.insert(
                 name.to_string(),
                 SpeakerStat {
                     last_seen: Instant::now(),
-                    level,
+                    level: 0.0,
                 },
             );
         }
@@ -1100,8 +1150,11 @@ struct TrafficSnapshot {
 /// Per-sender voice activity sample.
 #[derive(Debug, Clone, Copy)]
 pub struct SpeakerStat {
+    /// Arrival of the sender's latest packet.
     pub last_seen: Instant,
-    /// Loudness proxy in 0.0–1.0, derived from opus packet size.
+    /// Loudness 0.0–1.0 (`level::loudness`) of the sender's latest rendered
+    /// frame, before the listener's per-peer gain. Rendered ~40 ms before it
+    /// is heard (one output low-water mark).
     pub level: f32,
 }
 
@@ -1126,6 +1179,8 @@ pub struct VoiceHandle {
     traffic: Mutex<TrafficSnapshot>,
     /// RMS of the most recent capture frame (f32 bits in atomic), updated 50×/sec.
     input_peak: Arc<AtomicU32>,
+    /// Per-frame loudness of us and every sender, for fast UI animation.
+    live: Arc<LiveLevels>,
 }
 
 impl VoiceHandle {
@@ -1240,7 +1295,8 @@ impl VoiceHandle {
     }
 
     /// Returns `(name, level)` for each speaker active within the last 300ms.
-    /// `level` is a 0.0–1.0 loudness proxy derived from opus packet size.
+    /// `level` is the 0.0–1.0 loudness of their latest rendered frame (0 while
+    /// their stream is still buffering).
     pub fn speaker_levels(&self) -> Vec<(String, f32)> {
         let cutoff = Duration::from_millis(300);
         if let Ok(mut sp) = self.speaking.lock() {
@@ -1260,6 +1316,13 @@ impl VoiceHandle {
     /// Returns the most recent input RMS (0.0–1.0).
     pub fn input_peak(&self) -> f32 {
         f32::from_bits(self.input_peak.load(Ordering::Relaxed))
+    }
+
+    /// Per-frame levels of this call (own mic + every sender), shared with
+    /// the capture thread and the receive task. Valid for this handle's
+    /// lifetime; a restarted pipeline has a new one.
+    pub fn live_levels(&self) -> Arc<LiveLevels> {
+        self.live.clone()
     }
 
     /// Returns `(tx_kbps, rx_kbps, total_bytes)` — rates in KB/s and cumulative session total.
@@ -1292,6 +1355,9 @@ impl Drop for VoiceHandle {
     fn drop(&mut self) {
         // Signal sender thread to stop, then abort the receiver task.
         self.stop.store(true, Ordering::Relaxed);
+        // The aborted tasks never publish again; a reader still holding the
+        // handle must see silence, not the last frame frozen.
+        self.live.clear();
         if let Some(h) = &self.recv_handle {
             h.abort();
         }
@@ -1573,5 +1639,66 @@ mod tests {
         let mut frame = vec![0.9f32; config::FRAME_SIZE];
         assert!(!apply_input_gain(&mut frame, 0.5, true));
         assert!(frame.iter().all(|s| *s == 0.45));
+    }
+    /// A sender's level is the loudness of its rendered frames: 0 while its
+    /// packets are only buffered, real loudness once it plays, 0 again when it
+    /// has gone idle — in the speaking map and on the fast lane alike.
+    #[test]
+    fn speaker_level_comes_from_rendered_frames_not_arrival() {
+        let t0 = Instant::now();
+        let mut pump = PlayoutPump::new(t0);
+        let speaking = Mutex::new(HashMap::new());
+        let live = LiveLevels::new();
+        let mut peers = Vec::new();
+        let (signals, gains) = (PlayoutSignals::default(), PeerGains::new());
+        let (diag, stats) = (AudioDiagnostics::default(), NetworkStats::new());
+        let level_of = |speaking: &Mutex<HashMap<String, SpeakerStat>>| {
+            speaking.lock().unwrap()["alice"].level
+        };
+
+        let mut enc = OpusEncoder::new().unwrap();
+        let tone: Vec<f32> = (0..config::FRAME_SIZE)
+            .map(|i| 0.3 * (i as f32 * 2.0 * std::f32::consts::PI * 200.0 / 48_000.0).sin())
+            .collect();
+        for seq in 1..=8u32 {
+            record_speaker(&speaking, "alice");
+            pump.on_packet("alice", seq, enc.encode(&tone).unwrap(), t0);
+        }
+        publish_levels(&pump, &speaking, &live, None);
+        assert_eq!(level_of(&speaking), 0.0, "buffered, not playing");
+        live.snapshot(&mut peers);
+        assert_eq!(peers, vec![("alice".to_string(), 0.0)]);
+
+        let before = live.version();
+        pump.pump(None, t0, &signals, &gains, &diag, &stats);
+        publish_levels(&pump, &speaking, &live, None);
+        let playing = level_of(&speaking);
+        assert!(playing > 0.5, "playing level {playing}");
+        let (_, version) = live.snapshot(&mut peers);
+        assert!(version > before);
+        assert_eq!(peers, vec![("alice".to_string(), playing)]);
+
+        for frame in 1..30u32 {
+            let now = t0 + crate::playout::FRAME_DURATION * frame;
+            pump.pump(None, now, &signals, &gains, &diag, &stats);
+        }
+        publish_levels(&pump, &speaking, &live, None);
+        assert_eq!(level_of(&speaking), 0.0, "idle again");
+        live.snapshot(&mut peers);
+        assert_eq!(peers, vec![("alice".to_string(), 0.0)]);
+
+        // Sound-check: our own reflected stream is `me`, not a peer.
+        publish_levels(&pump, &speaking, &live, Some("alice"));
+        live.snapshot(&mut peers);
+        assert!(peers.is_empty());
+    }
+
+    /// Our level is what peers hear: a frame the VAD gate holds back reads 0
+    /// however loud the room is.
+    #[test]
+    fn own_level_is_zero_for_gated_frames() {
+        assert_eq!(own_level(0.05, false), 0.0);
+        assert_eq!(own_level(0.05, true), level::loudness(0.05));
+        assert!(own_level(0.05, true) > 0.0);
     }
 }
