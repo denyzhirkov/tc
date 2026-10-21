@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.19.0] — 2026-10-21
+
+### Fixed
+- **Voices no longer crackle and stutter on an uneven network.** Sound used to
+  be played the moment a packet arrived, so in the middle of a sentence there
+  was nothing in reserve, and any packet a little late — routine on Wi-Fi —
+  became a gap. Playback now keeps a small reserve sized to the network
+  (40–200 ms), conceals or recovers what goes missing, and quietly trims excess
+  delay at pauses. Two people whose sound cards tick at slightly different
+  speeds no longer drift into gaps on long calls.
+- **A lost packet is rebuilt rather than guessed.** Every packet now carries a
+  compact copy of the previous one, and the app actually uses it: a single loss
+  is restored almost exactly instead of being papered over.
+- **Calls start at full quality.** The high-definition voice setting only took
+  effect after the connection quality first changed; until then a call ran on
+  the codec's defaults.
+- **Loud no longer means distorted.** Turning output or a person's volume up
+  past 100 %, or a boosted microphone, used to clip harshly on loud syllables.
+  Peaks are now rounded off softly at both ends.
+- **Cleaner sound on audio devices that don't run at 48 kHz** (common on
+  Windows): the rate conversion no longer leaves a faint buzz at every 20 ms
+  boundary.
+
+### Added
+- **The technical log reports audio glitches.** If playback runs dry, packets
+  are lost or concealed, or a level clips, one line every 10 seconds says how
+  often — and stays silent when nothing went wrong.
+
 ## [1.18.1] — 2026-08-11
 
 ### Fixed
