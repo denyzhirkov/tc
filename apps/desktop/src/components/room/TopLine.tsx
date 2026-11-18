@@ -11,6 +11,7 @@ import { cmd, type DmPeerView } from "../../lib/tauri";
 import { goto, toggle, view } from "../../lib/scene";
 import { isPrivateRoom, roomLabel } from "../../lib/rooms";
 import { t } from "../../lib/i18n";
+import { tweaks } from "../../lib/theme";
 import { Word } from "./words";
 
 export default function TopLine() {
@@ -69,11 +70,20 @@ export default function TopLine() {
     }
   };
 
+  // The session interface draws this same line as a bar of numbered tabs: the
+  // words are unchanged, they only gain a headcount and what the server cell
+  // is entitled to say about the certificate.
+  const session = () => tweaks.layout === "session";
+
   return (
     <div class="top">
+      <Show when={session()}>
+        <span class="ses-mark">tc_</span>
+      </Show>
       <For each={state.channelList}>
         {(ch) => (
           <Word
+            tab
             current={view() === "room" && state.channel === ch.channel_id && !state.dm}
             title={
               shareable(ch.channel_id)
@@ -83,6 +93,9 @@ export default function TopLine() {
             onClick={() => void enter(ch.channel_id)}
           >
             {roomLabel(ch.channel_id)}
+            <Show when={session()}>
+              <span class="ses-count">{ch.participant_count}</span>
+            </Show>
           </Word>
         )}
       </For>
@@ -97,6 +110,7 @@ export default function TopLine() {
         }
       >
         <Word
+          tab
           current={view() === "room" && !state.dm}
           title={
             shareable(state.channel!)
@@ -114,6 +128,7 @@ export default function TopLine() {
       <For each={dms()}>
         {(p) => (
           <Word
+            tab
             tone="quiet"
             current={state.dm?.pubkey_hex === p.pubkey_hex}
             title={p.pubkey_hex.slice(0, 16)}
@@ -153,6 +168,11 @@ export default function TopLine() {
         onClick={() => openPalette("/server ")}
       >
         {state.serverAddr}
+        {/* Connected means the certificate matched the pinned one — a changed
+            certificate never gets this far without an explicit /trust. */}
+        <Show when={session() && state.conn === "connected"}>
+          <span class="ses-count">{t("ses.pinned")}</span>
+        </Show>
       </Word>
       <span
         class="sealed"

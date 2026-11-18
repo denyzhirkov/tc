@@ -1258,3 +1258,481 @@ textarea {
     transition: none;
   }
 }
+
+/* ══ the session interface ══════════════════════════════════════════════
+   `tweaks.layout === "session"` (lib/theme.ts → :root[data-layout]). The same
+   scenes and the same line in a different frame: the top line becomes a bar of
+   numbered tabs, a room becomes a transcript with a roster beside it.
+
+   Everything here is prefixed `ses-` — hand-written classes share a namespace
+   with Tailwind's utilities, and a collision merges silently.
+
+   The palette is one green, the terminal's. It does not reach people: a name
+   keeps the hue derived from it (lib/tint.ts), because colour is identity in
+   both interfaces. */
+
+/* Outside the session interface the wrapper is not a box at all. */
+.ses-main {
+  display: contents;
+}
+
+:root[data-layout="session"] {
+  --c-bg: #040805;
+  --c-surface: #080f0a;
+  --c-surface2: #101a12;
+  --c-hover: #101a12;
+  --c-line: #1d2a1f;
+  --c-line2: #131e14;
+  --c-text: #e1f1de;
+  --c-text2: #b2cdaf;
+  --c-muted: #769676;
+  --c-faint: #49634a;
+  --c-accent-bg: rgba(126, 244, 115, 0.14);
+  --c-ok: #7ef473;
+  --ses-accent: #7ef473;
+  --ses-accent-ink: #040b05;
+  --ses-wash: #062409;
+  --sat: 58%;
+  --lum: 70%;
+}
+:root[data-layout="session"][data-theme="light"] {
+  --c-bg: #edf7eb;
+  --c-surface: #f9fdf8;
+  --c-surface2: #e4efe1;
+  --c-hover: #e4efe1;
+  --c-line: #c6d6c5;
+  --c-line2: #d5e3d4;
+  --c-text: #0b2010;
+  --c-text2: #2a442e;
+  --c-muted: #547256;
+  --c-faint: #90a58f;
+  --c-accent-bg: rgba(3, 104, 25, 0.12);
+  --c-ok: #036819;
+  --ses-accent: #036819;
+  --ses-accent-ink: #f9fdf8;
+  --ses-wash: #c8e9c4;
+  --sat: 60%;
+  --lum: 34%;
+}
+/* The accent setting still wins when one is chosen. */
+:root[data-layout="session"][data-accent="plain"] {
+  --c-chosen: var(--ses-accent);
+}
+
+/* The ambient wash is painted by the room's frame loop, which is not running. */
+:root[data-layout="session"] .app::before {
+  display: none;
+}
+
+:root[data-layout="session"] .shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+}
+:root[data-layout="session"] .ses-main {
+  grid-column: 1;
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+:root[data-layout="session"] .stage {
+  padding: 0 20px;
+}
+
+/* ── the bar ─────────────────────────────────────────────────────────── */
+
+:root[data-layout="session"] .top {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  align-items: stretch;
+  gap: 0;
+  min-height: 36px;
+  font-size: 12px;
+  letter-spacing: 0;
+  border-bottom: 1px solid var(--c-line);
+  counter-reset: ses-tab;
+}
+.ses-mark {
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  background: var(--ses-accent);
+  color: var(--ses-accent-ink);
+  font-weight: 700;
+}
+:root[data-layout="session"] .top > .word,
+:root[data-layout="session"] .top > .sealed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+:root[data-layout="session"] .top > .word:hover {
+  background: var(--c-surface);
+}
+:root[data-layout="session"] .top > .word:focus-visible {
+  outline-offset: -3px;
+}
+:root[data-layout="session"] .top > .word-on {
+  background: var(--ses-wash);
+  border-bottom-color: var(--ses-accent);
+  color: var(--c-text);
+}
+:root[data-layout="session"] .top > [data-tab]::before {
+  counter-increment: ses-tab;
+  content: counter(ses-tab);
+  color: var(--c-muted);
+  font-weight: 400;
+}
+.ses-count {
+  color: var(--c-muted);
+  font-weight: 400;
+}
+/* Right of the spacer: cells, ruled off from each other. */
+:root[data-layout="session"] .top-spacer ~ * {
+  border-left: 1px solid var(--c-line);
+}
+:root[data-layout="session"] .sealed::before {
+  margin-right: 0;
+}
+
+.ses-strip {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  padding: 7px 20px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--c-surface2);
+  border-bottom: 1px solid var(--c-line);
+  color: var(--c-text);
+}
+
+/* ── the transcript ──────────────────────────────────────────────────── */
+
+.ses-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 -20px;
+  padding: 16px 0 10px;
+}
+.ses-title {
+  margin: 0;
+  padding: 0 20px 2px;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.ses-note {
+  margin: 0;
+  padding: 0 20px 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--c-muted);
+}
+.ses-row {
+  display: grid;
+  grid-template-columns: 5.5ch 11ch minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: baseline;
+  padding: 2px 20px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.ses-row:hover {
+  background: var(--c-surface);
+}
+.ses-time {
+  font-size: 11.5px;
+  color: var(--c-muted);
+}
+.ses-who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ses-row-me .ses-who {
+  font-weight: 700;
+}
+.ses-text {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--c-text);
+  overflow-wrap: anywhere;
+}
+.ses-wide {
+  grid-column: 2 / -1;
+}
+.ses-row-event .ses-text {
+  color: var(--c-muted);
+}
+.ses-row-bad .ses-text {
+  color: var(--c-danger);
+}
+.ses-voice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  align-self: center;
+}
+/* A turn of speech: a mark as long as the turn, in the speaker's own colour.
+   The shape is fixed — it says "voice", not what the voice sounded like. */
+.ses-wave {
+  flex: none;
+  height: 16px;
+  opacity: 0.75;
+  background: repeating-linear-gradient(
+    to right,
+    currentColor 0 2px,
+    transparent 2px 5px
+  );
+  clip-path: polygon(
+    0 42%, 9% 14%, 22% 34%, 37% 4%, 52% 28%, 68% 10%, 83% 30%, 100% 40%,
+    100% 60%, 83% 70%, 68% 90%, 52% 72%, 37% 96%, 22% 66%, 9% 86%, 0 58%
+  );
+}
+.ses-wave-live {
+  opacity: 1;
+}
+.ses-dur {
+  font-size: 11.5px;
+  color: var(--c-muted);
+  white-space: nowrap;
+}
+
+/* ── the roster ──────────────────────────────────────────────────────── */
+
+.ses-roster {
+  grid-column: 2;
+  grid-row: 3;
+  width: 288px;
+  min-height: 0;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--c-surface);
+  border-left: 1px solid var(--c-line);
+}
+.ses-roster-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--c-muted);
+}
+.ses-roster-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--c-text);
+}
+.ses-people {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--c-line);
+  transition: opacity 200ms ease;
+}
+.ses-away {
+  opacity: 0.45;
+}
+.ses-person {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--c-line);
+}
+.ses-name {
+  padding: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.ses-name {
+  cursor: pointer;
+}
+button.ses-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+button.ses-name:focus-visible,
+.ses-btn:focus-visible,
+.ses-cmd:focus-visible {
+  outline: 1px solid var(--ses-accent, currentColor);
+  outline-offset: 2px;
+}
+.ses-you {
+  margin-left: 8px;
+  font-size: 10.5px;
+  color: var(--c-muted);
+}
+.ses-state {
+  font-size: 10.5px;
+  color: var(--c-muted);
+}
+.ses-now .ses-state {
+  color: var(--ses-accent);
+}
+.ses-meter {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 3px;
+  height: 6px;
+  margin-top: 4px;
+}
+.ses-meter i {
+  background: var(--c-line);
+}
+.ses-meter i.on {
+  background: var(--c-muted);
+}
+.ses-now .ses-meter i.on {
+  background: var(--ses-accent);
+}
+.ses-out {
+  margin-top: 22px;
+}
+.ses-out-head {
+  color: var(--c-muted);
+}
+.ses-out dl {
+  margin: 4px 0 0;
+  display: grid;
+  grid-template-columns: 9ch minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 2px;
+}
+.ses-out dt {
+  color: var(--c-muted);
+}
+.ses-out dd {
+  margin: 0;
+  color: var(--c-text2);
+  overflow-wrap: anywhere;
+}
+
+/* ── the prompt ──────────────────────────────────────────────────────── */
+
+:root[data-layout="session"] .asks,
+:root[data-layout="session"] .echo {
+  margin: 0 20px;
+}
+:root[data-layout="session"] .line-wrap {
+  padding: 10px 20px 12px;
+  border-top: 1px solid var(--c-line);
+}
+:root[data-layout="session"] .line {
+  align-items: center;
+}
+:root[data-layout="session"] .mentions {
+  left: 20px;
+}
+:root[data-layout="session"] .line input {
+  min-height: 32px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  background: var(--c-surface);
+  border: 1px solid var(--c-faint);
+}
+:root[data-layout="session"] .line input:focus {
+  border-color: var(--ses-accent);
+}
+.ses-btn {
+  flex: none;
+  min-height: 32px;
+  padding: 0 14px;
+  box-sizing: border-box;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--c-text);
+  border: 1px solid var(--c-muted);
+}
+.ses-btn:hover {
+  background: var(--c-surface2);
+}
+.ses-btn-main {
+  background: var(--ses-accent);
+  border-color: var(--ses-accent);
+  color: var(--ses-accent-ink);
+  font-weight: 700;
+}
+.ses-btn-main:hover {
+  background: var(--ses-accent);
+  filter: brightness(1.08);
+}
+/* Muted: the one filled control goes hollow, so "off" is visible at a glance. */
+.ses-btn-main[aria-pressed="true"] {
+  background: var(--ses-wash);
+  color: var(--c-text);
+  filter: none;
+}
+.ses-cmds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding-top: 8px;
+  font-size: 11px;
+}
+.ses-cmd {
+  padding: 2px 0;
+  cursor: pointer;
+  color: var(--c-text2);
+  border-bottom: 1px dotted var(--c-muted);
+}
+.ses-cmd:hover {
+  color: var(--ses-accent);
+}
+
+/* A narrow window: the roster goes above the transcript and loses its
+   readout; the cells on the right of the bar give way to the tabs. */
+@media (max-width: 760px) {
+  :root[data-layout="session"] .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+  }
+  :root[data-layout="session"] .ses-main {
+    grid-row: 4;
+  }
+  .ses-roster {
+    grid-column: 1;
+    grid-row: 3;
+    width: auto;
+    max-height: 30vh;
+    border-left: none;
+    border-bottom: 1px solid var(--c-line);
+  }
+  .ses-out {
+    display: none;
+  }
+  :root[data-layout="session"] .top {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .ses-row {
+    grid-template-columns: 5.5ch minmax(0, 1fr);
+  }
+  .ses-row .ses-text:not(.ses-wide),
+  .ses-row .ses-voice {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ses-people {
+    transition: none;
+  }
+}

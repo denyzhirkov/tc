@@ -8,7 +8,8 @@
 import { createEffect, on, untrack } from "solid-js";
 import { state, type LogLine } from "./store";
 import { speakerOf } from "./stage";
-import { ScoreRecorder } from "./score";
+import { SCORE_AUDIBLE, ScoreRecorder } from "./score";
+import { transcript } from "./transcript";
 import { levelOf, slowLevel } from "./live";
 import { voiceLevel } from "./loudness";
 
@@ -35,7 +36,10 @@ export function installScoreRecorder() {
   createEffect(
     on(
       () => (state.dm ? `dm:${state.dm.pubkey_hex}` : state.channel ? `ch:${state.channel}` : ""),
-      () => score.clear(),
+      () => {
+        score.clear();
+        transcript.clear();
+      },
     ),
   );
 
@@ -55,6 +59,7 @@ export function installScoreRecorder() {
     }
     if (at !== -1 && !prev.includes(next[at]) && !next.includes(prev[at])) {
       score.rename(prev[at], next[at]);
+      transcript.rename(prev[at], next[at]);
     }
   });
 
@@ -63,16 +68,26 @@ export function installScoreRecorder() {
   // payloads — the array inside it is replaced on every one.
   createEffect(() => {
     const v = state.voice;
-    if (!v) return;
+    if (!v) {
+      // The call stopped reporting (left, stalled, dropped): nobody is still
+      // "speaking now" on the strength of a sample from before it did.
+      transcript.sweep(Number.POSITIVE_INFINITY);
+      return;
+    }
     void v.speakers;
     untrack(() => {
       if (state.dm || !state.channel) return;
       const t = Date.now() / 1000;
-      for (const s of v.speakers) score.record(s.name, voiceLevel(s.level), t);
+      const heard = (name: string, level: number) => {
+        score.record(name, level, t);
+        if (level >= SCORE_AUDIBLE) transcript.hear(name, t);
+      };
+      for (const s of v.speakers) heard(s.name, voiceLevel(s.level));
       const me = state.status?.name;
       // The payload's own mute flag: `wire` copies it into status only after
       // this effect has run.
-      if (me) score.record(me, v.muted ? 0 : levelNow(me), t);
+      if (me) heard(me, v.muted ? 0 : levelNow(me));
+      transcript.sweep(t);
     });
   });
 
@@ -84,15 +99,24 @@ export function installScoreRecorder() {
     if (!lines.length) return seen;
     const now = Date.now() / 1000;
     const me = untrack(() => state.status?.name ?? null);
+    // What the app itself says — someone joined, a command answered — belongs
+    // to the transcript wherever you are standing, room or private thread.
+    const somewhere = untrack(() => !!state.channel || !!state.dm);
     for (const line of lines) {
       if (line.id <= seen) continue;
       seen = line.id;
+      if (somewhere && (line.kind === "system" || line.kind === "error")) {
+        transcript.event(line.text, now, line.kind === "error");
+        continue;
+      }
       if (!active || (line.kind !== "chat" && line.kind !== "dm")) continue;
       const parsed = speakerOf(line.text);
       if (!parsed) continue;
-      const who = parsed.who === "you" && me ? me : parsed.who;
+      const mine = parsed.who === "you";
+      const who = mine && me ? me : parsed.who;
       const at = line.ts === undefined || now - line.ts < FRESH ? now : line.ts;
       score.addLyric(who, parsed.said, at, now);
+      transcript.text(who, parsed.said, at, mine);
     }
     return seen;
   };

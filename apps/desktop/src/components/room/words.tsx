@@ -13,6 +13,9 @@ export function Word(props: {
   tone?: "quiet" | "plain" | "loud" | "danger";
   style?: JSX.CSSProperties;
   disabled?: boolean;
+  /// A place you can go by number — the session interface numbers these and
+  /// binds the digit keys to them (`Shell`).
+  tab?: boolean;
 }) {
   const cls = () => {
     switch (props.tone ?? "plain") {
@@ -35,6 +38,7 @@ export function Word(props: {
       title={props.title}
       style={props.style}
       disabled={props.disabled}
+      data-tab={props.tab ? "" : undefined}
       onClick={() => props.onClick?.()}
     >
       {props.children}

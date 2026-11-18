@@ -4,11 +4,13 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { pushLog, state } from "../../lib/store";
 import { runCommand } from "../../lib/commands";
+import { leaveChannel, toggleMute } from "../../lib/actions";
+import { closeDm } from "../../lib/dm";
 import { openDm } from "../../lib/dm";
 import { cmd } from "../../lib/tauri";
 import { tweaks } from "../../lib/theme";
 import { formatAccel, shortcut } from "../../lib/platform";
-import { setQuery, takeFill, view } from "../../lib/scene";
+import { fill, setQuery, takeFill, view } from "../../lib/scene";
 import { roomLabel } from "../../lib/rooms";
 import { t } from "../../lib/i18n";
 
@@ -77,6 +79,13 @@ export default function Line() {
   });
 
   const isSearching = () => view() === "settings";
+  const session = () => tweaks.layout === "session";
+  const inRoom = () => !!state.channel || !!state.dm;
+
+  /// Commands worth having under the hand. One that needs an argument is put
+  /// on the line for you to finish; one that doesn't simply runs.
+  const COMMANDS = ["/join ", "/dm ", "/invite", "/mode ", "/help"];
+  const command = (c: string) => (c.endsWith(" ") ? fill(c) : void runCommand(c));
 
   // Crossing in or out of settings empties the box: a half-typed message
   // shouldn't become a search, and a search shouldn't become a message.
@@ -242,7 +251,7 @@ export default function Line() {
           <Show when={prompt()}>
             <b>{prompt()}</b>{" "}
           </Show>
-          ❯
+          {session() ? "$" : "❯"}
         </span>
         <input
           ref={input}
@@ -259,7 +268,38 @@ export default function Line() {
           spellcheck={false}
           aria-label={placeholder()}
         />
+        <Show when={session() && inRoom() && !isSearching()}>
+          <Show when={!state.dm}>
+            <button
+              type="button"
+              class="ses-btn ses-btn-main"
+              aria-pressed={!!state.status?.muted}
+              onClick={() => void toggleMute()}
+            >
+              {state.status?.muted ? t("ses.unmute") : t("ses.mute")}
+            </button>
+          </Show>
+          <button
+            type="button"
+            class="ses-btn"
+            onClick={() => (state.dm ? closeDm() : void leaveChannel())}
+          >
+            {t("room.leave")}
+          </button>
+        </Show>
       </div>
+
+      <Show when={session() && !isSearching()}>
+        <div class="ses-cmds">
+          <For each={COMMANDS}>
+            {(c) => (
+              <button type="button" class="ses-cmd" onClick={() => command(c)}>
+                {c.trim()}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <Show when={tweaks.composerHints}>
         <div class="keys">

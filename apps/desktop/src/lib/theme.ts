@@ -30,6 +30,12 @@ export type VoiceLook = "string" | "lava";
 /// (`components/room/Score.tsx`).
 export type RoomLook = "names" | "heads" | "score";
 
+/// Which interface the app wears. `room` is the original — names standing in a
+/// row. `session` is a transcript with a roster beside it and rooms as
+/// numbered tabs (`components/session/*`); it brings its own palette, and the
+/// room looks above do not apply to it.
+export type Layout = "room" | "session";
+
 export type Tweaks = {
   theme: Theme;
   accent: Accent;
@@ -40,6 +46,7 @@ export type Tweaks = {
   crowd: Crowd;
   voiceLook: VoiceLook;
   roomLook: RoomLook;
+  layout: Layout;
 };
 
 const KEY = "tc.tweaks";
@@ -57,6 +64,8 @@ const VOICE_LOOKS: VoiceLook[] = ["string", "lava"];
 
 const ROOM_LOOKS: RoomLook[] = ["names", "heads", "score"];
 
+const LAYOUTS: Layout[] = ["room", "session"];
+
 // The room is typeset in one face, and that face is monospace: the terminal
 // heritage is carried by the type rather than by decoration.
 const ACCENTS: Accent[] = ["plain", "indigo", "forest", "rust"];
@@ -70,6 +79,7 @@ const DEFAULTS: Tweaks = {
   crowd: "recent",
   voiceLook: "string",
   roomLook: "names",
+  layout: "room",
 };
 
 function load(): Tweaks {
@@ -90,6 +100,7 @@ function load(): Tweaks {
       merged.voiceLook = DEFAULTS.voiceLook;
     if (!ROOM_LOOKS.includes(merged.roomLook))
       merged.roomLook = DEFAULTS.roomLook;
+    if (!LAYOUTS.includes(merged.layout)) merged.layout = DEFAULTS.layout;
     return merged;
   } catch {
     return { ...DEFAULTS };
@@ -114,6 +125,7 @@ export function installTheme() {
   createEffect(() => {
     root.dataset.theme = tweaks.theme;
     root.dataset.accent = tweaks.accent;
+    root.dataset.layout = tweaks.layout;
     root.style.setProperty("--font-ui", FONTS[tweaks.typeface]);
   });
 }

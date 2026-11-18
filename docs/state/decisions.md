@@ -144,6 +144,23 @@ Durable facts that aren't obvious from the code. Add a bullet when a decision or
   means adding a cast, not a layout. `lib/scene.ts` holds the single source of
   truth for which one is showing; `showSettings` was deleted from the store
   because a flag and a view could disagree.
+- **A second interface, opt-in: `session`** (`tsk tfwh3y`, `tweaks.layout`,
+  default `room`). Settings → look → interface. It is a frame around the same
+  four scenes, not a second app: `Shell`, `TopLine`, `Line` and `scene.ts` are
+  shared, and `:root[data-layout="session"]` restyles them (bar of numbered
+  tabs, bordered prompt, green palette). Only the room cast differs —
+  `components/session/Transcript.tsx` + `Roster.tsx` instead of `Cast`/`Score`.
+  It knowingly breaks the two rules around this entry inside its own frame: it
+  has buttons (mute, leave) and a side column. The `room` interface is untouched
+  and both rules still hold there.
+  - The transcript is fed from `lib/scoreFeed.ts`, the one reader of voice
+    state; `lib/turns.ts` (pure, tested) cuts samples into turns. Nothing is
+    recorded while the `room` interface is in use.
+  - It prints only what the core reports. No deafen (not in the core), no RTT or
+    jitter-buffer depth (not in `voice_level`), no mute state for peers (not on
+    the wire). Do not draw them from the mockup in `design/hallmark/session`.
+  - Peer names keep their identity hue; the green palette stops at people.
+  - All its classes are prefixed `ses-` (Tailwind namespace gotcha).
 - **One control.** A row of words, lit = chosen. No checkbox, select, slider or
   chip exists in this UI. The exception is deliberately narrow: three
   continuous values (mic gain, output volume, VAD threshold) get 12 ticks.

@@ -36,6 +36,7 @@ import {
   type Accent,
   type AvatarStyle,
   type Crowd,
+  type Layout,
   type Theme,
   type RoomLook,
   type Typeface,
@@ -478,6 +479,20 @@ export default function SettingsScene() {
           current={(v) => tweaks.typeface === v}
           pick={(v) => setTweak("typeface", v)}
           paint={(v) => ({ "font-family": FONT_STACK[v] })}
+        />
+      ),
+    },
+    {
+      group: "look",
+      label: t("set.layout"),
+      keys: "interface layout session transcript terminal интерфейс вид сессия лента терминал",
+      hint: t("set.layout_hint"),
+      render: () => (
+        <Opts<Layout>
+          opts={["room", "session"]}
+          label={(v) => t(`set.layout_${v}`)}
+          current={(v) => tweaks.layout === v}
+          pick={(v) => setTweak("layout", v)}
         />
       ),
     },
