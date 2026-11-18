@@ -2,9 +2,11 @@
 
 > Thin index — read first in a new session. Machine-of-record for task state is `tsk`. Deep history in `docs/state/*`.
 
-**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.20.0**, protocol **3**.
+**Phase:** Desktop client (Tauri + Solid) — feature-complete core, polishing OS-integration. Latest release **1.21.0**, protocol **3**.
 
 ## Recently closed (newest first)
+
+- Session interface (`tfwh3y`, **v1.21.0**, desktop UI only, no Rust, no wire change): a second, opt-in interface beside the room one — Settings → look → interface → **session** (`tweaks.layout`, `:root[data-layout="session"]`, default `room`, nothing removed). Rooms are numbered tabs in the top line (digits 1–9 switch), the room view is a **transcript** — chat lines and turns of speech in one list, a turn being who/when/how long (`lib/turns.ts`, pure, tested; `lib/transcript.ts`, a store fed from `lib/scoreFeed.ts`, still the single reader of voice state) — with a roster beside it (identicon, speaking/quiet, level meter, click to DM) and two blocks of facts the core actually reports (E2E, cipher, what the relay sees, UDP, loss, tier, rate; name, key, mic mode). Prompt line gets `$`, mute/leave buttons and a row of commands. Its own green palette in dark and light; people keep their identity hue. No deafen button: the core has no deafen (`45b833`). Came from a Hallmark design round (`design/hallmark/session`, untracked). Checked against sample state in a browser and briefly in `tauri dev`; peers' identicons, turn closing and the own-level meter are not confirmed on a live call. See `closed-desktop.md` → "Session interface" and `decisions.md` → "A second interface, opt-in: `session`".
 
 - Room looks: score + talking heads (`uercuu`, `g931tf`, **v1.20.0**, desktop + core levels, no wire change): Settings → look → room now picks **names** (default, unchanged), **score** — the conversation over time, one staff per person, voice as loudness bars, chat written under the sender at the moment it was sent, wheel back through two minutes — or **heads**, generated line-art faces above the names whose mouths follow real loudness at 30 Hz. Under it the core now measures each peer's loudness from the frame actually rendered (was an Opus packet-size guess) and streams it on a fast `voice_levels` lane. Frontend unit tests exist for the first time (`pnpm -C apps/desktop test`, node:test). See `closed-desktop.md` → "Room looks" and `decisions.md` → "Room looks" / "Speaker loudness is measured".
 
@@ -51,6 +53,8 @@
 
 ## Up next
 
+- Deafen (`45b833`): playback gate in the core + command + UI in both interfaces; the session interface shipped without the button
+- Session interface field check (v1.21.0): a real call — peers' identicons in the roster, turns closing to "spoke N s", own level meter
 - Crackle pack field check (v1.19.0): a real call on Windows (WASAPI) and over Wi-Fi, reading `output_starved` / `expand_frames` in the technical log. Follow-ups: stretch for slow sender clocks (`s78v4c`), output-side starvation watchdog (`dx376j`), receiver→sender loss feedback (`bixegi`, protocol change)
 - Playback timeline follow-ups: comfort noise instead of zero-fill on underrun (`4rg56x`); continuous DTX timeline instead of the RMS gate-and-flush (`ta0vu0`, needs its own intake — touches both clients, the wire cadence and paranoid mode)
 - EPIC 15 — Forward secrecy for voice keys (`66b9lj`: KeyRotation message, periodic server rotation, dual-key transition)
@@ -71,4 +75,4 @@
 - Closed history → `docs/state/closed-cli-core.md`, `docs/state/closed-desktop.md`
 - ADRs → `docs/adr/`
 
-_Last updated: 2026-10-21 (room looks: score + heads, v1.20.0)._
+_Last updated: 2026-11-18 (session interface, v1.21.0)._

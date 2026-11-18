@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.21.0] — 2026-11-18
+
+### Added
+- **A second interface: session.** Settings → look → interface now offers,
+  beside the familiar room, a calmer layout for long calls:
+  - **Rooms as numbered tabs.** The rooms you are in sit along the top; press
+    1–9 to switch between them.
+  - **A transcript instead of a stage.** What people said and what they wrote
+    are one list in the order it happened. Speech appears as a line with who
+    spoke, when and for how long; nothing is recorded, only the timing is shown.
+  - **Who is on the line, beside it.** Everyone in the room with their picture,
+    whether they are speaking and how loud, plus the facts about the call
+    itself: the voice is encrypted end to end, the server sees only the room,
+    packet loss, quality and data rate. Click a name to write to that person.
+  - **A prompt line with the common commands under it**, and mute and leave
+    next to it.
+
+  The room interface stays the default and is unchanged. The transcript starts
+  when you switch session on; it lives in memory and is gone when you leave.
+
 ## [1.20.0] — 2026-10-21
 
 ### Added
